@@ -1,19 +1,18 @@
 # VectorCore MME
 
-LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](https://github.com/vectorcore-mobile) EPC suite alongside the VectorCore HSS.
+LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](https://github.com/vectorcore-mobile)
 
-The MME is the control-plane hub of an LTE Evolved Packet Core. It terminates S1AP from eNodeBs, processes NAS signalling (EMM/ESM) from UEs, authenticates via Diameter S6a to the HSS, and coordinates bearer setup via GTPv2-C S11 to the S-GW.
 
 ## Features
 
-- **S1AP** — eNB registration, UE attach/detach, TAU, service request, paging, S1/X2 handover
-- **NAS** — full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
-- **S6a** — AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
-- **S11 GTPv2-C** — CSR, MBR, DSR to S-GW/P-GW
-- **S10 GTPv2-C** — inter-MME context transfer (idle-mode TAU across MME pools)
-- **EMM Information** — operator name and NITZ timezone push after attach/TAU
-- **OAM REST API** — eNB, UE, and operator endpoints with embedded React UI and Prometheus metrics
-- **APER codec** — hand-written, reflection-driven; no external ASN.1 library
+- **S1AP** - eNB registration, UE attach/detach, TAU, service request, paging, S1/X2 handover
+- **NAS** - full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
+- **S6a** - AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
+- **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
+- **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
+- **EMM Information** - operator name and NITZ timezone push after attach/TAU
+- **OAM REST API** - eNB, UE, and operator endpoints with embedded React UI and Prometheus metrics
+- **APER codec** - hand-written, reflection-driven; no external ASN.1 library
 
 ## Requirements
 
@@ -81,11 +80,3 @@ The REST API is available at `http://<host>:8085/api/v1` by default. Interactive
 | `GET /api/v1/enodeb` | List connected eNBs |
 | `GET /api/v1/operator` | Operator identity and NITZ config |
 | `GET /metrics` | Prometheus metrics |
-
-## Testing
-
-The primary integration target is [UERANSIM](https://github.com/aligungr/UERANSIM) as a software eNB+UE. A successful Phase 1 attach:
-
-1. UE reaches EMM-REGISTERED
-2. IMSI appears in `GET /api/v1/ue`
-3. VectorCore HSS logs show ULR/ULA for the IMSI
