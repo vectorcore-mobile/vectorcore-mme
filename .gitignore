@@ -1,0 +1,35 @@
+# Compiled binaries
+mme
+stressor
+bin/
+
+# Go build/test artifacts
+*.test
+*.prof
+coverage.txt
+/vendor/
+
+# Config files with real credentials and local addresses
+config.yaml
+config/mme.yaml
+
+# HSS/operator data exports — may contain SIM keys (Ki/OPc)
+hss-backup-*.json
+
+# Claude Code local settings and project instructions
+.claude/
+CLAUDE.md
+component-design-reference.md
+
+# Editor and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+log/

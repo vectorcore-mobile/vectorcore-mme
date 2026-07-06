@@ -1,0 +1,14 @@
+[Unit]
+Description=VectorCore MME
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vectorcore
+ExecStart=/opt/vectorcore/bin/mme -c /opt/vectorcore/etc/mme.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,79 @@
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+  mmegi: 1
+  mmec: 1
+  tai_list:
+    - mcc: "001"
+      mnc: "01"
+      tac: 1
+
+s1ap:
+  bind_address: "0.0.0.0"
+  bind_port: 36412
+  sctp_streams: 2
+
+s6a:
+  enabled: true
+  # Client mode: connect outbound to the VectorCore HSS.
+  hss_address: "127.0.0.2:3868"
+  # Server mode (alternative): uncomment to listen instead.
+  # bind_address: "127.0.0.2"
+  # bind_port: 3868
+  retry_delay: "5s"
+
+s10:
+  enabled: false
+  bind_address: "0.0.0.0"
+  bind_port: 2124
+  # peers:
+  #   - name: "peer-mme"
+  #     mmec: 2
+  #     address: "10.0.0.2:2124"
+
+s11:
+  enabled: true
+  sgw_address: "127.0.0.3:2123"  # S-GW S11 control-plane address
+  pgw_address: "127.0.0.4"       # P-GW S5/S8 GTP-C address
+  bind_address: "127.0.0.1"      # MME S11 local bind IP
+  bind_port: 2123
+
+database:
+  db_type: "postgres"
+  server: "localhost"
+  port: 5432
+  username: "mme"
+  password: "changeme"
+  database: "mme"
+  pool_size: 30
+  pool_idle: 10
+
+logging:
+  level: "info"
+  # file: "/opt/vectorcore/log/mme.log"
+
+api:
+  enabled: true
+  bind_address: "0.0.0.0"
+  bind_port: 8085
+
+security:
+  integrity_algorithms: ["EIA2", "EIA1", "EIA0"]
+  ciphering_algorithms: ["EEA2", "EEA1", "EEA0"]
+
+# operator:
+#   name:
+#     full: "Example Network"
+#     short: "ExNet"
+#     show_full: true
+#     show_short: true
+#   nitz:
+#     enabled: true
+#     timezone_offset_minutes: 60
+#     daylight_saving: 1
+#   emm_information:
+#     enabled: true
+#     send_after_attach: true
+#     send_after_tau: true
