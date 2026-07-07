@@ -1,0 +1,199 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
+
+	"github.com/vectorcore/mme/internal/api"
+	"github.com/vectorcore/mme/internal/config"
+	s6a "github.com/vectorcore/mme/internal/diameter/s6a"
+	s10server "github.com/vectorcore/mme/internal/gtpv2/s10"
+	s11client "github.com/vectorcore/mme/internal/gtpv2/s11"
+	"github.com/vectorcore/mme/internal/models"
+	"github.com/vectorcore/mme/internal/peertracker"
+	dbstore "github.com/vectorcore/mme/internal/repository/postgres"
+	"github.com/vectorcore/mme/internal/s1ap"
+	"github.com/vectorcore/mme/internal/uecontext"
+)
+
+func main() {
+	cfgPath := flag.String("c", "config/mme.yaml", "path to config file")
+	flag.Parse()
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	log := buildLogger(cfg.Logging)
+	defer func() { _ = log.Sync() }()
+
+	log.Info("VectorCore MME starting",
+		zap.String("origin_host", cfg.NF.OriginHost),
+		zap.String("origin_realm", cfg.NF.OriginRealm))
+
+	db, err := openDB(cfg.Database)
+	if err != nil {
+		log.Fatal("database open failed", zap.Error(err))
+	}
+	if err := db.AutoMigrate(models.AllModels()...); err != nil {
+		log.Fatal("database migrate failed", zap.Error(err))
+	}
+
+	store := dbstore.New(db)
+	ueManager := uecontext.NewManager()
+	enbTracker := peertracker.New()
+
+	errCh := make(chan error, 4)
+
+	// S6a Diameter client (connects to HSS)
+	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.NF, ueManager, nil, log)
+	// When S6a is disabled, s1apSrv uses NoopS6aClient so inter-MME TAU skips ULR.
+	var s6aClient s1ap.S6aClient = s1ap.NoopS6aClient{}
+	if cfg.S6a.Enabled {
+		s6aClient = s6aHandlers
+	}
+
+	// S11 GTPv2-C client (connects to S-GW)
+	var s11c s1ap.S11Client = s1ap.NoopS11Client{}
+	var s11LocalIP []byte = net.ParseIP("127.0.0.1").To4()
+	var pgwIP []byte = net.ParseIP("127.0.0.4").To4()
+	if cfg.S11.Enabled {
+		c, err := s11client.NewClient(cfg.S11, log)
+		if err != nil {
+			log.Fatal("s11: init failed", zap.Error(err))
+		}
+		s11c = c
+		if ip := net.ParseIP(cfg.S11.BindAddress).To4(); ip != nil {
+			s11LocalIP = ip
+		}
+		if ip := net.ParseIP(cfg.S11.PGWAddress).To4(); ip != nil {
+			pgwIP = ip
+		}
+		go func() { errCh <- c.Start() }()
+		// Wire s11 → s1ap result callbacks after s1apSrv is created below.
+	}
+
+	// S10 GTPv2-C server (inter-MME context transfer)
+	var s10c s1ap.S10Client = s1ap.NoopS10Client{}
+	if cfg.S10.Enabled {
+		srv, err := s10server.NewServer(cfg.S10, log)
+		if err != nil {
+			log.Fatal("s10: init failed", zap.Error(err))
+		}
+		s10c = srv
+		// Handler is wired after s1apSrv is created below.
+		go func() { errCh <- srv.Start() }()
+	}
+
+	// S1AP server (accepts eNB SCTP connections)
+	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+
+	// Wire result callbacks
+	s6aHandlers.SetResultHandler(s1apSrv)
+	s6aHandlers.SetDetachFn(s1apSrv.HandleNetworkDetach)
+	if cfg.S11.Enabled {
+		if c, ok := s11c.(*s11client.Client); ok {
+			c.SetHandler(s1apSrv)
+		}
+	}
+	if cfg.S10.Enabled {
+		if srv, ok := s10c.(*s10server.Server); ok {
+			srv.SetHandler(s1apSrv)
+		}
+	}
+
+	go func() { errCh <- s1apSrv.Start() }()
+	go func() { errCh <- s6aHandlers.Start() }()
+
+	if cfg.API.Enabled {
+		apiSrv := api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
+		apiSrv.SetPager(s1apSrv)
+		go func() { errCh <- apiSrv.Start() }()
+	}
+
+	// Wait for fatal error or OS signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-errCh:
+		log.Fatal("component exited", zap.Error(err))
+	case sig := <-sigCh:
+		log.Info("mme: shutting down", zap.String("signal", sig.String()))
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		s1apSrv.Shutdown(shutCtx)
+		if cfg.S11.Enabled {
+			if c, ok := s11c.(*s11client.Client); ok {
+				if err := c.Close(); err != nil {
+					log.Warn("mme: s11 close error", zap.Error(err))
+				}
+			}
+		}
+		log.Info("mme: shutdown complete")
+	}
+}
+
+func buildLogger(cfg config.LoggingConfig) *zap.Logger {
+	level := zapcore.InfoLevel
+	if err := level.UnmarshalText([]byte(cfg.Level)); err != nil {
+		level = zapcore.InfoLevel
+	}
+
+	zapCfg := zap.NewProductionConfig()
+	zapCfg.Level = zap.NewAtomicLevelAt(level)
+	if cfg.File != "" {
+		zapCfg.OutputPaths = []string{cfg.File, "stdout"}
+	}
+
+	log, err := zapCfg.Build()
+	if err != nil {
+		panic(fmt.Sprintf("failed to build logger: %v", err))
+	}
+	return log
+}
+
+func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	dsn := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
+	)
+
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gorm open: %w", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("gorm sql.DB: %w", err)
+	}
+
+	if cfg.MaxOpenConns > 0 {
+		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
+	}
+	if cfg.MaxIdleConns > 0 {
+		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	}
+	if cfg.ConnMaxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(time.Duration(cfg.ConnMaxLifetime) * time.Second)
+	}
+
+	return db, nil
+}

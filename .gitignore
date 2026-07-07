@@ -1,6 +1,4 @@
 # Compiled binaries
-mme
-stressor
 bin/
 
 # Go build/test artifacts
