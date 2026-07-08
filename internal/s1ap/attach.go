@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -294,7 +295,7 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 		// Expect plain Auth Response (or Auth Failure)
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
 	case attachStep == uecontext.AttachStepWaitingSMCCplt:
-		// SMC Complete arrives integrity-protected with new EPS security context
+		// SMC Complete arrives integrity-protected and ciphered with the new EPS security context.
 		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal)
 	case attachStep == uecontext.AttachStepWaitingAttachCplt:
 		// Attach Complete arrives integrity-protected (and possibly ciphered)
@@ -328,9 +329,11 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 	}
 
 	log.Debug("s1ap: processNAS",
+		zap.String("direction", "uplink"),
 		zap.Uint8("sec_hdr", result.SecHeaderType),
 		zap.Uint8("pd", result.PD),
-		zap.Uint8("msg_type", result.MsgType))
+		zap.Uint8("msg_type", result.MsgType),
+		zap.String("nas_hex", hex.EncodeToString(raw)))
 
 	switch result.PD {
 	case emm.PDEPSMobilityMgmt:
@@ -451,7 +454,7 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
 	smcPlain := emm.EncodeSecurityModeCommand(intAlg, encAlg, ueCap)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
-	smcProtected, err := nas.EncodeIntegrityProtected(smcPlain, intAlg, knasInt, dlCount)
+	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
 		return fmt.Errorf("processAuthResponse: encode SMC: %w", err)
 	}

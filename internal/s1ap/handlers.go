@@ -188,7 +188,7 @@ func (s *Server) handleMessage(remoteAddr string, data []byte) {
 }
 
 func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
-	ies, err := pdu.DecodeIEContainer(p.Value)
+	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error", zap.String("remote", remoteAddr), zap.Error(err))
 		return
@@ -221,7 +221,7 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 }
 
 func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU) {
-	ies, err := pdu.DecodeIEContainer(p.Value)
+	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error (success)", zap.String("remote", remoteAddr), zap.Error(err))
 		return
@@ -241,7 +241,7 @@ func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU) {
 }
 
 func (s *Server) dispatchUnsuccessful(remoteAddr string, p *pdu.PDU) {
-	ies, err := pdu.DecodeIEContainer(p.Value)
+	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error (unsuccessful)", zap.String("remote", remoteAddr), zap.Error(err))
 		return
@@ -256,6 +256,14 @@ func (s *Server) dispatchUnsuccessful(remoteAddr string, p *pdu.PDU) {
 			zap.Uint8("code", p.ProcedureCode),
 			zap.String("remote", remoteAddr))
 	}
+}
+
+func decodeProcedureIEsCompat(data []byte) ([]pdu.ProtocolIE, error) {
+	ies, err := pdu.DecodeProcedureIEContainer(data)
+	if err == nil {
+		return ies, nil
+	}
+	return pdu.DecodeIEContainer(data)
 }
 
 // handleDisconnect is called when an SCTP association is closed.

@@ -10,6 +10,8 @@ import (
 	"go.uber.org/zap"
 )
 
+const s1apPPID uint32 = 18
+
 // MessageHandler is called for each received SCTP message (one complete S1AP PDU).
 // remoteAddr identifies the sending eNB. sendCh is the channel for sending replies to this eNB.
 type MessageHandler func(remoteAddr string, data []byte)
@@ -80,7 +82,7 @@ func (s *Server) handleConn(conn *sctp.SCTPConn) {
 	// Writer goroutine drains sendCh to the SCTP connection
 	go func() {
 		for data := range sendCh {
-			_, _ = conn.Write(data)
+			_, _ = conn.SCTPWrite(data, &sctp.SndRcvInfo{PPID: s1apPPID})
 		}
 	}()
 
@@ -143,7 +145,7 @@ func (c *Conn) writer() {
 	for {
 		select {
 		case data := <-c.send:
-			_, _ = c.conn.Write(data)
+			_, _ = c.conn.SCTPWrite(data, &sctp.SndRcvInfo{PPID: s1apPPID})
 		case <-c.done:
 			return
 		}

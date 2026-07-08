@@ -353,7 +353,28 @@ func (s *Server) handleInitialContextSetupFailure(remoteAddr string, p *pdu.PDU,
 
 // handleErrorIndication handles an S1AP Error Indication from an eNB.
 func (s *Server) handleErrorIndication(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
-	s.log.Warn("s1ap: Error Indication received", zap.String("remote", remoteAddr))
+	fields := []zap.Field{zap.String("remote", remoteAddr)}
+	for _, ie := range ieList {
+		switch ie.ID {
+		case pdu.IEMMEUES1APID:
+			if id, err := ies.DecodeMMEUEApID(ie.Value); err == nil {
+				fields = append(fields, zap.Uint32("mme_ue_id", id))
+			}
+		case pdu.IEENBS1APID:
+			if id, err := ies.DecodeENBUEApID(ie.Value); err == nil {
+				fields = append(fields, zap.Uint32("enb_ue_id", id))
+			}
+		case pdu.IECause:
+			if group, cause, err := ies.DecodeCause(ie.Value); err == nil {
+				fields = append(fields,
+					zap.Uint8("cause_group", uint8(group)),
+					zap.Uint8("cause", cause))
+			}
+		case pdu.IECriticalityDiagnostics:
+			fields = append(fields, zap.Bool("criticality_diagnostics_present", true))
+		}
+	}
+	s.log.Warn("s1ap: ErrorIndication received", fields...)
 	metrics.S1APMessagesTotal.WithLabelValues("ErrorIndication", "inbound", "ok").Inc()
 }
 
@@ -368,7 +389,7 @@ func (s *Server) sendUEContextReleaseCommandCause(enbAddr string, mmeUEID, enbUE
 	causeValue := ies.EncodeCause(group, cause)
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEUES1APIDs, Criticality: aper.CriticalityReject, Value: idsValue},
-		{ID: pdu.IECause,     Criticality: aper.CriticalityIgnore, Value: causeValue},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcUEContextRelease, aper.CriticalityReject, ieList)
 	s.sendToAddr(enbAddr, msg)

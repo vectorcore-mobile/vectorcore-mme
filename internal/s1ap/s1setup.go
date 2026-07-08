@@ -40,7 +40,7 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 		case pdu.IEeNBname:
 			// VisibleString (optional) — raw APER encoded, just extract if we can
 			r := aper.NewBitReader(ie.Value)
-			name, err := aper.DecodeVisibleString(r, 0, 150)
+			name, err := aper.DecodeVisibleStringExt(r, 1, 150)
 			if err == nil {
 				enbName = name
 			}
@@ -56,7 +56,11 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 		return
 	}
 
-	log = log.With(zap.String("global_enb_id", globalENBID.Serialise()), zap.String("enb_name", enbName))
+	log = log.With(
+		zap.String("global_enb_id", globalENBID.Serialise()),
+		zap.String("global_enb_plmn_raw", fmt.Sprintf("%02X%02X%02X", globalENBID.PLMNRaw[0], globalENBID.PLMNRaw[1], globalENBID.PLMNRaw[2])),
+		zap.String("enb_name", enbName),
+	)
 	log.Info("s1ap: S1 Setup Request")
 
 	// Register the eNB connection
@@ -98,10 +102,15 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 	}()
 
 	// Build S1 Setup Response
-	resp := pdu.BuildSuccessfulOutcome(pdu.ProcS1Setup, aper.CriticalityReject, s.buildS1SetupResponseIEs())
+	resp := pdu.Encode(&pdu.PDU{
+		Type:          pdu.PDUTypeSuccessfulOutcome,
+		ProcedureCode: pdu.ProcS1Setup,
+		Criticality:   aper.CriticalityReject,
+		Value:         pdu.EncodeProcedureIEContainer(s.buildS1SetupResponseIEs()),
+	})
 	s.sendToAddr(remoteAddr, resp)
 
-	log.Info("s1ap: S1 Setup complete",
+	log.Info("s1ap: sent S1 Setup Response",
 		zap.Duration("duration", time.Since(start)))
 	metrics.S1APMessagesTotal.WithLabelValues("S1Setup", "inbound", "success").Inc()
 }
@@ -113,42 +122,38 @@ func (s *Server) buildS1SetupResponseIEs() []pdu.ProtocolIE {
 
 	return []pdu.ProtocolIE{
 		{
-			ID:          pdu.IEGUMMEIList,
+			ID:          pdu.IEServedGUMMEIs,
 			Criticality: aper.CriticalityReject,
 			Value:       gummeiValue,
 		},
 		{
-			ID:          pdu.IEDefaultPagingDRX,
+			ID:          pdu.IERelativeMMECapacity,
 			Criticality: aper.CriticalityIgnore,
-			Value:       ies.EncodePagingDRX(1), // rf64
+			Value:       ies.EncodeRelativeMMECapacity(255),
 		},
 	}
 }
 
 func (s *Server) encodeServedGUMMEIs() []byte {
-	// Encode a GUMMEI list: 1 GUMMEI = {PLMN, MMEGIlist, MMEClist}
-	// This is complex APER — for Phase 1 we use a simplified manual encoding
-	// based on actual byte patterns from S1AP conformance tests.
 	plmn, _ := ies.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
 
-	// SEQUENCE OF (SIZE 1..256) ServedGUMMEIs → count = 1 (8-bit constrained, range 256 → byte-aligned)
 	w := aper.NewBitWriter()
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 256) // count=1
+	// ServedGUMMEIs ::= SEQUENCE (SIZE (1..8)) OF ServedGUMMEIsItem
+	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 8)
 
-	// GUMMEI item: ServedPLMNs (1..6 PLMNs) + ServedGroupIDs (1..65535 IDs) + ServedMMECs (1..256 codes)
-	// ServedPLMNs count: 1..6 → constrained 1..6 → bitsNeeded(6)=3 bits
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 6) // 1 PLMN
-	w.AlignToByte()
-	w.WriteOctets(plmn) // 3-byte PLMN
+	w.WriteBit(0) // ServedGUMMEIsItem SEQUENCE extension = 0
+	w.WriteBit(0) // iE-Extensions absent
 
-	// ServedGroupIDs count: 1..65535 → 16-bit aligned
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 65535) // 1 group ID
-	// Group ID: INTEGER 0..65535 → 2 bytes aligned
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(s.nfCfg.MMEGI), 0, 65535)
+	// ServedPLMNs ::= SEQUENCE (SIZE (1..32)) OF OCTET STRING (SIZE (3))
+	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 32)
+	_ = aper.EncodeOctetString(w, plmn, 3, 3)
 
-	// ServedMMECs count: 1..256 → constrained 1..256 → byte-aligned
+	// ServedGroupIDs ::= SEQUENCE (SIZE (1..65535)) OF OCTET STRING (SIZE (2))
+	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 65535)
+	_ = aper.EncodeOctetString(w, []byte{byte(s.nfCfg.MMEGI >> 8), byte(s.nfCfg.MMEGI)}, 2, 2)
+
+	// ServedMMECs ::= SEQUENCE (SIZE (1..256)) OF OCTET STRING (SIZE (1))
 	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 256)
-	// MME Code: OCTET STRING (SIZE 1) → 1 byte, fixed-length
 	_ = aper.EncodeOctetString(w, []byte{s.nfCfg.MMEC}, 1, 1)
 
 	return w.Bytes()
@@ -162,7 +167,12 @@ func (s *Server) sendS1SetupFailure(remoteAddr string, p *pdu.PDU, group ies.Cau
 			Value:       ies.EncodeCause(group, value),
 		},
 	}
-	resp := pdu.BuildUnsuccessfulOutcome(pdu.ProcS1Setup, aper.CriticalityReject, failureIEs)
+	resp := pdu.Encode(&pdu.PDU{
+		Type:          pdu.PDUTypeUnsuccessfulOutcome,
+		ProcedureCode: pdu.ProcS1Setup,
+		Criticality:   aper.CriticalityReject,
+		Value:         pdu.EncodeProcedureIEContainer(failureIEs),
+	})
 	s.sendToAddr(remoteAddr, resp)
 	metrics.S1APMessagesTotal.WithLabelValues("S1Setup", "inbound", "error").Inc()
 }
@@ -177,9 +187,76 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 
 // decodeSupportedTAs is a best-effort decoder for the SupportedTAs IE.
 func decodeSupportedTAs(data []byte) []SupportedTA {
-	// This IE is complex APER — we do a simplified decode for Phase 1
-	// Just return empty for now; detailed decoding can be added later
-	return nil
+	if tas, ok := decodeSupportedTAsWithItemHeader(data); ok {
+		return tas
+	}
+	tas, _ := decodeSupportedTAsBareItem(data)
+	return tas
+}
+
+func decodeSupportedTAsWithItemHeader(data []byte) ([]SupportedTA, bool) {
+	r := aper.NewBitReader(data)
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil || count < 1 {
+		return nil, false
+	}
+	out := make([]SupportedTA, 0, int(count))
+	for i := 0; i < int(count); i++ {
+		ext, err := r.ReadBit()
+		if err != nil || ext != 0 {
+			return nil, false
+		}
+		if _, err := r.ReadBit(); err != nil { // iE-Extensions absent/present
+			return nil, false
+		}
+		ta, err := decodeSupportedTAItemFields(r)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, ta)
+	}
+	return out, true
+}
+
+func decodeSupportedTAsBareItem(data []byte) ([]SupportedTA, bool) {
+	r := aper.NewBitReader(data)
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil || count < 1 {
+		return nil, false
+	}
+	out := make([]SupportedTA, 0, int(count))
+	for i := 0; i < int(count); i++ {
+		ta, err := decodeSupportedTAItemFields(r)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, ta)
+	}
+	return out, true
+}
+
+func decodeSupportedTAItemFields(r *aper.BitReader) (SupportedTA, error) {
+	tacBytes, err := aper.DecodeOctetString(r, 2, 2)
+	if err != nil {
+		return SupportedTA{}, err
+	}
+	plmnCount, err := aper.DecodeConstrainedWholeNumber(r, 1, 6)
+	if err != nil {
+		return SupportedTA{}, err
+	}
+	ta := SupportedTA{TAC: uint16(tacBytes[0])<<8 | uint16(tacBytes[1])}
+	for i := 0; i < int(plmnCount); i++ {
+		plmn, err := aper.DecodeOctetString(r, 3, 3)
+		if err != nil {
+			return SupportedTA{}, err
+		}
+		mcc, mnc, err := ies.DecodePLMN(plmn)
+		if err != nil {
+			return SupportedTA{}, err
+		}
+		ta.BroadcastPLMNs = append(ta.BroadcastPLMNs, BroadcastPLMN{MCC: mcc, MNC: mnc})
+	}
+	return ta, nil
 }
 
 // sendToAddr sends raw bytes to the given remote address.

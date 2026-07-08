@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -466,6 +467,16 @@ var _ = fmt.Sprintf
 
 // sendDownlinkNASTransport sends a plain (not-yet-security-wrapped) NAS PDU via DL NAS Transport.
 func (s *Server) sendDownlinkNASTransport(enbAddr string, mmeUEID, enbUEID uint32, nasPDU []byte) {
+	if len(nasPDU) > 0 {
+		secHdr, pd, _ := emm.DecodeSecurityHeader(nasPDU)
+		s.log.Debug("s1ap: sending downlink NAS",
+			zap.String("direction", "downlink"),
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("enb_ue_id", enbUEID),
+			zap.Uint8("sec_hdr", secHdr),
+			zap.Uint8("pd", pd),
+			zap.String("nas_hex", hex.EncodeToString(nasPDU)))
+	}
 	if err := s.SendDownlinkNAS(mmeUEID, nasPDU); err != nil {
 		// Fall back to direct send if the UE context no longer has a route
 		s.log.Warn("s1ap: sendDownlinkNASTransport via SendDownlinkNAS failed, trying direct",

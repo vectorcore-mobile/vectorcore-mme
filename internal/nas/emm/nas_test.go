@@ -7,6 +7,33 @@ import (
 	"github.com/vectorcore/mme/internal/nas/emm"
 )
 
+// ── Identity ─────────────────────────────────────────────────────────────────
+
+func TestEncodeIdentityRequestIMSI(t *testing.T) {
+	b := emm.EncodeIdentityRequest(emm.IdentityTypeIMSI)
+	want := []byte{0x07, 0x55, 0x01}
+	if !bytes.Equal(b, want) {
+		t.Fatalf("Identity Request: got %x, want %x", b, want)
+	}
+}
+
+func TestDecodeIdentityResponseIMSI(t *testing.T) {
+	const imsi = "001010123456789"
+	mobileID := emm.EPSMobileIdentityIMSI(imsi)
+	body := append([]byte{byte(len(mobileID))}, mobileID...)
+
+	resp, err := emm.DecodeIdentityResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeIdentityResponse: %v", err)
+	}
+	if resp.IdentityType != emm.IdentityTypeIMSI {
+		t.Fatalf("IdentityType: got %d, want %d", resp.IdentityType, emm.IdentityTypeIMSI)
+	}
+	if resp.IMSI != imsi {
+		t.Fatalf("IMSI: got %q, want %q", resp.IMSI, imsi)
+	}
+}
+
 // ── Authentication ────────────────────────────────────────────────────────────
 
 func TestEncodeAuthenticationRequest(t *testing.T) {
