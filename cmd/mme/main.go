@@ -7,12 +7,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
@@ -168,12 +170,12 @@ func buildLogger(cfg config.LoggingConfig) *zap.Logger {
 }
 
 func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
-	)
+	dialector, err := databaseDialector(cfg)
+	if err != nil {
+		return nil, err
+	}
 
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(dialector, &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
 	})
 	if err != nil {
@@ -196,4 +198,23 @@ func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	}
 
 	return db, nil
+}
+
+func databaseDialector(cfg config.DatabaseConfig) (gorm.Dialector, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
+	case "", "postgres", "postgresql":
+		dsn := fmt.Sprintf(
+			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
+		)
+		return postgres.Open(dsn), nil
+	case "sqlite", "sqlite3":
+		dsn := cfg.Database
+		if dsn == "" {
+			dsn = "mme.db"
+		}
+		return sqlite.Open(dsn), nil
+	default:
+		return nil, fmt.Errorf("unsupported database db_type %q", cfg.Type)
+	}
 }

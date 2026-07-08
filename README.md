@@ -19,7 +19,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - Go 1.22+
 - Node.js 18+ (for the web UI)
 - Linux kernel with SCTP support (`sctp` module or built-in)
-- PostgreSQL 14+
+- PostgreSQL 14+ or SQLite
 
 ## Build
 
@@ -52,7 +52,8 @@ Key fields:
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
 | `s6a.hss_address` | VectorCore HSS Diameter endpoint |
 | `s11.sgw_address` | S-GW S11 GTP-C address |
-| `database.*` | PostgreSQL connection |
+| `database.db_type` | Database driver: `postgres` or `sqlite` |
+| `database.*` | Database connection settings. For SQLite, `database.database` is the DB file path. |
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 
 ## Run

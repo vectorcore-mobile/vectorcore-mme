@@ -41,12 +41,15 @@ s11:
   bind_port: 2123
 
 database:
+  # Supported values: "postgres", "sqlite".
   db_type: "postgres"
   server: "localhost"
   port: 5432
   username: "mme"
   password: "changeme"
   database: "mme"
+  # For SQLite, set db_type to "sqlite" and use database as the DB file path.
+  # database: "/opt/vectorcore/var/mme.db"
   pool_size: 30
   pool_idle: 10
 
