@@ -1,18 +1,21 @@
 package s1ap
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/gateway"
+	"github.com/vectorcore/mme/internal/gtpv2"
+	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
+	"github.com/vectorcore/mme/internal/metrics"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
-	"github.com/vectorcore/mme/internal/gtpv2"
-	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
-	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -76,7 +79,19 @@ func (s *Server) HandleAIAResult(mmeUEID uint32, rand, xres, autn, kasme []byte,
 // When S11 is enabled it sends a Create Session Request; when disabled (noop client)
 // it builds an Attach Accept with a PDN Connectivity Reject immediately.
 func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr error) {
+	var apnCfg *gateway.APNConfiguration
+	if apn != "" {
+		apnCfg = &gateway.APNConfiguration{ServiceSelection: apn}
+	}
+	s.HandleULAResultWithAPNConfig(mmeUEID, msisdn, apnCfg, ulaErr)
+}
+
+func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apnConfig *gateway.APNConfiguration, ulaErr error) {
 	log := s.log.With(zap.Uint32("mme_ue_id", mmeUEID))
+	apn := ""
+	if apnConfig != nil {
+		apn = apnConfig.ServiceSelection
+	}
 
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
@@ -183,6 +198,8 @@ func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr erro
 	ue.LocalS11TEID = localTEID
 	ue.DefaultEBI = 5
 	ue.AttachStep = uecontext.AttachStepWaitingCSRsp
+	enbAddr := ue.ENBGlobalID
+	enbUEID := ue.ENBS1APID
 	ecgiplmn := ue.ECGIPLMN
 	ecgieci := ue.ECGIECI
 	var ulitac uint16
@@ -193,6 +210,33 @@ func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr erro
 
 	plmn := s.buildPLMN()
 	localIP := net.IP(s.s11LocalIP)
+	sgwAddr := ""
+	pgwIP := net.IP(s.pgwIP)
+	if s.gatewaySel != nil {
+		selCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		sgwSel, err := s.gatewaySel.SelectSGW(selCtx, ulitac)
+		if err != nil {
+			log.Error("s1ap: SGW selection failed", zap.Error(err))
+			rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
+			s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+			s.ueManager.Remove(ue)
+			return
+		}
+		pgwSel, err := s.gatewaySel.SelectPGW(selCtx, apn, apnConfig)
+		if err != nil {
+			log.Error("s1ap: PGW selection failed", zap.Error(err))
+			rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
+			s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+			s.ueManager.Remove(ue)
+			return
+		}
+		sgwAddr = sgwSel.UDPAddr()
+		pgwIP = pgwSel.Address
+		ue.Lock()
+		ue.SGWAddress = sgwAddr
+		ue.Unlock()
+	}
 	// Use ECGI PLMN for ULI; fall back to serving network PLMN if not set.
 	uliPLMN := ecgiplmn
 	if uliPLMN == ([3]byte{}) {
@@ -200,6 +244,7 @@ func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr erro
 	}
 
 	csr := &gtpv2.CreateSessionRequest{
+		SGWAddress:       sgwAddr,
 		IMSI:             imsi,
 		MSISDN:           msisdn,
 		APN:              apn,
@@ -207,7 +252,7 @@ func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr erro
 		ServingNetwork:   plmn,
 		LocalS11TEID:     localTEID,
 		LocalS11IP:       localIP,
-		PGWIP:            net.IP(s.pgwIP),
+		PGWIP:            pgwIP,
 		ULIPLMN:          uliPLMN,
 		ULITAC:           ulitac,
 		ULIECI:           ecgieci,
@@ -368,6 +413,7 @@ func (s *Server) sendDeleteSession(ue *uecontext.Context) {
 	ue.Lock()
 	sgwcTEID := ue.SGWC_TEID
 	ue.SGWC_TEID = 0 // prevent double-send across processDetach → handleUEContextReleaseComplete
+	sgwAddr := ue.SGWAddress
 	ebi := ue.DefaultEBI
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID
@@ -383,7 +429,7 @@ func (s *Server) sendDeleteSession(ue *uecontext.Context) {
 		zap.String("apn", apn),
 		zap.Uint8("ebi", ebi),
 		zap.Uint32("sgwc_teid", sgwcTEID))
-	if err := s.s11.SendDSR(mmeID, &gtpv2.DeleteSessionRequest{SGWC_TEID: sgwcTEID, EBI: ebi}); err != nil {
+	if err := s.s11.SendDSR(mmeID, &gtpv2.DeleteSessionRequest{SGWAddress: sgwAddr, SGWC_TEID: sgwcTEID, EBI: ebi}); err != nil {
 		s.log.Warn("s1ap: SendDSR failed", zap.Uint32("mme_ue_id", mmeID), zap.Error(err))
 	}
 }

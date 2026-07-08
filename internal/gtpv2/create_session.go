@@ -8,20 +8,21 @@ import (
 // CreateSessionRequest holds the parameters for a GTPv2-C Create Session Request
 // (TS 29.274 §7.2.1). The MME sends this to the S-GW on S11.
 type CreateSessionRequest struct {
-	IMSI           string
-	MSISDN         string
-	APN            string
-	RATType        uint8
-	ServingNetwork [3]byte // PLMN BCD (MCC+MNC encoded per TS 24.008 §10.5.1.13)
-	LocalS11TEID   uint32
-	LocalS11IP     net.IP
-	PGWIP          net.IP  // PGW S5/S8 GTP-C address (mandatory for S-GW to forward to PGW)
-	ULIPLMN        [3]byte // PLMN for ULI TAI + ECGI
-	ULITAC         uint16  // Tracking Area Code
-	ULIECI         uint32  // 28-bit E-UTRAN Cell Identity
-	PDNType        uint8
-	DefaultEBI     uint8
-	BearerQCI      uint8
+	SGWAddress       string
+	IMSI             string
+	MSISDN           string
+	APN              string
+	RATType          uint8
+	ServingNetwork   [3]byte // PLMN BCD (MCC+MNC encoded per TS 24.008 §10.5.1.13)
+	LocalS11TEID     uint32
+	LocalS11IP       net.IP
+	PGWIP            net.IP  // PGW S5/S8 GTP-C address (mandatory for S-GW to forward to PGW)
+	ULIPLMN          [3]byte // PLMN for ULI TAI + ECGI
+	ULITAC           uint16  // Tracking Area Code
+	ULIECI           uint32  // 28-bit E-UTRAN Cell Identity
+	PDNType          uint8
+	DefaultEBI       uint8
+	BearerQCI        uint8
 	UplinkAMBRKbps   uint32
 	DownlinkAMBRKbps uint32
 }

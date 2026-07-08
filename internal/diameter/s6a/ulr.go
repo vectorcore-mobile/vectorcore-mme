@@ -10,6 +10,7 @@ import (
 	"github.com/fiorix/go-diameter/v4/diam/dict"
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
 )
 
@@ -53,14 +54,24 @@ func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 
 // handleULA processes an Update-Location-Answer from the HSS.
 func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
+	type MIPHomeAgentHost struct {
+		DestinationRealm datatype.DiameterIdentity `avp:"Destination-Realm"`
+		DestinationHost  datatype.DiameterIdentity `avp:"Destination-Host"`
+	}
+	type MIP6AgentInfo struct {
+		MIPHomeAgentAddress []datatype.Address `avp:"MIP-Home-Agent-Address"`
+		MIPHomeAgentHost    MIPHomeAgentHost   `avp:"MIP-Home-Agent-Host"`
+	}
 	type APNConfig struct {
-		ContextIdentifier uint32 `avp:"Context-Identifier"`
-		ServiceSelection  string `avp:"Service-Selection"`
+		ContextIdentifier   uint32        `avp:"Context-Identifier"`
+		ServiceSelection    string        `avp:"Service-Selection"`
+		MIP6AgentInfo       MIP6AgentInfo `avp:"MIP6-Agent-Info"`
+		PDNGWAllocationType int32         `avp:"PDN-GW-Allocation-Type"`
 	}
 	type APNProfile struct {
-		ContextIdentifier                uint32      `avp:"Context-Identifier"`
-		AllAPNConfigurationsIncluded     int32       `avp:"All-APN-Configurations-Included-Indicator"`
-		APNConfiguration                 []APNConfig `avp:"APN-Configuration"`
+		ContextIdentifier            uint32      `avp:"Context-Identifier"`
+		AllAPNConfigurationsIncluded int32       `avp:"All-APN-Configurations-Included-Indicator"`
+		APNConfiguration             []APNConfig `avp:"APN-Configuration"`
 	}
 	type SubscriptionData struct {
 		MSISDN                  datatype.OctetString `avp:"MSISDN"`
@@ -101,7 +112,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		h.log.Warn("s6a: ULA failure",
 			zap.Uint32("result_code", errCode),
 			zap.Uint32("mme_ue_id", mmeUEID))
-		h.nas.HandleULAResult(mmeUEID, "", "",
+		h.nas.HandleULAResultWithAPNConfig(mmeUEID, "", nil,
 			fmt.Errorf("s6a: ULA result code %d", errCode))
 		return
 	}
@@ -110,16 +121,28 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	msisdn := decodeMSISDN([]byte(ula.SubscriptionData.MSISDN))
 
 	// Extract default APN from the first APN configuration
-	apn := ""
+	var apnCfg *gateway.APNConfiguration
 	if len(ula.SubscriptionData.APNConfigurationProfile.APNConfiguration) > 0 {
-		apn = ula.SubscriptionData.APNConfigurationProfile.APNConfiguration[0].ServiceSelection
+		selected := ula.SubscriptionData.APNConfigurationProfile.APNConfiguration[0]
+		apnCfg = &gateway.APNConfiguration{
+			ServiceSelection:    selected.ServiceSelection,
+			MIPHomeAgentHost:    string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
+			PDNGWAllocationType: &selected.PDNGWAllocationType,
+		}
+		if len(selected.MIP6AgentInfo.MIPHomeAgentAddress) > 0 {
+			apnCfg.MIPHomeAgentAddress = []byte(selected.MIP6AgentInfo.MIPHomeAgentAddress[0])
+		}
+	}
+	apn := ""
+	if apnCfg != nil {
+		apn = apnCfg.ServiceSelection
 	}
 
 	h.log.Info("s6a: ULA received",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("msisdn", msisdn),
 		zap.String("apn", apn))
-	h.nas.HandleULAResult(mmeUEID, msisdn, apn, nil)
+	h.nas.HandleULAResultWithAPNConfig(mmeUEID, msisdn, apnCfg, nil)
 }
 
 // decodeMSISDN decodes a BCD-encoded MSISDN OctetString from the HSS.

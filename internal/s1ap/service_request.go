@@ -171,6 +171,7 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 	imsi := ue.IMSI
 
 	mbrSGWCTEID := ue.SGWC_TEID
+	mbrSGWAddr := ue.SGWAddress
 	mbrEBI := ue.DefaultEBI
 	mbrENBUTEID := ue.ENBU_TEID
 	mbrENBUIP := append(net.IP(nil), ue.ENBU_IP...)
@@ -240,11 +241,12 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 
 	if mbrSGWCTEID != 0 && mbrEBI != 0 && mbrENBUTEID != 0 {
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWC_TEID: mbrSGWCTEID,
-			EBI:       mbrEBI,
-			ENBU_TEID: mbrENBUTEID,
-			ENBU_IP:   mbrENBUIP,
-			RATType:   gtpv2.RATTypeEUTRAN,
+			SGWAddress: mbrSGWAddr,
+			SGWC_TEID:  mbrSGWCTEID,
+			EBI:        mbrEBI,
+			ENBU_TEID:  mbrENBUTEID,
+			ENBU_IP:    mbrENBUIP,
+			RATType:    gtpv2.RATTypeEUTRAN,
 		}
 		go func() {
 			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {

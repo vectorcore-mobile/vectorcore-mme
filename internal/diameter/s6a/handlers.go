@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -35,7 +36,7 @@ const (
 // S6a calls these methods asynchronously when Diameter answers arrive.
 type ResultHandler interface {
 	HandleAIAResult(mmeUEID uint32, rand, xres, autn, kasme []byte, err error)
-	HandleULAResult(mmeUEID uint32, msisdn, apn string, err error)
+	HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apnConfig *gateway.APNConfiguration, err error)
 }
 
 // Handlers is the S6a Diameter client.

@@ -295,6 +295,7 @@ func (s *Server) sendInterMMETAUMBR(ue *uecontext.Context, log *zap.Logger) {
 		return // no S11 session to update
 	}
 	ebi := ue.DefaultEBI
+	sgwAddr := ue.SGWAddress
 	enbuTEID := ue.ENBU_TEID
 	enbuIP := ue.ENBU_IP
 	mmeUEID := ue.MMEUES1APID
@@ -303,13 +304,14 @@ func (s *Server) sendInterMMETAUMBR(ue *uecontext.Context, log *zap.Logger) {
 	ue.Unlock()
 
 	req := &gtpv2.ModifyBearerRequest{
-		SGWC_TEID: sgwcTEID,
-		EBI:       ebi,
-		ENBU_TEID: enbuTEID,
-		ENBU_IP:   enbuIP,
-		RATType:   gtpv2.RATTypeEUTRAN,
-		MMEC_TEID: localTEID,
-		MMEC_IP:   net.IP(s.s11LocalIP),
+		SGWAddress: sgwAddr,
+		SGWC_TEID:  sgwcTEID,
+		EBI:        ebi,
+		ENBU_TEID:  enbuTEID,
+		ENBU_IP:    enbuIP,
+		RATType:    gtpv2.RATTypeEUTRAN,
+		MMEC_TEID:  localTEID,
+		MMEC_IP:    net.IP(s.s11LocalIP),
 	}
 	if err := s.s11.SendMBR(mmeUEID, req); err != nil {
 		log.Warn("s10: inter-MME TAU MBR failed (data path may degrade)",
