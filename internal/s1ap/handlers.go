@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/gtpv2/s10"
 	"github.com/vectorcore/mme/internal/metrics"
@@ -48,7 +49,7 @@ type NoopS6aClient struct{}
 
 func (NoopS6aClient) SendAIR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (NoopS6aClient) SendULR(_ string, _ [3]byte, _ uint32) error { return nil }
-func (NoopS6aClient) SendPUR(_ string) error                       { return nil }
+func (NoopS6aClient) SendPUR(_ string) error                      { return nil }
 
 // NoopS11Client is used when S11 is disabled. All operations succeed silently.
 type NoopS11Client struct{}
@@ -75,7 +76,7 @@ func (NoopS10Client) SendContextRequest(_ string, _ *s10.ContextRequest) (<-chan
 	return nil, errors.New("s10: disabled")
 }
 func (NoopS10Client) SendContextAcknowledge(_ string, _ uint32, _ uint8) error { return nil }
-func (NoopS10Client) LocalAddr() string                                         { return "" }
+func (NoopS10Client) LocalAddr() string                                        { return "" }
 
 // Server is the S1AP layer: manages eNB connections and dispatches messages.
 type Server struct {
@@ -93,6 +94,7 @@ type Server struct {
 	s11        S11Client
 	s11LocalIP []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
 	pgwIP      []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
+	gatewaySel *gateway.Selector
 	log        *zap.Logger
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
@@ -137,6 +139,10 @@ func NewServer(
 		pgwIP:      pgwIP,
 		log:        log,
 	}
+}
+
+func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
+	s.gatewaySel = selector
 }
 
 // HandleNetworkDetach is called by the S6a layer (CLR) to trigger cleanup for a HSS-initiated detach.

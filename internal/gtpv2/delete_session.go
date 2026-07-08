@@ -5,8 +5,9 @@ import "fmt"
 // DeleteSessionRequest holds the parameters for a GTPv2-C Delete Session Request
 // (TS 29.274 §7.2.9.1). Sent to S-GW on detach or UE context release.
 type DeleteSessionRequest struct {
-	SGWC_TEID uint32 // S-GW C-plane TEID — goes in message header
-	EBI       uint8
+	SGWAddress string
+	SGWC_TEID  uint32 // S-GW C-plane TEID — goes in message header
+	EBI        uint8
 }
 
 // Encode returns the wire bytes for this DSR with the given sequence number.

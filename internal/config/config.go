@@ -9,16 +9,17 @@ import (
 )
 
 type Config struct {
-	NF       NFConfig       `yaml:"nf"`
-	S1AP     S1APConfig     `yaml:"s1ap"`
-	S6a      S6aConfig      `yaml:"s6a"`
-	S10      S10Config      `yaml:"s10"`
-	S11      S11Config      `yaml:"s11"`
-	Database DatabaseConfig `yaml:"database"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	API      APIConfig      `yaml:"api"`
-	Security SecurityConfig `yaml:"security"`
-	Operator OperatorConfig `yaml:"operator"`
+	NF               NFConfig               `yaml:"nf"`
+	S1AP             S1APConfig             `yaml:"s1ap"`
+	S6a              S6aConfig              `yaml:"s6a"`
+	S10              S10Config              `yaml:"s10"`
+	S11              S11Config              `yaml:"s11"`
+	GatewaySelection GatewaySelectionConfig `yaml:"gateway_selection"`
+	Database         DatabaseConfig         `yaml:"database"`
+	Logging          LoggingConfig          `yaml:"logging"`
+	API              APIConfig              `yaml:"api"`
+	Security         SecurityConfig         `yaml:"security"`
+	Operator         OperatorConfig         `yaml:"operator"`
 }
 
 // OperatorConfig holds network identity and NITZ settings pushed to UEs via EMM Information.
@@ -47,29 +48,65 @@ type OperatorConfig struct {
 
 // S10Config holds the GTPv2-C S10 interface configuration (MME ↔ MME context transfer).
 type S10Config struct {
-	Enabled     bool           `yaml:"enabled"`
-	BindAddress string         `yaml:"bind_address"` // default "0.0.0.0"
-	BindPort    int            `yaml:"bind_port"`    // default 2124
+	Enabled     bool            `yaml:"enabled"`
+	BindAddress string          `yaml:"bind_address"` // default "0.0.0.0"
+	BindPort    int             `yaml:"bind_port"`    // default 2124
 	Peers       []PeerMMEConfig `yaml:"peers"`
 }
 
 // PeerMMEConfig identifies a remote MME reachable over S10.
 type PeerMMEConfig struct {
-	Name  string `yaml:"name"`
-	MMEC  uint8  `yaml:"mmec"`   // peer MME Code (identifies peer within a pool)
-	MMEGI uint16 `yaml:"mmegi"`  // peer MME Group ID (0 = match any)
-	MCC   string `yaml:"mcc"`   // peer PLMN MCC (empty = match local PLMN)
-	MNC   string `yaml:"mnc"`   // peer PLMN MNC (empty = match local PLMN)
+	Name    string `yaml:"name"`
+	MMEC    uint8  `yaml:"mmec"`    // peer MME Code (identifies peer within a pool)
+	MMEGI   uint16 `yaml:"mmegi"`   // peer MME Group ID (0 = match any)
+	MCC     string `yaml:"mcc"`     // peer PLMN MCC (empty = match local PLMN)
+	MNC     string `yaml:"mnc"`     // peer PLMN MNC (empty = match local PLMN)
 	Address string `yaml:"address"` // "ip:port" UDP endpoint
 }
 
 // S11Config holds the GTPv2-C S11 interface configuration (MME ↔ S-GW).
 type S11Config struct {
 	Enabled     bool   `yaml:"enabled"`
-	SGWAddress  string `yaml:"sgw_address"`  // "host:port" e.g. "127.0.0.3:2123"
-	PGWAddress  string `yaml:"pgw_address"`  // PGW/SMF-C S5/S8 GTP-C IP e.g. "127.0.0.4"
 	BindAddress string `yaml:"bind_address"` // local IP for MME S11 socket
 	BindPort    int    `yaml:"bind_port"`    // default 2123
+}
+
+type GatewaySelectionConfig struct {
+	DNS GatewaySelectionDNSConfig `yaml:"dns"`
+	SGW GatewaySelectionSGWConfig `yaml:"sgw"`
+	PGW GatewaySelectionPGWConfig `yaml:"pgw"`
+}
+
+type GatewaySelectionDNSConfig struct {
+	Enabled    bool                           `yaml:"enabled"`
+	RootDomain string                         `yaml:"root_domain"`
+	SGWEnabled bool                           `yaml:"sgw_enabled"`
+	PGWEnabled bool                           `yaml:"pgw_enabled"`
+	Resolver   GatewaySelectionResolverConfig `yaml:"resolver"`
+	Cache      GatewaySelectionCacheConfig    `yaml:"cache"`
+}
+
+type GatewaySelectionResolverConfig struct {
+	Servers    []string      `yaml:"servers"`
+	Timeout    time.Duration `yaml:"timeout"`
+	Retries    int           `yaml:"retries"`
+	PreferIPv6 bool          `yaml:"prefer_ipv6"`
+}
+
+type GatewaySelectionCacheConfig struct {
+	Enabled     bool          `yaml:"enabled"`
+	MinTTL      time.Duration `yaml:"min_ttl"`
+	MaxTTL      time.Duration `yaml:"max_ttl"`
+	NegativeTTL time.Duration `yaml:"negative_ttl"`
+}
+
+type GatewaySelectionSGWConfig struct {
+	SGWAddress string `yaml:"sgw_address"`
+}
+
+type GatewaySelectionPGWConfig struct {
+	PGWAddress      string `yaml:"pgw_address"`
+	PreferS6AStatic bool   `yaml:"prefer_s6a_static"`
 }
 
 type NFConfig struct {
@@ -91,7 +128,7 @@ type TAIItem struct {
 type S1APConfig struct {
 	BindAddress string `yaml:"bind_address"`
 	BindPort    int    `yaml:"bind_port"`
-	SCTPStreams  int    `yaml:"sctp_streams"`
+	SCTPStreams int    `yaml:"sctp_streams"`
 }
 
 type S6aConfig struct {
@@ -150,7 +187,7 @@ func Load(path string) (*Config, error) {
 		S1AP: S1APConfig{
 			BindAddress: "0.0.0.0",
 			BindPort:    36412,
-			SCTPStreams:  2,
+			SCTPStreams: 2,
 		},
 		S6a: S6aConfig{
 			Enabled:    false,
@@ -163,6 +200,23 @@ func Load(path string) (*Config, error) {
 		S11: S11Config{
 			BindAddress: "0.0.0.0",
 			BindPort:    2123,
+		},
+		GatewaySelection: GatewaySelectionConfig{
+			DNS: GatewaySelectionDNSConfig{
+				Resolver: GatewaySelectionResolverConfig{
+					Timeout: 2 * time.Second,
+					Retries: 2,
+				},
+				Cache: GatewaySelectionCacheConfig{
+					Enabled:     true,
+					MinTTL:      30 * time.Second,
+					MaxTTL:      300 * time.Second,
+					NegativeTTL: 10 * time.Second,
+				},
+			},
+			PGW: GatewaySelectionPGWConfig{
+				PreferS6AStatic: true,
+			},
 		},
 		Database: DatabaseConfig{
 			Type:            "postgres",

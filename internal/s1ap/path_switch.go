@@ -63,6 +63,7 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 	ue.Lock()
 	emmState := ue.EMMState
 	sgwcTEID := ue.SGWC_TEID
+	sgwAddr := ue.SGWAddress
 	defaultEBI := ue.DefaultEBI
 	ue.Unlock()
 
@@ -94,11 +95,12 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 	// Kick off MBR + Ack/Failure in a goroutine so we don't block the SCTP receive loop.
 	go func() {
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWC_TEID: sgwcTEID,
-			EBI:       defaultEBI,
-			ENBU_TEID: newTEID,
-			ENBU_IP:   newIP,
-			RATType:   gtpv2.RATTypeEUTRAN,
+			SGWAddress: sgwAddr,
+			SGWC_TEID:  sgwcTEID,
+			EBI:        defaultEBI,
+			ENBU_TEID:  newTEID,
+			ENBU_IP:    newIP,
+			RATType:    gtpv2.RATTypeEUTRAN,
 		}
 		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
 			log.Warn("s1ap: PathSwitch: MBR failed", zap.Error(err))
@@ -259,8 +261,8 @@ func encodeSecurityContextIE(nh []byte, ncc uint8) []byte {
 // sendPathSwitchAck sends S1AP Path Switch Request Acknowledge to the target eNB.
 func (s *Server) sendPathSwitchAck(enbAddr string, mmeUEID, enbUEID uint32, secCtxValue []byte) {
 	ieList := []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID,     Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,       Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
 		{ID: pdu.IESecurityContext, Criticality: aper.CriticalityReject, Value: secCtxValue},
 	}
 	msg := pdu.BuildSuccessfulOutcome(pdu.ProcPathSwitchRequest, aper.CriticalityReject, ieList)
@@ -272,8 +274,8 @@ func (s *Server) sendPathSwitchFailure(enbAddr string, mmeUEID, enbUEID uint32) 
 	causeValue := ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,   Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
-		{ID: pdu.IECause,       Criticality: aper.CriticalityIgnore, Value: causeValue},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeValue},
 	}
 	msg := pdu.BuildUnsuccessfulOutcome(pdu.ProcPathSwitchRequest, aper.CriticalityReject, ieList)
 	s.sendToAddr(enbAddr, msg)
@@ -283,24 +285,24 @@ func (s *Server) sendPathSwitchFailure(enbAddr string, mmeUEID, enbUEID uint32) 
 // Must be called under ue.Lock().
 func buildPathSwitchDBContext(ue *uecontext.Context) *models.UEContext {
 	db := &models.UEContext{
-		MMEUES1APID: ue.MMEUES1APID,
-		IMSI:        ue.IMSI,
-		EMMState:    ue.EMMState.String(),
-		KASME:       append([]byte(nil), ue.KASME...),
-		KNASint:     append([]byte(nil), ue.KNASint...),
-		KNASenc:     append([]byte(nil), ue.KNASenc...),
-		ULNASCount:  uint32(ue.ULNASCount),
-		DLNASCount:  uint32(ue.DLNASCount),
-		IntAlg:      ue.IntAlg,
-		EncAlg:      ue.EncAlg,
-		ENBS1APID:   ue.ENBS1APID,
-		ENBGlobalID: ue.ENBGlobalID,
-		DefaultEBI:  uint32(ue.DefaultEBI),
-		SGWU_TEID:   ue.SGWU_TEID,
-		SGWC_TEID:   ue.SGWC_TEID,
-		ENBU_TEID:   ue.ENBU_TEID,
-		NH:          append([]byte(nil), ue.NH...),
-		NCC:         ue.NCC,
+		MMEUES1APID:  ue.MMEUES1APID,
+		IMSI:         ue.IMSI,
+		EMMState:     ue.EMMState.String(),
+		KASME:        append([]byte(nil), ue.KASME...),
+		KNASint:      append([]byte(nil), ue.KNASint...),
+		KNASenc:      append([]byte(nil), ue.KNASenc...),
+		ULNASCount:   uint32(ue.ULNASCount),
+		DLNASCount:   uint32(ue.DLNASCount),
+		IntAlg:       ue.IntAlg,
+		EncAlg:       ue.EncAlg,
+		ENBS1APID:    ue.ENBS1APID,
+		ENBGlobalID:  ue.ENBGlobalID,
+		DefaultEBI:   uint32(ue.DefaultEBI),
+		SGWU_TEID:    ue.SGWU_TEID,
+		SGWC_TEID:    ue.SGWC_TEID,
+		ENBU_TEID:    ue.ENBU_TEID,
+		NH:           append([]byte(nil), ue.NH...),
+		NCC:          ue.NCC,
 		LastModified: time.Now().UTC().Format(time.RFC3339),
 	}
 	if ue.MSISDN != "" {

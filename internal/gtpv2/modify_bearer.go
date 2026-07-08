@@ -8,11 +8,12 @@ import (
 // ModifyBearerRequest holds the parameters for a GTPv2-C Modify Bearer Request
 // (TS 29.274 §7.2.7). Sent on S11 after the ICS Response delivers the eNB S1-U TEID.
 type ModifyBearerRequest struct {
-	SGWC_TEID uint32 // S-GW C-plane TEID (from CSRsp) — goes in message header
-	EBI       uint8
-	ENBU_TEID uint32
-	ENBU_IP   net.IP
-	RATType   uint8
+	SGWAddress string
+	SGWC_TEID  uint32 // S-GW C-plane TEID (from CSRsp) — goes in message header
+	EBI        uint8
+	ENBU_TEID  uint32
+	ENBU_IP    net.IP
+	RATType    uint8
 	// MMEC_TEID/MMEC_IP: new MME S11 C-plane F-TEID for inter-MME TAU.
 	// When MMEC_TEID != 0, a Sender F-TEID IE (IFTypeS11MME) is included so the SGW
 	// updates its C-plane downlink path to point at the new MME.

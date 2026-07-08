@@ -35,10 +35,30 @@ s10:
 
 s11:
   enabled: true
-  sgw_address: "127.0.0.3:2123"  # S-GW S11 control-plane address
-  pgw_address: "127.0.0.4"       # P-GW S5/S8 GTP-C address
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
+
+gateway_selection:
+  dns:
+    enabled: true
+    root_domain: "epc.mnc001.mcc001.3gppnetwork.org"
+    sgw_enabled: true
+    pgw_enabled: true
+    resolver:
+      servers: []
+      timeout: "2s"
+      retries: 2
+      prefer_ipv6: false
+    cache:
+      enabled: true
+      min_ttl: "30s"
+      max_ttl: "300s"
+      negative_ttl: "10s"
+  sgw:
+    sgw_address: "127.0.0.3:2123"
+  pgw:
+    pgw_address: "127.0.0.4:2123"
+    prefer_s6a_static: true
 
 database:
   # Supported values: "postgres", "sqlite".

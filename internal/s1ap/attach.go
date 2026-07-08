@@ -8,13 +8,13 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/gtpv2"
+	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/models"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
-	"github.com/vectorcore/mme/internal/gtpv2"
-	"github.com/vectorcore/mme/internal/metrics"
-	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -502,6 +502,7 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, log *zap.Logger) e
 	// Snapshot for MBR (sent after Attach Complete per TS 23.401 step 19)
 	mbrENBUTEID := ue.ENBU_TEID
 	mbrENBUIP := append(net.IP(nil), ue.ENBU_IP...)
+	mbrSGWAddr := ue.SGWAddress
 	mbrSGWCTEID := ue.SGWC_TEID
 	mbrDefaultEBI := ue.DefaultEBI
 
@@ -570,11 +571,12 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, log *zap.Logger) e
 	// Send Modify Bearer Request now that UE is registered (TS 23.401 Figure 5.6.1.3-1 step 19).
 	if mbrENBUTEID != 0 && mbrSGWCTEID != 0 && mbrDefaultEBI != 0 {
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWC_TEID: mbrSGWCTEID,
-			EBI:       mbrDefaultEBI,
-			ENBU_TEID: mbrENBUTEID,
-			ENBU_IP:   mbrENBUIP,
-			RATType:   gtpv2.RATTypeEUTRAN,
+			SGWAddress: mbrSGWAddr,
+			SGWC_TEID:  mbrSGWCTEID,
+			EBI:        mbrDefaultEBI,
+			ENBU_TEID:  mbrENBUTEID,
+			ENBU_IP:    mbrENBUIP,
+			RATType:    gtpv2.RATTypeEUTRAN,
 		}
 		go func() {
 			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {

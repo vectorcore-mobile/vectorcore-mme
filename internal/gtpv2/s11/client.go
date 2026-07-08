@@ -31,7 +31,6 @@ type Client struct {
 	cfg     config.S11Config
 	log     *zap.Logger
 	conn    *net.UDPConn
-	sgwAddr *net.UDPAddr
 	handler ResultHandler
 
 	seq        atomic.Uint32
@@ -42,14 +41,9 @@ type Client struct {
 
 // NewClient creates a Client. Call SetHandler before Start to wire up the result callbacks.
 func NewClient(cfg config.S11Config, log *zap.Logger) (*Client, error) {
-	sgwAddr, err := net.ResolveUDPAddr("udp4", cfg.SGWAddress)
-	if err != nil {
-		return nil, fmt.Errorf("s11: resolve sgw address %q: %w", cfg.SGWAddress, err)
-	}
 	return &Client{
-		cfg:     cfg,
-		log:     log,
-		sgwAddr: sgwAddr,
+		cfg: cfg,
+		log: log,
 	}, nil
 }
 
@@ -68,8 +62,7 @@ func (c *Client) Start() error {
 		return fmt.Errorf("s11: bind UDP %v: %w", bindAddr, err)
 	}
 	c.conn = conn
-	c.log.Info("s11: listening", zap.String("addr", conn.LocalAddr().String()),
-		zap.String("sgw", c.sgwAddr.String()))
+	c.log.Info("s11: listening", zap.String("addr", conn.LocalAddr().String()))
 	c.recvLoop()
 	return nil
 }
@@ -97,7 +90,7 @@ func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error 
 	seq := c.nextSeq()
 	buf := req.Encode(seq)
 	c.pendingCSR.Store(seq, pending{mmeUEID: mmeUEID})
-	if err := c.send(buf); err != nil {
+	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingCSR.Delete(seq)
 		metrics.S11MessagesTotal.WithLabelValues("csr", "send_error").Inc()
 		return err
@@ -112,7 +105,7 @@ func (c *Client) SendMBR(mmeUEID uint32, req *gtpv2.ModifyBearerRequest) error {
 	seq := c.nextSeq()
 	buf := req.Encode(seq)
 	c.pendingMBR.Store(seq, pending{mmeUEID: mmeUEID})
-	if err := c.send(buf); err != nil {
+	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingMBR.Delete(seq)
 		metrics.S11MessagesTotal.WithLabelValues("mbr", "send_error").Inc()
 		return err
@@ -127,7 +120,7 @@ func (c *Client) SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error 
 	seq := c.nextSeq()
 	buf := req.Encode(seq)
 	c.pendingDSR.Store(seq, pending{mmeUEID: mmeUEID})
-	if err := c.send(buf); err != nil {
+	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingDSR.Delete(seq)
 		metrics.S11MessagesTotal.WithLabelValues("dsr", "send_error").Inc()
 		return err
@@ -137,8 +130,15 @@ func (c *Client) SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error 
 	return nil
 }
 
-func (c *Client) send(buf []byte) error {
-	_, err := c.conn.WriteToUDP(buf, c.sgwAddr)
+func (c *Client) send(buf []byte, remote string) error {
+	if remote == "" {
+		return fmt.Errorf("s11: missing selected SGW address")
+	}
+	sgwAddr, err := net.ResolveUDPAddr("udp", remote)
+	if err != nil {
+		return fmt.Errorf("s11: resolve selected SGW address %q: %w", remote, err)
+	}
+	_, err = c.conn.WriteToUDP(buf, sgwAddr)
 	return err
 }
 

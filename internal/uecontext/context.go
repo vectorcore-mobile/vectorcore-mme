@@ -62,11 +62,12 @@ type Context struct {
 	APN    string
 
 	// Attach flow sub-step (0=none; see AttachStep* constants)
-	AttachStep     uint8
-	PDNRequestPTI  uint8 // PTI from ESM PDN Connectivity Request
+	AttachStep    uint8
+	PDNRequestPTI uint8 // PTI from ESM PDN Connectivity Request
 
 	// S11 GTPv2-C bearer state (populated after CSRsp)
 	LocalS11TEID uint32
+	SGWAddress   string
 	SGWC_TEID    uint32
 	SGWC_IP      net.IP
 	SGWU_TEID    uint32
@@ -82,8 +83,8 @@ type Context struct {
 
 	// S1 handover state (transient, not persisted to DB)
 	HOState             HOState
-	HOSrcENBAddr        string  // source eNB remote addr (preserved during HO)
-	HOSrcENBS1APID      uint32  // source eNB UE S1AP ID (preserved during HO)
+	HOSrcENBAddr        string // source eNB remote addr (preserved during HO)
+	HOSrcENBS1APID      uint32 // source eNB UE S1AP ID (preserved during HO)
 	HOTargetENBAddr     string
 	HOTargetENBUEID     uint32
 	HOTargetENBU_TEID   uint32 // from E-RABAdmittedList
@@ -101,8 +102,8 @@ type Context struct {
 	timers map[string]*time.Timer
 
 	// Created / last updated
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // NewContext creates a new UE context with an MME UE S1AP ID.
@@ -204,14 +205,14 @@ const (
 
 // AttachStep sub-states within EMM-REGISTERED-INITIATED.
 const (
-	AttachStepNone              uint8 = 0
-	AttachStepWaitingAIA        uint8 = 1 // AIR sent, waiting Authentication-Information-Answer
-	AttachStepWaitingAuthResp   uint8 = 2 // Auth Request sent, waiting Auth Response
-	AttachStepWaitingSMCCplt    uint8 = 3 // Security Mode Command sent, waiting SMC Complete
-	AttachStepWaitingULA        uint8 = 4 // ULR sent, waiting Update-Location-Answer
-	AttachStepWaitingCSRsp      uint8 = 5 // CSR sent to S-GW, waiting Create Session Response
-	AttachStepWaitingICSResp    uint8 = 6 // ICS Request sent, waiting ICS Response
-	AttachStepWaitingAttachCplt  uint8 = 7 // Attach Accept delivered, waiting Attach Complete
+	AttachStepNone                  uint8 = 0
+	AttachStepWaitingAIA            uint8 = 1  // AIR sent, waiting Authentication-Information-Answer
+	AttachStepWaitingAuthResp       uint8 = 2  // Auth Request sent, waiting Auth Response
+	AttachStepWaitingSMCCplt        uint8 = 3  // Security Mode Command sent, waiting SMC Complete
+	AttachStepWaitingULA            uint8 = 4  // ULR sent, waiting Update-Location-Answer
+	AttachStepWaitingCSRsp          uint8 = 5  // CSR sent to S-GW, waiting Create Session Response
+	AttachStepWaitingICSResp        uint8 = 6  // ICS Request sent, waiting ICS Response
+	AttachStepWaitingAttachCplt     uint8 = 7  // Attach Accept delivered, waiting Attach Complete
 	AttachStepWaitingTAUComplete    uint8 = 8  // TAU Accept sent, waiting TAU Complete
 	AttachStepWaitingICSRespSR      uint8 = 9  // ICS Request sent for Service Request re-establishment
 	AttachStepWaitingULAInterMMETAU uint8 = 10 // ULR sent after inter-MME context import, waiting ULA

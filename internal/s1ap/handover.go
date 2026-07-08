@@ -334,6 +334,7 @@ func (s *Server) handleHandoverNotify(remoteAddr string, p *pdu.PDU, ieList []pd
 	srcAddr := ue.HOSrcENBAddr
 	srcENBUEID := ue.HOSrcENBS1APID
 	sgwcTEID := ue.SGWC_TEID
+	sgwAddr := ue.SGWAddress
 	defaultEBI := ue.DefaultEBI
 	newTEID := ue.HOTargetENBU_TEID
 	newIP := append(net.IP(nil), ue.HOTargetENBU_IP...)
@@ -357,11 +358,12 @@ func (s *Server) handleHandoverNotify(remoteAddr string, p *pdu.PDU, ieList []pd
 
 	go func() {
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWC_TEID: sgwcTEID,
-			EBI:       defaultEBI,
-			ENBU_TEID: newTEID,
-			ENBU_IP:   newIP,
-			RATType:   gtpv2.RATTypeEUTRAN,
+			SGWAddress: sgwAddr,
+			SGWC_TEID:  sgwcTEID,
+			EBI:        defaultEBI,
+			ENBU_TEID:  newTEID,
+			ENBU_IP:    newIP,
+			RATType:    gtpv2.RATTypeEUTRAN,
 		}
 		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
 			log.Warn("s1ap: HandoverNotify: MBR failed — UE is on target eNB regardless", zap.Error(err))
@@ -597,16 +599,16 @@ func encodeHOERABList(b *BearerInfo) []byte {
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.EBI), 0, 15)
 
 	// E-RABLevelQoSParameters SEQUENCE
-	w.WriteBit(0) // extension marker
-	w.WriteBit(0) // gbrQosInformation absent
-	w.WriteBit(0) // iE-Extensions absent
+	w.WriteBit(0)                                       // extension marker
+	w.WriteBit(0)                                       // gbrQosInformation absent
+	w.WriteBit(0)                                       // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(w, 9, 0, 255) // QCI=9
 	// AllocationAndRetentionPriority SEQUENCE
-	w.WriteBit(0) // extension marker
-	w.WriteBit(0) // iE-Extensions absent
-	_ = aper.EncodeConstrainedWholeNumber(w, 8, 0, 15)  // priorityLevel=8
-	_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)   // pre-emptionCapability=shall-not-trigger
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)   // pre-emptionVulnerability=pre-emptable
+	w.WriteBit(0)                                      // extension marker
+	w.WriteBit(0)                                      // iE-Extensions absent
+	_ = aper.EncodeConstrainedWholeNumber(w, 8, 0, 15) // priorityLevel=8
+	_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)  // pre-emptionCapability=shall-not-trigger
+	_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)  // pre-emptionVulnerability=pre-emptable
 
 	// transportLayerAddress BIT STRING (SIZE 1..160)
 	w.WriteBit(0) // no extension
@@ -669,14 +671,14 @@ func (s *Server) sendHandoverRequest(
 	intAlgsByte = 1 << (7 - intAlg) // bit for the selected algorithm
 
 	ieList := []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID,                        Criticality: aper.CriticalityReject,  Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEHandoverType,                       Criticality: aper.CriticalityReject,  Value: ies.EncodeHandoverType(0)}, // intralte
-		{ID: pdu.IECause,                              Criticality: aper.CriticalityIgnore,  Value: causeBytes},
-		{ID: pdu.IEUEAggregateMaxBitrate,              Criticality: aper.CriticalityReject,  Value: ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)},
-		{ID: pdu.IEERABToBeSetupListHOReq,             Criticality: aper.CriticalityReject,  Value: erabListValue},
-		{ID: pdu.IESourceToTargetTransparentContainer, Criticality: aper.CriticalityReject,  Value: srcToTgt},
-		{ID: pdu.IEUESecurityCapabilities,             Criticality: aper.CriticalityReject,  Value: ies.EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte)},
-		{ID: pdu.IESecurityContext,                    Criticality: aper.CriticalityReject,  Value: secCtxValue},
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEHandoverType, Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)}, // intralte
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeBytes},
+		{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)},
+		{ID: pdu.IEERABToBeSetupListHOReq, Criticality: aper.CriticalityReject, Value: erabListValue},
+		{ID: pdu.IESourceToTargetTransparentContainer, Criticality: aper.CriticalityReject, Value: srcToTgt},
+		{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: ies.EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte)},
+		{ID: pdu.IESecurityContext, Criticality: aper.CriticalityReject, Value: secCtxValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcHandoverResourceAllocation, aper.CriticalityReject, ieList)
 	s.sendToAddr(targetAddr, msg)
@@ -686,9 +688,9 @@ func (s *Server) sendHandoverRequest(
 // sendHandoverCommand sends S1AP Handover Command to the source eNB.
 func (s *Server) sendHandoverCommand(srcAddr string, mmeUEID, srcENBUEID uint32, tgtToSrc []byte) {
 	ieList := []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID,                       Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,                         Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBUEID)},
-		{ID: pdu.IEHandoverType,                      Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)},
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBUEID)},
+		{ID: pdu.IEHandoverType, Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)},
 		{ID: pdu.IETargetToSourceTransparentContainer, Criticality: aper.CriticalityReject, Value: tgtToSrc},
 	}
 	msg := pdu.BuildSuccessfulOutcome(pdu.ProcHandoverPreparation, aper.CriticalityReject, ieList)
@@ -700,8 +702,8 @@ func (s *Server) sendHandoverCommand(srcAddr string, mmeUEID, srcENBUEID uint32,
 func (s *Server) sendHandoverPrepFailure(srcAddr string, mmeUEID, srcENBUEID uint32, causeBytes []byte) {
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,   Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(srcENBUEID)},
-		{ID: pdu.IECause,       Criticality: aper.CriticalityIgnore, Value: causeBytes},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(srcENBUEID)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeBytes},
 	}
 	msg := pdu.BuildUnsuccessfulOutcome(pdu.ProcHandoverPreparation, aper.CriticalityReject, ieList)
 	s.sendToAddr(srcAddr, msg)

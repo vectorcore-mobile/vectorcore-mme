@@ -21,6 +21,7 @@ import (
 	"github.com/vectorcore/mme/internal/api"
 	"github.com/vectorcore/mme/internal/config"
 	s6a "github.com/vectorcore/mme/internal/diameter/s6a"
+	"github.com/vectorcore/mme/internal/gateway"
 	s10server "github.com/vectorcore/mme/internal/gtpv2/s10"
 	s11client "github.com/vectorcore/mme/internal/gtpv2/s11"
 	"github.com/vectorcore/mme/internal/models"
@@ -72,7 +73,7 @@ func main() {
 	// S11 GTPv2-C client (connects to S-GW)
 	var s11c s1ap.S11Client = s1ap.NoopS11Client{}
 	var s11LocalIP []byte = net.ParseIP("127.0.0.1").To4()
-	var pgwIP []byte = net.ParseIP("127.0.0.4").To4()
+	var pgwIP []byte
 	if cfg.S11.Enabled {
 		c, err := s11client.NewClient(cfg.S11, log)
 		if err != nil {
@@ -82,7 +83,7 @@ func main() {
 		if ip := net.ParseIP(cfg.S11.BindAddress).To4(); ip != nil {
 			s11LocalIP = ip
 		}
-		if ip := net.ParseIP(cfg.S11.PGWAddress).To4(); ip != nil {
+		if ip := net.ParseIP(strings.Split(cfg.GatewaySelection.PGW.PGWAddress, ":")[0]).To4(); ip != nil {
 			pgwIP = ip
 		}
 		go func() { errCh <- c.Start() }()
@@ -103,6 +104,7 @@ func main() {
 
 	// S1AP server (accepts eNB SCTP connections)
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+	s1apSrv.SetGatewaySelector(gateway.NewSelector(*cfg, log))
 
 	// Wire result callbacks
 	s6aHandlers.SetResultHandler(s1apSrv)
