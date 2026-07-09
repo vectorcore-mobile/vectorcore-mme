@@ -205,6 +205,8 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleUplinkNASTransport(remoteAddr, p, ies)
 	case pdu.ProcUEContextReleaseRequest:
 		s.handleUEContextReleaseRequest(remoteAddr, p, ies)
+	case pdu.ProcUECapabilityInfoIndication:
+		s.handleUECapabilityInfoIndication(remoteAddr, p, ies)
 	case pdu.ProcErrorIndication:
 		s.handleErrorIndication(remoteAddr, p, ies)
 	case pdu.ProcReset:

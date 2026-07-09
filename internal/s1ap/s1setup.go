@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -343,19 +344,21 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 
 	if bearer != nil {
 		erabValue = encodeERABList(bearer, nasPDU)
+		ambrValue := ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)
 		ieList = []pdu.ProtocolIE{
 			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 			{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbS1APID)},
-			{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)},
+			{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ambrValue},
 			{ID: pdu.IEERABToBeSetupListCtxtSUReq, Criticality: aper.CriticalityReject, Value: erabValue},
 			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
 			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
 		}
 	} else {
+		ambrValue := ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)
 		ieList = []pdu.ProtocolIE{
 			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 			{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbS1APID)},
-			{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)},
+			{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ambrValue},
 			{ID: pdu.IEERABToBeSetupListCtxtSUReq, Criticality: aper.CriticalityReject, Value: encodeEmptyERABList()},
 			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
 			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
@@ -364,8 +367,74 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 	}
 
 	msg := pdu.BuildInitiatingMessage(pdu.ProcInitialContextSetup, aper.CriticalityReject, ieList)
+	logFields := []zap.Field{
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbS1APID),
+		zap.Strings("ie_list", describeS1APIEList(ieList)),
+		zap.String("ue_ambr_hex", hex.EncodeToString(findS1APIEValue(ieList, pdu.IEUEAggregateMaxBitrate))),
+		zap.Uint64("ue_ambr_downlink", 100000000),
+		zap.Uint64("ue_ambr_uplink", 100000000),
+		zap.String("ics_hex", hex.EncodeToString(msg)),
+	}
+	if bearer != nil {
+		logFields = append(logFields,
+			zap.String("erab_list_hex", hex.EncodeToString(erabValue)),
+			zap.String("erab_item_hex", hex.EncodeToString(firstERABItemValue(erabValue))),
+			zap.String("erab_item_optional_bitmap", fmt.Sprintf("nas_pdu_present=%t ie_extensions_present=false", len(nasPDU) > 0)),
+			zap.String("erab_id_encoded_bits", fmt.Sprintf("extension=0 value=%04b", bearer.EBI&0x0f)),
+			zap.String("qos_encoded_summary", "qci=9 arp_priority=8 preemption_capability=shall-not-trigger preemption_vulnerability=pre-emptable"),
+			zap.String("transport_layer_address", fmt.Sprintf("extension=0 bits=32 ipv4=%s encoded_bitstring=%s", hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)), hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)))),
+			zap.String("gtp_teid_encoded_hex", fmt.Sprintf("%08x", bearer.SGWU_TEID)),
+			zap.Int("nas_pdu_len", len(nasPDU)),
+			zap.String("nas_pdu_hex", hex.EncodeToString(nasPDU)),
+		)
+	}
+	s.log.Debug("s1ap: Initial Context Setup Request encoded", logFields...)
 	s.sendToAddr(enbAddr, msg)
 	return nil
+}
+
+func describeS1APIEList(ieList []pdu.ProtocolIE) []string {
+	out := make([]string, 0, len(ieList))
+	for _, ie := range ieList {
+		out = append(out, fmt.Sprintf("id=%d criticality=%d len=%d", ie.ID, ie.Criticality, len(ie.Value)))
+	}
+	return out
+}
+
+func findS1APIEValue(ieList []pdu.ProtocolIE, id uint16) []byte {
+	for _, ie := range ieList {
+		if ie.ID == id {
+			return ie.Value
+		}
+	}
+	return nil
+}
+
+func firstERABItemValue(erabList []byte) []byte {
+	r := aper.NewBitReader(erabList)
+	if _, err := aper.DecodeConstrainedWholeNumber(r, 1, 256); err != nil {
+		return nil
+	}
+	r.AlignToByte()
+	if _, err := aper.DecodeConstrainedWholeNumber(r, 0, 65535); err != nil {
+		return nil
+	}
+	if _, err := aper.DecodeCriticality(r); err != nil {
+		return nil
+	}
+	item, err := aper.ReadOpenType(r)
+	if err != nil {
+		return nil
+	}
+	return item
+}
+
+func firstIPv4Bytes(ip []byte) []byte {
+	if len(ip) >= 4 {
+		return ip[:4]
+	}
+	return []byte{0, 0, 0, 0}
 }
 
 // encodeEmptyERABList encodes an empty E-RAB-To-Be-Setup list (count=0).

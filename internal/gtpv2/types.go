@@ -5,17 +5,17 @@ package gtpv2
 
 // Message type codes (TS 29.274 Table 6.1-1).
 const (
-	MsgEchoRequest            uint8 = 1
-	MsgEchoResponse           uint8 = 2
-	MsgCreateSessionRequest   uint8 = 32
-	MsgCreateSessionResponse  uint8 = 33
-	MsgModifyBearerRequest    uint8 = 34
-	MsgModifyBearerResponse   uint8 = 35
-	MsgDeleteSessionRequest   uint8 = 36
-	MsgDeleteSessionResponse  uint8 = 37
-	MsgContextRequest         uint8 = 130
-	MsgContextResponse        uint8 = 131
-	MsgContextAcknowledge     uint8 = 132
+	MsgEchoRequest           uint8 = 1
+	MsgEchoResponse          uint8 = 2
+	MsgCreateSessionRequest  uint8 = 32
+	MsgCreateSessionResponse uint8 = 33
+	MsgModifyBearerRequest   uint8 = 34
+	MsgModifyBearerResponse  uint8 = 35
+	MsgDeleteSessionRequest  uint8 = 36
+	MsgDeleteSessionResponse uint8 = 37
+	MsgContextRequest        uint8 = 130
+	MsgContextResponse       uint8 = 131
+	MsgContextAcknowledge    uint8 = 132
 )
 
 // IE type codes (TS 29.274 Table 8.1-1, selected subset).
@@ -27,18 +27,23 @@ const (
 	IETypeAPN                uint8 = 71
 	IETypeAMBR               uint8 = 72
 	IETypeEBI                uint8 = 73
+	IETypeMEI                uint8 = 75
 	IETypeMSISDN             uint8 = 76
 	IETypeIndication         uint8 = 77
+	IETypePCO                uint8 = 78
 	IETypePAA                uint8 = 79
 	IETypeBearerQoS          uint8 = 80
 	IETypeRATType            uint8 = 82
 	IETypeServingNetwork     uint8 = 83
 	IETypeFTEID              uint8 = 87
 	IETypeBearerContext      uint8 = 93
+	IETypeChargingChars      uint8 = 95
 	IETypePDNType            uint8 = 99
 	IETypeMMContext          uint8 = 107 // TS 29.274 §8.38 (EPS Security Context)
 	IETypePDNConnection      uint8 = 109 // TS 29.274 §8.41 (grouped bearer context)
+	IETypeUETimeZone         uint8 = 114
 	IETypeCompleteRequestMsg uint8 = 116 // TS 29.274 §8.47 (raw NAS PDU)
+	IETypeAPNRestriction     uint8 = 127
 	IETypeSelectionMode      uint8 = 128
 )
 
@@ -55,14 +60,47 @@ const (
 	CauseContextNotFound             uint8 = 64
 	CauseInvalidMsgFormat            uint8 = 65
 	CauseServiceNotSupported         uint8 = 68
+	CauseMandatoryIEIncorrect        uint8 = 69
+	CauseMandatoryIEMissing          uint8 = 70
 	CauseAllDynamicAddressesOccupied uint8 = 73
+	CauseConditionalIEMissing        uint8 = 103
 )
+
+func CauseName(cause uint8) string {
+	switch cause {
+	case CauseRequestAccepted:
+		return "Request accepted"
+	case CauseRequestDenied:
+		return "Request denied"
+	case CauseContextNotFound:
+		return "Context not found"
+	case CauseInvalidMsgFormat:
+		return "Invalid message format"
+	case CauseServiceNotSupported:
+		return "Service not supported"
+	case CauseMandatoryIEIncorrect:
+		return "Mandatory IE incorrect"
+	case CauseMandatoryIEMissing:
+		return "Mandatory IE missing"
+	case CauseAllDynamicAddressesOccupied:
+		return "All dynamic addresses are occupied"
+	case CauseConditionalIEMissing:
+		return "Conditional IE missing"
+	default:
+		return "unknown"
+	}
+}
 
 // PDN type values (TS 29.274 §8.34).
 const (
 	PDNTypeIPv4   uint8 = 1
 	PDNTypeIPv6   uint8 = 2
 	PDNTypeIPv4v6 uint8 = 3
+)
+
+// APN Restriction values (TS 29.274 §8.57).
+const (
+	APNRestrictionNoRestriction uint8 = 0
 )
 
 // RAT type values (TS 29.274 §8.17).
@@ -78,19 +116,20 @@ const (
 
 // Selection Mode values (TS 29.274 §8.58).
 const (
-	SelectionModeMS                uint8 = 0
-	SelectionModeNetworkProvided   uint8 = 1
-	SelectionModeNetworkVerified   uint8 = 2
+	SelectionModeMS              uint8 = 0
+	SelectionModeNetworkProvided uint8 = 1
+	SelectionModeNetworkVerified uint8 = 2
 )
 
 // F-TEID interface type codes (TS 29.274 Table 8.22-1).
 const (
-	IFTypeS1UENB        uint8 = 0  // S1-U eNB GTP-U
-	IFTypeS1USGW        uint8 = 1  // S1-U SGW GTP-U
-	IFTypeS11S4SGW      uint8 = 4  // S11/S4 SGW GTP-C
-	IFTypeS11MME        uint8 = 5  // S11 MME GTP-C
-	IFTypeS5S8PGWC      uint8 = 9  // S5/S8 PGW GTP-C (PGW S5/S8 Address for CP or PMIP)
-	IFTypeS10MME        uint8 = 14 // S10 MME GTP-C (inter-MME)
+	IFTypeS1UENB   uint8 = 0  // S1-U eNB GTP-U
+	IFTypeS1USGW   uint8 = 1  // S1-U SGW GTP-U
+	IFTypeS5S8SGWC uint8 = 6  // S5/S8 SGW GTP-C
+	IFTypeS5S8PGWC uint8 = 7  // S5/S8 PGW GTP-C
+	IFTypeS11MME   uint8 = 10 // S11 MME GTP-C
+	IFTypeS11S4SGW uint8 = 11 // S11/S4 SGW GTP-C
+	IFTypeS10MME   uint8 = 12 // S10/N26 MME GTP-C (inter-MME)
 )
 
 // F-TEID instance values used in this implementation.

@@ -37,12 +37,14 @@ func EncodeConstrainedWholeNumber(w *BitWriter, v, lb, ub int64) error {
 		w.AlignToByte()
 		w.WriteBits(val, 16)
 	} else {
-		// constrained whole number with variable-length encoding
-		// encode as minimally-sized unsigned integer
-		byteLen := (n + 7) / 8
+		// Large constrained whole number: encode a length determinant for the
+		// non-negative-binary-integer, followed by the minimal value octets.
+		byteLen := 1
+		if val > 0 {
+			byteLen = (bits.Len64(val) + 7) / 8
+		}
 		w.AlignToByte()
-		// length determinant: (byteLen-1) in 2 bits when byteLen <= 4
-		w.WriteBits(uint64(byteLen-1), 2)
+		w.WriteOctet(byte(byteLen - 1))
 		w.WriteBits(val, byteLen*8)
 	}
 	return nil
@@ -67,11 +69,15 @@ func DecodeConstrainedWholeNumber(r *BitReader, lb, ub int64) (int64, error) {
 		val, err = r.ReadBits(16)
 	} else {
 		r.AlignToByte()
-		lenBits, e := r.ReadBits(2)
+		lenMinusOne, e := r.ReadOctet()
 		if e != nil {
 			return 0, e
 		}
-		byteLen := int(lenBits) + 1
+		byteLen := int(lenMinusOne) + 1
+		maxByteLen := (n + 7) / 8
+		if byteLen > maxByteLen {
+			return 0, fmt.Errorf("aper: constrained integer length %d exceeds maximum %d", byteLen, maxByteLen)
+		}
 		val, err = r.ReadBits(byteLen * 8)
 	}
 	if err != nil {
@@ -119,7 +125,7 @@ func DecodeSemiConstrainedWholeNumber(r *BitReader, lb int64) (int64, error) {
 // expected to be small (X.691 §12.7). Used for extension additions in ENUMERATED.
 func EncodeNormallySmallNonnegativeWholeNumber(w *BitWriter, v int64) {
 	if v < 64 {
-		w.WriteBit(0)         // small (< 64)
+		w.WriteBit(0) // small (< 64)
 		w.WriteBits(uint64(v), 6)
 	} else {
 		w.WriteBit(1) // large

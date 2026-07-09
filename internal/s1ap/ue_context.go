@@ -39,6 +39,22 @@ func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ie
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbUEID))
 
+	if ue, ok := s.findUEByS1APIDs(remoteAddr, mmeUEID, enbUEID); ok {
+		ue.Lock()
+		if mmeUEID == 0 {
+			mmeUEID = ue.MMEUES1APID
+		}
+		if enbUEID == 0 {
+			enbUEID = ue.ENBS1APID
+		}
+		ue.Unlock()
+	}
+	if mmeUEID == 0 {
+		s.log.Warn("s1ap: UE Context Release Request missing resolvable MME UE S1AP ID",
+			zap.String("remote", remoteAddr),
+			zap.Uint32("enb_ue_id", enbUEID))
+		return
+	}
 	s.sendUEContextReleaseCommand(remoteAddr, mmeUEID, enbUEID)
 }
 
@@ -183,18 +199,34 @@ func buildIdleDBContext(ue *uecontext.Context, mmeID uint32, imsi, emmState stri
 // If an E-RAB setup list is present it extracts the eNB S1-U TEID/IP and sends a Modify Bearer Request.
 func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
 	var mmeUEID uint32
+	var enbUEID uint32
+	var erabSetupList []byte
+	var erabFailedList []byte
 
 	for _, ie := range ieList {
-		if ie.ID == pdu.IEMMEUES1APID {
+		switch ie.ID {
+		case pdu.IEMMEUES1APID:
 			id, _ := ies.DecodeMMEUEApID(ie.Value)
 			mmeUEID = id
+		case pdu.IEENBS1APID:
+			id, _ := ies.DecodeENBUEApID(ie.Value)
+			enbUEID = id
+		case pdu.IEERABSetupListCtxtSURes:
+			erabSetupList = append([]byte(nil), ie.Value...)
+		case pdu.IEERABFailedToSetupListCtxtSURes:
+			erabFailedList = append([]byte(nil), ie.Value...)
 		}
 	}
 
 	log := s.log.With(
 		zap.String("remote", remoteAddr),
-		zap.Uint32("mme_ue_id", mmeUEID))
-	log.Info("s1ap: Initial Context Setup Response")
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID))
+	log.Info("s1ap: Initial Context Setup Response",
+		zap.Int("erab_setup_list_len", len(erabSetupList)),
+		zap.String("erab_setup_list_hex", truncateHex(erabSetupList, 96)),
+		zap.Int("erab_failed_to_setup_list_len", len(erabFailedList)),
+		zap.String("erab_failed_to_setup_list_hex", truncateHex(erabFailedList, 96)))
 
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
@@ -202,21 +234,30 @@ func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU
 	}
 
 	// Try to extract the eNB S1-U TEID from the E-RAB setup list (IE 51).
-	var enbTEID uint32
-	var enbIP net.IP
-	for _, ie := range ieList {
-		if ie.ID == pdu.IEERABSetupListCtxtSURes {
-			enbTEID, enbIP = decodeICSResponseERABs(ie.Value)
-			break
+	var erabSetup *icsResponseERABSetup
+	if len(erabSetupList) > 0 {
+		setup, err := decodeICSResponseERABSetup(erabSetupList)
+		if err != nil {
+			log.Warn("s1ap: Initial Context Setup Response E-RAB setup decode failed",
+				zap.Error(err),
+				zap.String("erab_setup_list_hex", truncateHex(erabSetupList, 128)))
+		} else {
+			erabSetup = setup
+			log.Info("s1ap: Initial Context Setup Response E-RAB setup item",
+				zap.Uint8("erab_id", setup.ERABID),
+				zap.String("enb_s1u_ipv4", setup.ENBUIP.String()),
+				zap.Uint32("enb_s1u_teid", setup.ENBUTEID),
+				zap.String("enb_s1u_teid_hex", fmt.Sprintf("0x%08x", setup.ENBUTEID)),
+				zap.String("item_hex", truncateHex(setup.ItemValue, 96)))
 		}
 	}
 
 	ue.Lock()
 	attachStep := ue.AttachStep
 	ue.SetECMState(emm.ECMConnected)
-	if enbTEID != 0 {
-		ue.ENBU_TEID = enbTEID
-		ue.ENBU_IP = enbIP
+	if erabSetup != nil && erabSetup.ENBUTEID != 0 {
+		ue.ENBU_TEID = erabSetup.ENBUTEID
+		ue.ENBU_IP = erabSetup.ENBUIP
 	}
 	if attachStep != uecontext.AttachStepWaitingICSRespSR {
 		ue.AttachStep = uecontext.AttachStepWaitingAttachCplt
@@ -230,6 +271,13 @@ func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU
 	// For the attach path, MBR is sent after Attach Complete (TS 23.401 step 19).
 }
 
+type icsResponseERABSetup struct {
+	ERABID    uint8
+	ENBUTEID  uint32
+	ENBUIP    net.IP
+	ItemValue []byte
+}
+
 // decodeICSResponseERABs parses the E-RABSetupListCtxtSURes IE value to extract
 // the eNB S1-U TEID and IP from the first E-RABSetupItemCtxtSURes.
 //
@@ -240,14 +288,25 @@ func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU
 //	IE 50 value APER-encodes E-RABSetupItemCtxtSURes SEQUENCE:
 //	  ext=0, optional bits, E-RAB-ID(0..15), transportLayerAddress BIT STRING (1..160,...), GTP-TEID(SIZE 4)
 func decodeICSResponseERABs(data []byte) (uint32, net.IP) {
-	if len(data) < 2 {
+	setup, err := decodeICSResponseERABSetup(data)
+	if err != nil {
 		return 0, nil
+	}
+	return setup.ENBUTEID, setup.ENBUIP
+}
+
+func decodeICSResponseERABSetup(data []byte) (*icsResponseERABSetup, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("short E-RABSetupListCtxtSURes")
 	}
 	r := aper.NewBitReader(data)
 
 	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
 	if err != nil || count == 0 {
-		return 0, nil
+		if err != nil {
+			return nil, fmt.Errorf("decode E-RAB setup list count: %w", err)
+		}
+		return nil, fmt.Errorf("empty E-RAB setup list")
 	}
 	r.AlignToByte()
 
@@ -255,47 +314,58 @@ func decodeICSResponseERABs(data []byte) (uint32, net.IP) {
 	// Read one item.
 	ieID, err := aper.DecodeConstrainedWholeNumber(r, 0, 65535)
 	if err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("decode E-RAB setup item IE ID: %w", err)
 	}
 	if uint16(ieID) != pdu.IEERABSetupItemCtxtSURes {
-		return 0, nil
+		return nil, fmt.Errorf("unexpected E-RAB setup item IE ID %d", ieID)
 	}
 	_, err = aper.DecodeCriticality(r)
 	if err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("decode E-RAB setup item criticality: %w", err)
 	}
 	itemBytes, err := aper.ReadOpenType(r)
 	if err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("read E-RAB setup item open type: %w", err)
 	}
 
 	// Decode E-RABSetupItemCtxtSURes SEQUENCE
 	ir := aper.NewBitReader(itemBytes)
 	// extension marker
 	if _, err := ir.ReadBit(); err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("decode E-RAB setup item extension bit: %w", err)
 	}
 	// optional iE-Extensions bit
 	if _, err := ir.ReadBit(); err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("decode E-RAB setup item optional bitmap: %w", err)
 	}
 	// E-RAB-ID (0..15)
-	if _, err := aper.DecodeConstrainedWholeNumber(ir, 0, 15); err != nil {
-		return 0, nil
+	erabID, err := aper.DecodeConstrainedWholeNumber(ir, 0, 15)
+	if err != nil {
+		return nil, fmt.Errorf("decode E-RAB ID: %w", err)
 	}
 	// transportLayerAddress BIT STRING (1..160,...): ext=0, constrained len, then IP bytes
-	extBit, _ := ir.ReadBit()
+	extBit, err := ir.ReadBit()
+	if err != nil {
+		return nil, fmt.Errorf("decode transportLayerAddress extension bit: %w", err)
+	}
+	ir.AlignToByte()
 	var addrBits int64
 	if extBit == 0 {
-		addrBits, _ = aper.DecodeConstrainedWholeNumber(ir, 1, 160)
+		addrBits, err = aper.DecodeConstrainedWholeNumber(ir, 1, 160)
 	} else {
-		addrBits, _ = aper.DecodeConstrainedWholeNumber(ir, 0, 65535)
+		addrBits, err = aper.DecodeConstrainedWholeNumber(ir, 0, 65535)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode transportLayerAddress length: %w", err)
 	}
 	ir.AlignToByte()
 	numBytes := int((addrBits + 7) / 8)
 	addrBytes, err := ir.ReadOctets(numBytes)
 	if err != nil || numBytes < 4 {
-		return 0, nil
+		if err != nil {
+			return nil, fmt.Errorf("read transportLayerAddress: %w", err)
+		}
+		return nil, fmt.Errorf("transportLayerAddress too short: %d bits", addrBits)
 	}
 	ip := net.IP(addrBytes[:4]).To4()
 
@@ -303,10 +373,15 @@ func decodeICSResponseERABs(data []byte) (uint32, net.IP) {
 	ir.AlignToByte()
 	teidBytes, err := ir.ReadOctets(4)
 	if err != nil {
-		return 0, nil
+		return nil, fmt.Errorf("read GTP-TEID: %w", err)
 	}
 	teid := binary.BigEndian.Uint32(teidBytes)
-	return teid, ip
+	return &icsResponseERABSetup{
+		ERABID:    uint8(erabID),
+		ENBUTEID:  teid,
+		ENBUIP:    ip,
+		ItemValue: append([]byte(nil), itemBytes...),
+	}, nil
 }
 
 // handleInitialContextSetupFailure handles an unsuccessful Initial Context Setup.

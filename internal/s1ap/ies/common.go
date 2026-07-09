@@ -333,23 +333,58 @@ func EncodeSecurityKey(kenb []byte) []byte {
 // uplink and downlink are in bits/second.
 func EncodeUEAggregateMaxBitrate(downlink, uplink uint64) []byte {
 	w := aper.NewBitWriter()
-	// Both fields are constrained 0..10000000000 (10 Gbps)
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(downlink), 0, 10000000000)
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(uplink), 0, 10000000000)
+	// UEAggregateMaximumBitrate ::= SEQUENCE {
+	//   uEaggregateMaximumBitRateDL BitRate,
+	//   uEaggregateMaximumBitRateUL BitRate,
+	//   iE-Extensions ... OPTIONAL,
+	//   ...
+	// }
+	w.WriteBit(0) // extension additions absent
+	w.WriteBit(0) // iE-Extensions absent
+	encodeBitRate(w, downlink)
+	encodeBitRate(w, uplink)
 	return w.Bytes()
+}
+
+func encodeBitRate(w *aper.BitWriter, bitrate uint64) {
+	const maxBitRate = 10000000000
+	if bitrate > maxBitRate {
+		bitrate = maxBitRate
+	}
+	// BitRate ::= INTEGER (0..10000000000) spans 34 bits. Inside the
+	// UEAggregateMaximumBitrate SEQUENCE, the constrained integer bits are
+	// packed directly after the SEQUENCE preamble bits.
+	w.WriteBits(bitrate, 34)
 }
 
 // EncodeUESecurityCapabilities encodes the UE Security Capabilities IE.
 // ueNetCapability is the raw UE network capability bytes from the Attach Request.
 func EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte uint8) []byte {
-	// EEA algorithms: BIT STRING (SIZE (16)) — bits 15:0, where bit 15 = EEA0
-	// EIA algorithms: BIT STRING (SIZE (16)) — bits 15:0, where bit 15 = EIA0
 	w := aper.NewBitWriter()
-	eea := aper.BitString{Bytes: []byte{encAlgsByte, 0x00}, NumBits: 16}
-	eia := aper.BitString{Bytes: []byte{intAlgsByte, 0x00}, NumBits: 16}
-	_ = aper.EncodeBitString(w, eea, 16, 16)
-	_ = aper.EncodeBitString(w, eia, 16, 16)
+	// UESecurityCapabilities ::= SEQUENCE {
+	//   encryptionAlgorithms EncryptionAlgorithms,
+	//   integrityProtectionAlgorithms IntegrityProtectionAlgorithms,
+	//   iE-Extensions ... OPTIONAL,
+	//   ...
+	// }
+	w.WriteBit(0) // extension additions absent
+	w.WriteBit(0) // iE-Extensions absent
+	encodeExtensibleFixed16AlgorithmBitString(w, encAlgsByte)
+	encodeExtensibleFixed16AlgorithmBitString(w, intAlgsByte)
 	return w.Bytes()
+}
+
+func encodeExtensibleFixed16AlgorithmBitString(w *aper.BitWriter, algsByte uint8) {
+	// EncryptionAlgorithms / IntegrityProtectionAlgorithms are
+	// BIT STRING (SIZE(16,...)). For the root SIZE(16) case APER emits the
+	// extension bit, no length determinant, and then the 16 value bits.
+	//
+	// srsRAN/Open5GS store these fixed bitstrings as two octets where the
+	// second octet is the low-order/spare byte and the first octet carries
+	// EEA/EIA0..7. Their APER packer writes the high stored octet first.
+	w.WriteBit(0) // fixed-size root, no extension
+	w.WriteBits(0, 8)
+	w.WriteBits(uint64(algsByte), 8)
 }
 
 // EncodeNASPDU encodes a NAS PDU IE value (OCTET STRING).
@@ -363,6 +398,16 @@ func EncodeNASPDU(nas []byte) []byte {
 func DecodeNASPDU(data []byte) ([]byte, error) {
 	r := aper.NewBitReader(data)
 	return aper.DecodeOctetString(r, 0, -1)
+}
+
+// EncodeUERadioCapability encodes a UE-RadioCapability IE value (OCTET STRING).
+func EncodeUERadioCapability(capability []byte) []byte {
+	return EncodeNASPDU(capability)
+}
+
+// DecodeUERadioCapability decodes a UE-RadioCapability IE value (OCTET STRING).
+func DecodeUERadioCapability(data []byte) ([]byte, error) {
+	return DecodeNASPDU(data)
 }
 
 // EncodePagingDRX encodes the DefaultPagingDRX IE (ENUMERATED).

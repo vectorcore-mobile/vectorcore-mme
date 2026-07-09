@@ -135,3 +135,58 @@ const (
 	CauseNoEPSBearerContextActivated      uint8 = 0x28
 	CauseProtocolError                    uint8 = 0x6F
 )
+
+func CauseName(cause uint8) string {
+	switch cause {
+	case CauseIMSIUnknownInHSS:
+		return "IMSI unknown in HSS"
+	case CauseIllegalUE:
+		return "Illegal UE"
+	case CauseIMEINotAccepted:
+		return "IMEI not accepted"
+	case CauseIllegalME:
+		return "Illegal ME"
+	case CauseEPSServicesNotAllowed:
+		return "EPS services not allowed"
+	case CauseUEIdentityCannotBeDerived:
+		return "UE identity cannot be derived by the network"
+	case CauseImplicitlyDetached:
+		return "Implicitly detached"
+	case CausePLMNNotAllowed:
+		return "PLMN not allowed"
+	case CauseTrackingAreaNotAllowed:
+		return "Tracking area not allowed"
+	case CauseRoamingNotAllowed:
+		return "Roaming not allowed in this tracking area"
+	case CauseEPSServicesNotAllowedInPLMN:
+		return "EPS services not allowed in this PLMN"
+	case CauseNoSuitableCellsInTA:
+		return "No suitable cells in tracking area"
+	case CauseNetworkFailure:
+		return "Network failure"
+	case CauseCSFallbackCallEstNotAllowed:
+		return "CS fallback call establishment not allowed"
+	case CauseMACFailure:
+		return "MAC failure"
+	case CauseSynchFailure:
+		return "Synch failure"
+	case CauseCongestion:
+		return "Congestion"
+	case CauseUESecurityCapabMismatch:
+		return "UE security capabilities mismatch"
+	case CauseSecurityModeRejectedUnspecified:
+		return "Security mode rejected, unspecified"
+	case CauseNotAuthorizedForCSG:
+		return "Not authorized for this CSG"
+	case CauseNonEPSAuthenticationUnacceptable:
+		return "Non-EPS authentication unacceptable"
+	case CauseCSServiceTemporarilyNotAvailable:
+		return "CS service temporarily not available"
+	case CauseNoEPSBearerContextActivated:
+		return "No EPS bearer context activated"
+	case CauseProtocolError:
+		return "Protocol error, unspecified"
+	default:
+		return "unknown"
+	}
+}

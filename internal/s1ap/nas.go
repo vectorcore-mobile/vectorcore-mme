@@ -164,7 +164,7 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		copy(knasInt, ue.KNASint)
 		knasEnc := make([]byte, len(ue.KNASenc))
 		copy(knasEnc, ue.KNASenc)
-		dlCount := ue.IncrementDLCount()
+		dlCount := uint32(ue.DLNASCount)
 		ue.AttachStep = uecontext.AttachStepWaitingICSResp
 		ue.Unlock()
 
@@ -186,6 +186,9 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 			log.Error("s1ap: failed to encode Attach Accept (noop)", zap.Error(err))
 			return
 		}
+		ue.Lock()
+		ue.DLNASCount.Increment()
+		ue.Unlock()
 		if err := s.SendInitialContextSetup(mmeID, protected, nil); err != nil {
 			log.Error("s1ap: SendInitialContextSetup failed (noop)", zap.Error(err))
 		}
@@ -201,8 +204,8 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 	ue.AttachStep = uecontext.AttachStepWaitingCSRsp
 	enbAddr := ue.ENBGlobalID
 	enbUEID := ue.ENBS1APID
-	ecgiplmn := ue.ECGIPLMN
 	ecgieci := ue.ECGIECI
+	pco := append([]byte(nil), ue.PCO...)
 	var ulitac uint16
 	if ue.TAI != nil {
 		ulitac = ue.TAI.TAC
@@ -238,11 +241,10 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		ue.SGWAddress = sgwAddr
 		ue.Unlock()
 	}
-	// Use ECGI PLMN for ULI; fall back to serving network PLMN if not set.
-	uliPLMN := ecgiplmn
-	if uliPLMN == ([3]byte{}) {
-		uliPLMN = plmn
-	}
+	// GTPv2-C ULI TAI/ECGI PLMN uses the TS 29.274 digit layout
+	// MCC2|MCC1, MNC3|MCC3, MNC2|MNC1. S1AP stores PLMN bytes in a
+	// different layout, so use the serving PLMN built from MME config here.
+	uliPLMN := plmn
 
 	csr := &gtpv2.CreateSessionRequest{
 		SGWAddress:       sgwAddr,
@@ -257,6 +259,7 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		ULIPLMN:          uliPLMN,
 		ULITAC:           ulitac,
 		ULIECI:           ecgieci,
+		PCO:              pco,
 		PDNType:          gtpv2.PDNTypeIPv4,
 		DefaultEBI:       5,
 		BearerQCI:        9,
@@ -278,7 +281,14 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		return
 	}
 	metrics.S11MessagesTotal.WithLabelValues("csr", "initiated").Inc()
-	log.Info("s1ap: CSR sent to S-GW", zap.String("imsi", imsi), zap.Uint32("local_teid", localTEID))
+	log.Info("s1ap: CSR sent to S-GW",
+		zap.String("imsi", imsi),
+		zap.Uint32("local_teid", localTEID),
+		zap.String("serving_network_hex", hex.EncodeToString(plmn[:])),
+		zap.String("uli_plmn_hex", hex.EncodeToString(uliPLMN[:])),
+		zap.Uint16("uli_tac", ulitac),
+		zap.Uint32("uli_eci", ecgieci),
+		zap.String("csr_pco_hex", hex.EncodeToString(pco)))
 }
 
 // HandleCSRResult is called by the S11 client when a Create Session Response arrives.
@@ -304,7 +314,9 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	}
 
 	if resp.Cause != gtpv2.CauseRequestAccepted {
-		log.Warn("s1ap: CSRsp rejected", zap.Uint8("cause", resp.Cause))
+		log.Warn("s1ap: CSRsp rejected",
+			zap.Uint8("cause", resp.Cause),
+			zap.String("cause_name", gtpv2.CauseName(resp.Cause)))
 		ue.Lock()
 		enbAddr := ue.ENBGlobalID
 		enbUEID := ue.ENBS1APID
@@ -342,7 +354,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	copy(knasInt, ue.KNASint)
 	knasEnc := make([]byte, len(ue.KNASenc))
 	copy(knasEnc, ue.KNASenc)
-	dlCount := ue.IncrementDLCount()
+	dlCount := uint32(ue.DLNASCount)
 	ue.AttachStep = uecontext.AttachStepWaitingICSResp
 	mmeID := ue.MMEUES1APID
 	ueIPv4 := ue.UEIPv4
@@ -359,20 +371,54 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	if tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
-	attachAccept := emm.EncodeAttachAccept(ebi, taiList, guti, esmAccept)
+	attachResult := emm.AttachTypeEPSOnly
+	attachAccept := emm.EncodeAttachAccept(attachResult, taiList, guti, esmAccept)
 
 	var protected []byte
 	var encErr error
+	var attachAcceptMACInput []byte
+	var attachAcceptCiphertext []byte
 	if encAlg != security.AlgIDEEA0 {
 		protected, encErr = nas.EncodeIntegrityAndCiphered(attachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
+		if encErr == nil && len(protected) >= 6 {
+			attachAcceptCiphertext = append([]byte(nil), protected[6:]...)
+			attachAcceptMACInput = append([]byte{protected[5]}, protected[6:]...)
+		}
 	} else {
 		protected, encErr = nas.EncodeIntegrityProtected(attachAccept, intAlg, knasInt, dlCount)
+		if encErr == nil && len(protected) >= 6 {
+			attachAcceptMACInput = append([]byte{protected[5]}, attachAccept...)
+		}
 	}
 	if encErr != nil {
 		log.Error("s1ap: failed to encode Attach Accept", zap.Error(encErr))
 		s.sendDeleteSession(ue)
 		return
 	}
+	ue.Lock()
+	ue.DLNASCount.Increment()
+	ue.Unlock()
+
+	log.Debug("s1ap: Attach Accept NAS constructed",
+		zap.Uint32("mme_ue_id", mmeID),
+		zap.Uint8("ebi", ebi),
+		zap.Uint8("attach_result", attachResult),
+		zap.String("apn", apn),
+		zap.String("paa_ipv4", ueIPv4.String()),
+		zap.Uint8("int_alg", intAlg),
+		zap.Uint8("enc_alg", encAlg),
+		zap.Uint32("dl_nas_count", dlCount),
+		zap.Uint8("nas_sequence_number", protected[5]),
+		zap.Uint8("security_header_type", protected[0]>>4),
+		zap.Uint8("protocol_discriminator", protected[0]&0x0f),
+		zap.String("knas_int_prefix_hex", truncateHex(knasInt, 8)),
+		zap.String("knas_enc_prefix_hex", truncateHex(knasEnc, 8)),
+		zap.String("plain_activate_default_eps_bearer_context_request_hex", hex.EncodeToString(esmAccept)),
+		zap.String("esm_container_hex", hex.EncodeToString(esmAccept)),
+		zap.String("plain_attach_accept_hex", hex.EncodeToString(attachAccept)),
+		zap.String("attach_accept_mac_input_hex", hex.EncodeToString(attachAcceptMACInput)),
+		zap.String("attach_accept_ciphertext_hex", hex.EncodeToString(attachAcceptCiphertext)),
+		zap.String("protected_nas_pdu_hex", hex.EncodeToString(protected)))
 
 	bearer := &BearerInfo{
 		EBI:       ebi,

@@ -8,8 +8,8 @@ import (
 
 // AlgorithmID constants for NAS key derivation (TS 33.401 §A.7).
 const (
-	AlgTypeNASInt uint8 = 0x01 // NAS integrity algorithm
-	AlgTypeNASEnc uint8 = 0x02 // NAS ciphering algorithm
+	AlgTypeNASEnc uint8 = 0x01 // NAS ciphering algorithm
+	AlgTypeNASInt uint8 = 0x02 // NAS integrity algorithm
 
 	AlgIDEIA0 uint8 = 0x00 // null integrity
 	AlgIDEIA1 uint8 = 0x01 // SNOW3G
@@ -27,18 +27,24 @@ func kdf(key, s []byte) []byte {
 	return h.Sum(nil)
 }
 
-// DeriveNASKeys derives KNASint and KNASenc from KASME using TS 33.401 §A.7.
-//
-//	KNASint: key used for NAS integrity protection (16 bytes, lower half of KDF output)
-//	KNASenc: key used for NAS ciphering (16 bytes, lower half of KDF output)
-func DeriveNASKeys(kasme []byte, intAlgID, encAlgID uint8) (knasInt, knasEnc []byte, err error) {
+// NASKeyMaterial contains the full TS 33.401 Annex A.7 KDF inputs and outputs.
+type NASKeyMaterial struct {
+	IntS   []byte
+	EncS   []byte
+	IntOut []byte
+	EncOut []byte
+}
+
+// DeriveNASKeyMaterial returns the full NAS key derivation material for
+// diagnostics and tests. Production code should use DeriveNASKeys.
+func DeriveNASKeyMaterial(kasme []byte, intAlgID, encAlgID uint8) (*NASKeyMaterial, error) {
 	if len(kasme) != 32 {
-		return nil, nil, errors.New("security: KASME must be 32 bytes")
+		return nil, errors.New("security: KASME must be 32 bytes")
 	}
 
 	// S = FC || P0 || L0 || P1 || L1
 	// FC = 0x15 for NAS keys
-	// P0 = algorithm type distinguisher (0x01 = NASint, 0x02 = NASenc)
+	// P0 = algorithm type distinguisher (0x01 = NAS-enc-alg, 0x02 = NAS-int-alg)
 	// L0 = 0x00 0x01
 	// P1 = algorithm identity (0x00..0x0F)
 	// L1 = 0x00 0x01
@@ -46,13 +52,37 @@ func DeriveNASKeys(kasme []byte, intAlgID, encAlgID uint8) (knasInt, knasEnc []b
 		return []byte{0x15, algType, 0x00, 0x01, algID, 0x00, 0x01}
 	}
 
-	intOut := kdf(kasme, buildS(AlgTypeNASInt, intAlgID))
-	encOut := kdf(kasme, buildS(AlgTypeNASEnc, encAlgID))
+	mat := &NASKeyMaterial{
+		IntS: buildS(AlgTypeNASInt, intAlgID),
+		EncS: buildS(AlgTypeNASEnc, encAlgID),
+	}
+	mat.IntOut = kdf(kasme, mat.IntS)
+	mat.EncOut = kdf(kasme, mat.EncS)
+	return mat, nil
+}
+
+// DeriveNASKeys derives KNASint and KNASenc from KASME using TS 33.401 §A.7.
+//
+//	KNASint: key used for NAS integrity protection (16 bytes, lower half of KDF output)
+//	KNASenc: key used for NAS ciphering (16 bytes, lower half of KDF output)
+func DeriveNASKeys(kasme []byte, intAlgID, encAlgID uint8) (knasInt, knasEnc []byte, err error) {
+	mat, err := DeriveNASKeyMaterial(kasme, intAlgID, encAlgID)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Use the 128 least significant bits (lower 16 bytes of 32-byte output)
-	knasInt = intOut[16:]
-	knasEnc = encOut[16:]
+	knasInt = mat.IntOut[16:]
+	knasEnc = mat.EncOut[16:]
 	return
+}
+
+// HashMME computes HASHMME/HASHUE per TS 33.401 Annex I.2:
+// KDF with a 256-bit all-zero key over the entire unprotected plain Attach
+// Request or TAU Request NAS message, taking the 64 least significant bits.
+func HashMME(unprotectedRequest []byte) []byte {
+	out := kdf(make([]byte, 32), unprotectedRequest)
+	return out[24:]
 }
 
 // DeriveKeNB derives KeNB from KASME and the NAS uplink COUNT per TS 33.401 §A.3.

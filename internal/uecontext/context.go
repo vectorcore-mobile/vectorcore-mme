@@ -45,6 +45,12 @@ type Context struct {
 	// UE network capability (raw bytes from Attach Request)
 	UENetworkCapability []byte
 
+	// UE radio capability (raw S1AP UERadioCapability OCTET STRING).
+	UERadioCapability []byte
+
+	// Original unprotected Attach Request NAS PDU, as received in S1AP NAS-PDU.
+	InitialAttachRequestNAS []byte
+
 	// Authentication challenge in flight
 	RAND []byte
 	XRES []byte
@@ -64,6 +70,9 @@ type Context struct {
 	// Attach flow sub-step (0=none; see AttachStep* constants)
 	AttachStep    uint8
 	PDNRequestPTI uint8 // PTI from ESM PDN Connectivity Request
+	ESMContainer  []byte
+	PDNRequest    []byte
+	PCO           []byte
 
 	// S11 GTPv2-C bearer state (populated after CSRsp)
 	LocalS11TEID uint32

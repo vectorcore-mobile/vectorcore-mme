@@ -30,7 +30,7 @@ func TestEncodeIntegrityProtectedUsesStandardSecurityHeader(t *testing.T) {
 func TestEncodeIntegrityProtectedNewEPSSecurityContextUsesHeader3(t *testing.T) {
 	plain := emm.EncodeSecurityModeCommand(security.AlgIDEIA0, security.AlgIDEEA0, []byte{0xe0, 0xe0})
 
-	protected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(plain, security.AlgIDEIA0, nil, 1)
+	protected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(plain, security.AlgIDEIA0, nil, 0)
 	if err != nil {
 		t.Fatalf("EncodeIntegrityProtectedNewEPSSecurityContext: %v", err)
 	}
@@ -42,6 +42,9 @@ func TestEncodeIntegrityProtectedNewEPSSecurityContextUsesHeader3(t *testing.T) 
 	}
 	if !bytes.Equal(protected[6:], plain) {
 		t.Fatalf("inner plain NAS: got %x, want %x", protected[6:], plain)
+	}
+	if protected[5] != 0 {
+		t.Fatalf("NAS sequence number: got %d, want 0", protected[5])
 	}
 }
 
@@ -65,5 +68,29 @@ func TestDecodeSecurityModeCompleteWithCipheredNewEPSSecurityContextHeader(t *te
 	}
 	if result.MsgType != emm.MsgSecurityModeComplete {
 		t.Fatalf("msg type: got %#x, want %#x", result.MsgType, emm.MsgSecurityModeComplete)
+	}
+}
+
+func TestDecodeSecurityModeRejectMACFailure(t *testing.T) {
+	raw := []byte{0x07, emm.MsgSecurityModeReject, emm.CauseMACFailure}
+
+	result, err := nas.Decode(raw, 0, 0, nil, nil, 0)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if result.SecHeaderType != emm.SecurityHeaderPlain {
+		t.Fatalf("security header: got %d, want plain", result.SecHeaderType)
+	}
+	if result.PD != emm.PDEPSMobilityMgmt {
+		t.Fatalf("pd: got %d, want %d", result.PD, emm.PDEPSMobilityMgmt)
+	}
+	if result.MsgType != emm.MsgSecurityModeReject {
+		t.Fatalf("msg type: got %#x, want %#x", result.MsgType, emm.MsgSecurityModeReject)
+	}
+	if len(result.Inner) != 1 || result.Inner[0] != emm.CauseMACFailure {
+		t.Fatalf("cause: got %x, want %x", result.Inner, emm.CauseMACFailure)
+	}
+	if got, want := emm.CauseName(result.Inner[0]), "MAC failure"; got != want {
+		t.Fatalf("cause name: got %q, want %q", got, want)
 	}
 }

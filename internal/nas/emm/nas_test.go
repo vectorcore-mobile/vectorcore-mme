@@ -2,9 +2,11 @@ package emm_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 )
 
 // ── Identity ─────────────────────────────────────────────────────────────────
@@ -114,6 +116,21 @@ func TestEncodeAuthenticationReject(t *testing.T) {
 	}
 	if b[1] != emm.MsgAuthenticationReject {
 		t.Errorf("byte[1] msg type: got %#x, want %#x", b[1], emm.MsgAuthenticationReject)
+	}
+}
+
+func TestSecurityModeCommandWithHashMME(t *testing.T) {
+	attachRequest := mustHex(t, "21170876eb9d010741010bf613513400140ac000000502f07000050201d011d191e0")
+	hashMME := security.HashMME(attachRequest)
+	wantHash := mustHex(t, "4caba3d8e98b6958")
+	if !bytes.Equal(hashMME, wantHash) {
+		t.Fatalf("HashMME: got %x, want %x", hashMME, wantHash)
+	}
+
+	smc := emm.EncodeSecurityModeCommandWithHashMME(2, 2, []byte{0xf0, 0x70}, hashMME)
+	want := mustHex(t, "075d220002f0704f084caba3d8e98b6958")
+	if !bytes.Equal(smc, want) {
+		t.Fatalf("SMC with HashMME: got %x, want %x", smc, want)
 	}
 }
 
@@ -325,4 +342,13 @@ func TestAuthRequest_DecodeSecurityHeader(t *testing.T) {
 	if payload[0] != 0x05 {
 		t.Errorf("KSI in payload: got %#x, want 0x05", payload[0])
 	}
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("hex decode %q: %v", s, err)
+	}
+	return b
 }

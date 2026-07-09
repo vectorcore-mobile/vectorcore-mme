@@ -17,6 +17,7 @@ type PDNConnectivityRequest struct {
 	PDNType                uint8
 	RequestType            uint8
 	APN                    string // optional
+	PCO                    []byte // optional Protocol Configuration Options value part
 }
 
 // DecodePDNConnectivityRequest decodes a PDN Connectivity Request from the ESM container.
@@ -35,25 +36,47 @@ func DecodePDNConnectivityRequest(data []byte) *PDNConnectivityRequest {
 	r.PDNType = data[3] & 0x07
 	r.RequestType = (data[3] >> 4) & 0x07
 
-	// Optional APN (IEI 0x28)
-	for i := 4; i < len(data)-1; {
+	for i := 4; i < len(data); {
 		iei := data[i]
 		i++
+		if iei == 0x27 {
+			if i >= len(data) {
+				break
+			}
+			pcoLen := int(data[i])
+			i++
+			if i+pcoLen <= len(data) {
+				r.PCO = append([]byte(nil), data[i:i+pcoLen]...)
+				i += pcoLen
+			}
+			continue
+		}
 		if iei == 0x28 {
+			if i >= len(data) {
+				break
+			}
 			apnLen := int(data[i])
 			i++
 			if i+apnLen <= len(data) {
 				r.APN = string(data[i : i+apnLen])
 				i += apnLen
 			}
-		} else {
-			if i >= len(data) {
-				break
-			}
-			ieLen := int(data[i])
-			i++
-			i += ieLen
+			continue
 		}
+		// ESM information transfer flag is a type-1 IE: IEI in the high nibble,
+		// value in the low nibble, no length octet.
+		if iei&0xF0 == 0xD0 {
+			continue
+		}
+		if i >= len(data) {
+			break
+		}
+		ieLen := int(data[i])
+		i++
+		if i+ieLen > len(data) {
+			break
+		}
+		i += ieLen
 	}
 	return r
 }
@@ -98,8 +121,8 @@ func EncodePDNConnectivityAccept(pti uint8, apn string, ebi uint8, ueIPv4 net.IP
 	if v4 == nil {
 		v4 = net.IP{0, 0, 0, 0}
 	}
-	buf = append(buf, 5)                     // length = 1 (PDN type) + 4 (IPv4)
-	buf = append(buf, PDNTypeIPv4)           // PDN type = IPv4
+	buf = append(buf, 5)           // length = 1 (PDN type) + 4 (IPv4)
+	buf = append(buf, PDNTypeIPv4) // PDN type = IPv4
 	buf = append(buf, v4[0], v4[1], v4[2], v4[3])
 
 	return buf

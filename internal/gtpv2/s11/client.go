@@ -3,6 +3,7 @@
 package s11
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"sync"
@@ -89,6 +90,14 @@ func (c *Client) Close() error {
 func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error {
 	seq := c.nextSeq()
 	buf := req.Encode(seq)
+	if msg, err := gtpv2.Decode(buf); err == nil {
+		c.log.Debug("s11: CSR encoded",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("seq", seq),
+			zap.String("csr_hex", hex.EncodeToString(buf)),
+			zap.Strings("csr_ie_list", ieListSummary(msg.IEs)),
+			zap.Strings("csr_ie_details", gtpv2.DetailedIESummary(msg.IEs)))
+	}
 	c.pendingCSR.Store(seq, pending{mmeUEID: mmeUEID})
 	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingCSR.Delete(seq)
@@ -104,6 +113,20 @@ func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error 
 func (c *Client) SendMBR(mmeUEID uint32, req *gtpv2.ModifyBearerRequest) error {
 	seq := c.nextSeq()
 	buf := req.Encode(seq)
+	if msg, err := gtpv2.Decode(buf); err == nil {
+		c.log.Debug("s11: MBR encoded",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("seq", seq),
+			zap.Uint32("sgwc_teid", req.SGWC_TEID),
+			zap.String("sgwc_teid_hex", fmt.Sprintf("0x%08x", req.SGWC_TEID)),
+			zap.Uint8("ebi", req.EBI),
+			zap.Uint32("enb_s1u_teid", req.ENBU_TEID),
+			zap.String("enb_s1u_teid_hex", fmt.Sprintf("0x%08x", req.ENBU_TEID)),
+			zap.String("enb_s1u_ipv4", req.ENBU_IP.String()),
+			zap.String("mbr_hex", hex.EncodeToString(buf)),
+			zap.Strings("mbr_ie_list", ieListSummary(msg.IEs)),
+			zap.Strings("mbr_ie_details", gtpv2.DetailedIESummary(msg.IEs)))
+	}
 	c.pendingMBR.Store(seq, pending{mmeUEID: mmeUEID})
 	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingMBR.Delete(seq)
@@ -149,25 +172,37 @@ func (c *Client) nextSeq() uint32 {
 func (c *Client) recvLoop() {
 	buf := make([]byte, 65535)
 	for {
-		n, _, err := c.conn.ReadFromUDP(buf)
+		n, remote, err := c.conn.ReadFromUDP(buf)
 		if err != nil {
 			c.log.Warn("s11: recv error", zap.Error(err))
 			return
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go c.dispatch(pkt)
+		go c.dispatch(pkt, remote)
 	}
 }
 
-func (c *Client) dispatch(pkt []byte) {
+func (c *Client) dispatch(pkt []byte, remote *net.UDPAddr) {
 	msg, err := gtpv2.Decode(pkt)
 	if err != nil {
-		c.log.Warn("s11: decode error", zap.Error(err))
+		c.log.Warn("s11: decode error", zap.String("raw_hex", hex.EncodeToString(pkt)), zap.Error(err))
 		return
 	}
 
 	switch msg.Type {
+	case gtpv2.MsgEchoRequest:
+		resp := gtpv2.EncodeNoTEID(&gtpv2.Message{
+			Type:   gtpv2.MsgEchoResponse,
+			SeqNum: msg.SeqNum,
+			IEs:    []gtpv2.IE{gtpv2.EncodeRecovery(0)},
+		})
+		if _, err := c.conn.WriteToUDP(resp, remote); err != nil {
+			c.log.Warn("s11: Echo Response send error", zap.String("remote", remote.String()), zap.Error(err))
+			return
+		}
+		c.log.Debug("s11: Echo Request handled", zap.String("remote", remote.String()), zap.Uint32("seq", msg.SeqNum))
+
 	case gtpv2.MsgCreateSessionResponse:
 		v, ok := c.pendingCSR.LoadAndDelete(msg.SeqNum)
 		if !ok {
@@ -181,8 +216,19 @@ func (c *Client) dispatch(pkt []byte) {
 			c.handler.HandleCSRResult(p.mmeUEID, nil, decErr)
 			return
 		}
+		causeDetails, _ := gtpv2.DecodeCauseDetails(gtpv2.FindIE(msg.IEs, gtpv2.IETypeCause, 0))
+		if causeDetails == nil {
+			causeDetails = &gtpv2.CauseDetails{}
+		}
 		c.log.Info("s11: CSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
-			zap.Uint8("cause", resp.Cause))
+			zap.Uint8("cause", resp.Cause),
+			zap.String("cause_name", gtpv2.CauseName(resp.Cause)),
+			zap.String("raw_csrsp_hex", hex.EncodeToString(pkt)),
+			zap.Strings("csrsp_ie_list", ieListSummary(msg.IEs)),
+			zap.Strings("csrsp_ie_details", gtpv2.DetailedIESummary(msg.IEs)),
+			zap.Uint8("cause_flags", causeDetails.Flags),
+			zap.Uint8("offending_ie_type", causeDetails.OffendingIEType),
+			zap.Uint8("offending_ie_instance", causeDetails.OffendingIEInstance))
 		if resp.Cause == gtpv2.CauseRequestAccepted {
 			metrics.S11MessagesTotal.WithLabelValues("csr", "accepted").Inc()
 		} else {
@@ -204,7 +250,7 @@ func (c *Client) dispatch(pkt []byte) {
 			return
 		}
 		c.log.Info("s11: MBRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
-			zap.Uint8("cause", cause))
+			zap.Uint8("cause", cause), zap.String("cause_name", gtpv2.CauseName(cause)))
 		if cause == gtpv2.CauseRequestAccepted {
 			metrics.S11MessagesTotal.WithLabelValues("mbr", "accepted").Inc()
 			c.handler.HandleMBRResult(p.mmeUEID, nil)
@@ -228,7 +274,7 @@ func (c *Client) dispatch(pkt []byte) {
 			return
 		}
 		c.log.Info("s11: DSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
-			zap.Uint8("cause", cause))
+			zap.Uint8("cause", cause), zap.String("cause_name", gtpv2.CauseName(cause)))
 		metrics.S11MessagesTotal.WithLabelValues("dsr", "received").Inc()
 		if cause != gtpv2.CauseRequestAccepted {
 			c.handler.HandleDSRResult(p.mmeUEID, fmt.Errorf("s11: DSRsp cause %d", cause))
@@ -239,4 +285,12 @@ func (c *Client) dispatch(pkt []byte) {
 	default:
 		c.log.Debug("s11: unexpected message type", zap.Uint8("type", msg.Type))
 	}
+}
+
+func ieListSummary(ies []gtpv2.IE) []string {
+	out := make([]string, 0, len(ies))
+	for _, ie := range ies {
+		out = append(out, fmt.Sprintf("type=%d instance=%d len=%d", ie.Type, ie.Instance, len(ie.Value)))
+	}
+	return out
 }
