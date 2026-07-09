@@ -48,7 +48,10 @@ func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 	}
 
 	metrics.S6aRequestsTotal.WithLabelValues("ULR", "sent").Inc()
-	h.log.Info("s6a: ULR sent", zap.String("imsi", imsi), zap.Uint32("mme_ue_id", mmeUEID))
+	h.log.Info("s6a: ULR sent",
+		zap.String("imsi", imsi),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("visited_plmn_id_hex", hex.EncodeToString(plmn[:])))
 	return nil
 }
 
@@ -145,27 +148,26 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	h.nas.HandleULAResultWithAPNConfig(mmeUEID, msisdn, apnCfg, nil)
 }
 
-// decodeMSISDN decodes a BCD-encoded MSISDN OctetString from the HSS.
-// Returns empty string if decoding fails.
+// decodeMSISDN decodes an S6a MSISDN AVP value. TS 29.272 defines MSISDN as
+// ISDN-AddressString digits encoded in TBCD; it does not include a TON/NPI
+// address header byte in this AVP.
 func decodeMSISDN(data []byte) string {
 	if len(data) == 0 {
 		return ""
 	}
-	// MSISDN is encoded as per TS 29.002: TON/NPI byte + BCD digits
-	// For simplicity, just return hex encoding if decoding is complex
-	if len(data) < 2 {
-		return hex.EncodeToString(data)
-	}
-	// Skip TON/NPI byte, decode BCD
-	digits := make([]byte, 0, (len(data)-1)*2)
-	for _, b := range data[1:] {
+	digits := make([]byte, 0, len(data)*2)
+	for _, b := range data {
 		lo := b & 0x0F
 		hi := (b >> 4) & 0x0F
 		if lo <= 9 {
 			digits = append(digits, '0'+lo)
+		} else if lo != 0x0F {
+			return hex.EncodeToString(data)
 		}
 		if hi <= 9 {
 			digits = append(digits, '0'+hi)
+		} else if hi != 0x0F {
+			return hex.EncodeToString(data)
 		}
 	}
 	return string(digits)

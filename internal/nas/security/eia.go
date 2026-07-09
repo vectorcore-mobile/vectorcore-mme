@@ -114,17 +114,54 @@ func eia2MAC(key []byte, count uint32, bearer, direction uint8, msg []byte) ([]b
 		return nil, errors.New("security: EIA2 key must be at least 16 bytes")
 	}
 
-	// Build M: COUNT(4) || BEARER(5b) DIRECTION(1b) 0x000000(26b) as first 8 bytes
-	m := make([]byte, 8, 8+len(msg))
-	binary.BigEndian.PutUint32(m[0:], count)
-	m[4] = (bearer&0x1F)<<3 | (direction&1)<<2
-	m = append(m, msg...)
-
+	m := EIA2CMACInput(count, bearer, direction, msg)
 	mac, err := aesCMAC(key[:16], m)
 	if err != nil {
 		return nil, err
 	}
 	return mac[:4], nil
+}
+
+// EIA2CMACDetails contains diagnostic material for an EIA2 MAC calculation.
+type EIA2CMACDetails struct {
+	Input          []byte
+	Full           []byte
+	First4         []byte
+	Last4          []byte
+	ReversedFirst4 []byte
+	ReversedLast4  []byte
+}
+
+// ComputeEIA2CMACDetails computes EIA2 and returns the full AES-CMAC result
+// plus truncation variants. Production NAS integrity uses First4.
+func ComputeEIA2CMACDetails(key []byte, count uint32, bearer, direction uint8, msg []byte) (*EIA2CMACDetails, error) {
+	if len(key) < 16 {
+		return nil, errors.New("security: EIA2 key must be at least 16 bytes")
+	}
+	input := EIA2CMACInput(count, bearer, direction, msg)
+	full, err := aesCMAC(key[:16], input)
+	if err != nil {
+		return nil, err
+	}
+	d := &EIA2CMACDetails{
+		Input:          input,
+		Full:           full,
+		First4:         append([]byte(nil), full[:4]...),
+		Last4:          append([]byte(nil), full[len(full)-4:]...),
+		ReversedFirst4: reverse4(full[:4]),
+		ReversedLast4:  reverse4(full[len(full)-4:]),
+	}
+	return d, nil
+}
+
+// EIA2CMACInput builds the exact AES-CMAC input bit string M from
+// TS 33.401 Annex B.2.3 for byte-aligned NAS/RRC messages:
+// COUNT || BEARER || DIRECTION || 26 zero bits || MESSAGE.
+func EIA2CMACInput(count uint32, bearer, direction uint8, msg []byte) []byte {
+	m := make([]byte, 8, 8+len(msg))
+	binary.BigEndian.PutUint32(m[0:], count)
+	m[4] = (bearer&0x1F)<<3 | (direction&1)<<2
+	return append(m, msg...)
 }
 
 // aesCMAC computes AES-CMAC per RFC 4493.
@@ -188,4 +225,11 @@ func xor16(dst, src []byte) {
 	for i := 0; i < 16; i++ {
 		dst[i] ^= src[i]
 	}
+}
+
+func reverse4(in []byte) []byte {
+	if len(in) < 4 {
+		return nil
+	}
+	return []byte{in[3], in[2], in[1], in[0]}
 }

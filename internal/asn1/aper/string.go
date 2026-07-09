@@ -52,7 +52,7 @@ func EncodeOctetString(w *BitWriter, data []byte, minLen, maxLen int) error {
 
 // BitString represents an ASN.1 BIT STRING.
 type BitString struct {
-	Bytes  []byte
+	Bytes   []byte
 	NumBits int // total number of significant bits
 }
 
@@ -119,6 +119,19 @@ func EncodeUTF8String(w *BitWriter, s string, minLen, maxLen int) error {
 // DecodeVisibleString decodes a VisibleString (7-bit ASCII range, treated as UTF8 in APER).
 func DecodeVisibleString(r *BitReader, minLen, maxLen int) (string, error) {
 	return DecodeUTF8String(r, minLen, maxLen)
+}
+
+// DecodeVisibleStringExt decodes an extensible VisibleString with a root size
+// constraint. Extension additions fall back to an unconstrained octet string.
+func DecodeVisibleStringExt(r *BitReader, minLen, maxLen int) (string, error) {
+	ext, err := r.ReadBit()
+	if err != nil {
+		return "", err
+	}
+	if ext == 0 {
+		return DecodeVisibleString(r, minLen, maxLen)
+	}
+	return DecodeVisibleString(r, -1, -1)
 }
 
 func maxInt(a, b int) int {

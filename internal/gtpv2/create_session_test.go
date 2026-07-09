@@ -1,0 +1,165 @@
+package gtpv2
+
+import (
+	"bytes"
+	"net"
+	"testing"
+)
+
+func TestCreateSessionRequestAttachCriticalIEsRel16(t *testing.T) {
+	req := &CreateSessionRequest{
+		SGWAddress:       "10.90.250.59:2123",
+		IMSI:             "311435300070580",
+		MSISDN:           "16752012880",
+		APN:              "internet",
+		RATType:          RATTypeEUTRAN,
+		ServingNetwork:   [3]byte{0x13, 0x51, 0x34},
+		LocalS11TEID:     1,
+		LocalS11IP:       net.ParseIP("10.90.250.186"),
+		PGWIP:            net.ParseIP("10.90.250.92"),
+		ULIPLMN:          [3]byte{0x13, 0x51, 0x34},
+		ULITAC:           1,
+		ULIECI:           0x00019730,
+		PCO:              []byte{0x80, 0x80, 0x21, 0x10, 0x01, 0x00},
+		PDNType:          PDNTypeIPv4,
+		DefaultEBI:       5,
+		BearerQCI:        9,
+		UplinkAMBRKbps:   100000,
+		DownlinkAMBRKbps: 100000,
+	}
+
+	msg, err := Decode(req.Encode(1))
+	if err != nil {
+		t.Fatalf("Decode CSR: %v", err)
+	}
+	if msg.Type != MsgCreateSessionRequest {
+		t.Fatalf("type got %d, want %d", msg.Type, MsgCreateSessionRequest)
+	}
+	if msg.TEID != 0 {
+		t.Fatalf("CSR header TEID got %d, want 0", msg.TEID)
+	}
+
+	for _, tc := range []struct {
+		name     string
+		ieType   uint8
+		instance uint8
+	}{
+		{"IMSI", IETypeIMSI, 0},
+		{"MSISDN", IETypeMSISDN, 0},
+		{"RAT Type", IETypeRATType, 0},
+		{"Serving Network", IETypeServingNetwork, 0},
+		{"Sender F-TEID", IETypeFTEID, 0},
+		{"PGW S5/S8 F-TEID", IETypeFTEID, 1},
+		{"ULI", IETypeULI, 0},
+		{"APN", IETypeAPN, 0},
+		{"PDN Type", IETypePDNType, 0},
+		{"PAA", IETypePAA, 0},
+		{"PCO", IETypePCO, 0},
+		{"APN Restriction", IETypeAPNRestriction, 0},
+		{"APN-AMBR", IETypeAMBR, 0},
+		{"Selection Mode", IETypeSelectionMode, 0},
+		{"Bearer Context", IETypeBearerContext, 0},
+	} {
+		if FindIE(msg.IEs, tc.ieType, tc.instance) == nil {
+			t.Fatalf("%s IE type=%d instance=%d missing", tc.name, tc.ieType, tc.instance)
+		}
+	}
+
+	sn := FindIE(msg.IEs, IETypeServingNetwork, 0)
+	if !bytes.Equal(sn.Value, []byte{0x13, 0x51, 0x34}) {
+		t.Fatalf("Serving Network got %x, want 135134", sn.Value)
+	}
+
+	msisdn := FindIE(msg.IEs, IETypeMSISDN, 0)
+	if !bytes.Equal(msisdn.Value, []byte{0x61, 0x57, 0x02, 0x21, 0x88, 0xf0}) {
+		t.Fatalf("MSISDN got %x, want pure TBCD 6157022188f0", msisdn.Value)
+	}
+
+	sender, err := DecodeFTEID(FindIE(msg.IEs, IETypeFTEID, 0))
+	if err != nil {
+		t.Fatalf("decode sender F-TEID: %v", err)
+	}
+	if sender.InterfaceType != IFTypeS11MME {
+		t.Fatalf("Sender F-TEID interface got %d, want %d", sender.InterfaceType, IFTypeS11MME)
+	}
+
+	pgw, err := DecodeFTEID(FindIE(msg.IEs, IETypeFTEID, 1))
+	if err != nil {
+		t.Fatalf("decode PGW F-TEID: %v", err)
+	}
+	if pgw.InterfaceType != IFTypeS5S8PGWC {
+		t.Fatalf("PGW F-TEID interface got %d, want %d", pgw.InterfaceType, IFTypeS5S8PGWC)
+	}
+	if pgw.TEID != 0 {
+		t.Fatalf("PGW F-TEID TEID got %d, want 0 for initial attach", pgw.TEID)
+	}
+
+	uli := FindIE(msg.IEs, IETypeULI, 0)
+	wantULI := []byte{
+		ULIFlagTAI | ULIFlagECGI,
+		0x13, 0x51, 0x34, 0x00, 0x01,
+		0x13, 0x51, 0x34, 0x00, 0x01, 0x97, 0x30,
+	}
+	if !bytes.Equal(uli.Value, wantULI) {
+		t.Fatalf("ULI\n got %x\nwant %x", uli.Value, wantULI)
+	}
+
+	pco := FindIE(msg.IEs, IETypePCO, 0)
+	if !bytes.Equal(pco.Value, req.PCO) {
+		t.Fatalf("PCO got %x, want %x", pco.Value, req.PCO)
+	}
+
+	apnRestriction := FindIE(msg.IEs, IETypeAPNRestriction, 0)
+	if !bytes.Equal(apnRestriction.Value, []byte{APNRestrictionNoRestriction}) {
+		t.Fatalf("APN Restriction got %x, want 00", apnRestriction.Value)
+	}
+
+	bc := FindIE(msg.IEs, IETypeBearerContext, 0)
+	children, err := FindGroupedIEs(bc)
+	if err != nil {
+		t.Fatalf("decode Bearer Context: %v", err)
+	}
+	if FindIE(children, IETypeEBI, 0) == nil {
+		t.Fatal("Bearer Context missing EBI")
+	}
+	if FindIE(children, IETypeBearerQoS, 0) == nil {
+		t.Fatal("Bearer Context missing Bearer QoS")
+	}
+}
+
+func TestCreateSessionRequestIncludesAPNRestrictionWithoutPCO(t *testing.T) {
+	req := &CreateSessionRequest{
+		SGWAddress:       "10.90.250.59:2123",
+		IMSI:             "311435300070580",
+		MSISDN:           "16752012880",
+		APN:              "internet",
+		RATType:          RATTypeEUTRAN,
+		ServingNetwork:   [3]byte{0x13, 0x51, 0x34},
+		LocalS11TEID:     1,
+		LocalS11IP:       net.ParseIP("10.90.250.186"),
+		PGWIP:            net.ParseIP("10.90.250.92"),
+		ULIPLMN:          [3]byte{0x13, 0x51, 0x34},
+		ULITAC:           1,
+		ULIECI:           0x00019730,
+		PDNType:          PDNTypeIPv4,
+		DefaultEBI:       5,
+		BearerQCI:        9,
+		UplinkAMBRKbps:   100000,
+		DownlinkAMBRKbps: 100000,
+	}
+
+	msg, err := Decode(req.Encode(1))
+	if err != nil {
+		t.Fatalf("Decode CSR: %v", err)
+	}
+	if pco := FindIE(msg.IEs, IETypePCO, 0); pco != nil {
+		t.Fatalf("PCO present without UE PCO: %x", pco.Value)
+	}
+	apnRestriction := FindIE(msg.IEs, IETypeAPNRestriction, 0)
+	if apnRestriction == nil {
+		t.Fatal("APN Restriction missing")
+	}
+	if !bytes.Equal(apnRestriction.Value, []byte{APNRestrictionNoRestriction}) {
+		t.Fatalf("APN Restriction got %x, want 00", apnRestriction.Value)
+	}
+}

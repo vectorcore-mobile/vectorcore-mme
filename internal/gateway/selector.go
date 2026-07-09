@@ -159,7 +159,7 @@ func RootDomain(nf config.NFConfig, explicit string) string {
 func SGWQueryName(tac uint16, root string) string {
 	lb := byte(tac & 0xff)
 	hb := byte((tac >> 8) & 0xff)
-	return fmt.Sprintf("tac-lb%02x.tac-hb%02x.%s", lb, hb, strings.TrimSuffix(root, "."))
+	return fmt.Sprintf("tac-lb%02x.tac-hb%02x.tac.%s", lb, hb, strings.TrimSuffix(root, "."))
 }
 
 func PGWQueryName(apn, root string) string {

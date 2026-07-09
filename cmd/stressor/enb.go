@@ -17,11 +17,11 @@ import (
 // ENB simulates a single eNodeB: one SCTP connection to the MME,
 // dispatching downlink messages to per-UE goroutines by ENB-UE-S1AP-ID.
 type ENB struct {
-	cfg     *Config
-	conn    *sctp.SCTPConn
-	sendMu  sync.Mutex
+	cfg    *Config
+	conn   *sctp.SCTPConn
+	sendMu sync.Mutex
 
-	ueChans sync.Map   // uint32 ENB-UE-S1AP-ID → chan<- []byte
+	ueChans sync.Map // uint32 ENB-UE-S1AP-ID → chan<- []byte
 	nextID  atomic.Uint32
 	setupCh chan error
 }
@@ -166,30 +166,27 @@ func (enb *ENB) sendS1SetupRequest() error {
 	if err != nil {
 		return err
 	}
+	globalENBID, err := ies.EncodeGlobalENBID(ies.GlobalENBID{
+		MCC: enb.cfg.MCC,
+		MNC: enb.cfg.MNC,
+		ENB: ies.ENBID{Type: ies.ENBIDTypeMacro, Value: enb.cfg.ENBID},
+	})
+	if err != nil {
+		return err
+	}
 
 	ieList := []pdu.ProtocolIE{
-		{ID: pdu.IEGlobal_ENB_ID, Criticality: aper.CriticalityReject, Value: encodeGlobalENBID(plmn, enb.cfg.ENBID)},
+		{ID: pdu.IEGlobal_ENB_ID, Criticality: aper.CriticalityReject, Value: globalENBID},
 		{ID: pdu.IESupportedTAs, Criticality: aper.CriticalityReject, Value: encodeSupportedTAs(plmn, enb.cfg.TAC)},
 		{ID: pdu.IEDefaultPagingDRX, Criticality: aper.CriticalityIgnore, Value: ies.EncodePagingDRX(1)},
 	}
-	msg := pdu.BuildInitiatingMessage(pdu.ProcS1Setup, aper.CriticalityReject, ieList)
+	msg := pdu.Encode(&pdu.PDU{
+		Type:          pdu.PDUTypeInitiatingMessage,
+		ProcedureCode: pdu.ProcS1Setup,
+		Criticality:   aper.CriticalityReject,
+		Value:         pdu.EncodeProcedureIEContainer(ieList),
+	})
 	return enb.Send(msg)
-}
-
-// encodeGlobalENBID encodes a Global-ENB-ID IE value for a macro eNB.
-// Layout: PLMN(3) + extension_bit(1) + choice_macro(1) + macro_id_bits(20)
-func encodeGlobalENBID(plmn []byte, enbID uint32) []byte {
-	w := aper.NewBitWriter()
-	w.WriteOctets(plmn)
-	w.WriteBit(0) // extension = false
-	w.WriteBit(0) // choice = 0 (macro ENB ID)
-	// Macro ENB ID: BIT STRING (SIZE (20)) — 20 bits, then pad to byte boundary
-	bs := aper.BitString{
-		Bytes:   []byte{byte(enbID >> 12), byte(enbID >> 4), byte((enbID & 0x0F) << 4)},
-		NumBits: 20,
-	}
-	_ = aper.EncodeBitString(w, bs, 20, 20)
-	return w.Bytes()
 }
 
 // encodeSupportedTAs encodes the SupportedTAs IE for a single TA.
@@ -197,7 +194,9 @@ func encodeSupportedTAs(plmn []byte, tac uint16) []byte {
 	w := aper.NewBitWriter()
 	// SEQUENCE OF (SIZE 1..256) — constrained count: 1..256
 	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 256)
-	// SupportedTA: tAC OCTET STRING (SIZE 2) + broadcastPLMNs SEQUENCE OF (SIZE 1..6)
+	// SupportedTA: extension marker + optional map + tAC OCTET STRING (SIZE 2) + broadcastPLMNs SEQUENCE OF (SIZE 1..6)
+	w.WriteBit(0) // SupportedTAs-Item SEQUENCE extension = 0
+	w.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeOctetString(w, []byte{byte(tac >> 8), byte(tac)}, 2, 2)
 	// broadcastPLMNs count: 1..6
 	_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 6)

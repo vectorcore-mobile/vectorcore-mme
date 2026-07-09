@@ -71,15 +71,11 @@ func EncodeIMSI(imsi string) IE {
 	return IE{Type: IETypeIMSI, Instance: 0, Value: bcd}
 }
 
-// EncodeMSISDN encodes an MSISDN as BCD (international format, no leading +).
-// Per TS 29.274 §8.3 and TS 29.002 §17.7.8, the value begins with a TON/NPI
-// byte (0x91 = international, ISDN/E.164) followed by the BCD-encoded digits.
+// EncodeMSISDN encodes an MSISDN as TBCD digits.
+// TS 29.274 §8.11 explicitly excludes the TON/NPI octet; the IE value contains
+// only the actual E.164 digits.
 func EncodeMSISDN(msisdn string) IE {
-	bcd := bcdEncode(msisdn)
-	val := make([]byte, 1+len(bcd))
-	val[0] = 0x91 // TON=international, NPI=ISDN/E.164
-	copy(val[1:], bcd)
-	return IE{Type: IETypeMSISDN, Instance: 0, Value: val}
+	return IE{Type: IETypeMSISDN, Instance: 0, Value: bcdEncode(msisdn)}
 }
 
 // EncodeRATType encodes the RAT-Type IE.
@@ -98,6 +94,14 @@ func EncodeAPN(apn string) IE {
 	return IE{Type: IETypeAPN, Instance: 0, Value: val}
 }
 
+// EncodePCO encodes the Protocol Configuration Options IE. TS 29.274 §8.13
+// says the value is copied from the NAS PCO value part.
+func EncodePCO(pco []byte) IE {
+	val := make([]byte, len(pco))
+	copy(val, pco)
+	return IE{Type: IETypePCO, Instance: 0, Value: val}
+}
+
 // EncodePDNType encodes the PDN Type IE.
 func EncodePDNType(t uint8) IE {
 	return IE{Type: IETypePDNType, Instance: 0, Value: []byte{t & 0x07}}
@@ -113,6 +117,11 @@ func EncodePAA(ip net.IP) IE {
 	val[0] = PDNTypeIPv4
 	copy(val[1:], v4)
 	return IE{Type: IETypePAA, Instance: 0, Value: val}
+}
+
+// EncodeAPNRestriction encodes the APN Restriction IE (TS 29.274 §8.57).
+func EncodeAPNRestriction(restriction uint8) IE {
+	return IE{Type: IETypeAPNRestriction, Instance: 0, Value: []byte{restriction}}
 }
 
 // DecodePAA extracts the IPv4 address from a PAA IE.
@@ -226,12 +235,41 @@ func EncodeCause(cause uint8) IE {
 	return IE{Type: IETypeCause, Instance: 0, Value: []byte{cause, 0, 0, 0}}
 }
 
+// EncodeRecovery encodes the Recovery IE restart counter.
+func EncodeRecovery(restartCounter uint8) IE {
+	return IE{Type: IETypeRecovery, Instance: 0, Value: []byte{restartCounter}}
+}
+
 // DecodeCause extracts the cause value from a Cause IE.
 func DecodeCause(ie *IE) (uint8, error) {
 	if ie == nil || len(ie.Value) < 1 {
 		return 0, fmt.Errorf("gtpv2: nil or empty Cause IE")
 	}
 	return ie.Value[0], nil
+}
+
+type CauseDetails struct {
+	Cause               uint8
+	Flags               uint8
+	OffendingIEType     uint8
+	OffendingIEInstance uint8
+}
+
+func DecodeCauseDetails(ie *IE) (*CauseDetails, error) {
+	if ie == nil || len(ie.Value) < 1 {
+		return nil, fmt.Errorf("gtpv2: nil or empty Cause IE")
+	}
+	d := &CauseDetails{Cause: ie.Value[0]}
+	if len(ie.Value) > 1 {
+		d.Flags = ie.Value[1]
+	}
+	if len(ie.Value) > 2 {
+		d.OffendingIEType = ie.Value[2]
+	}
+	if len(ie.Value) > 3 {
+		d.OffendingIEInstance = ie.Value[3] & 0x0F
+	}
+	return d, nil
 }
 
 // EncodeULI encodes a User Location Information IE with TAI + ECGI (TS 29.274 §8.21).

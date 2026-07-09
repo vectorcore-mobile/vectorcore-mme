@@ -25,7 +25,7 @@ type PDU struct {
 	Type          PDUType
 	ProcedureCode uint8
 	Criticality   aper.Criticality
-	Value         []byte // raw OPEN TYPE value (contains encoded IE container)
+	Value         []byte // raw OPEN TYPE value (contains encoded procedure body)
 }
 
 // Decode decodes a raw APER-encoded S1AP PDU.
@@ -99,8 +99,18 @@ func Encode(p *PDU) []byte {
 	return w.Bytes()
 }
 
-// DecodeIEContainer decodes a SEQUENCE OF ProtocolIE-Field from the PDU value bytes.
+// DecodeIEContainer decodes a procedure body or legacy bare SEQUENCE OF
+// ProtocolIE-Field from PDU value bytes.
 func DecodeIEContainer(data []byte) ([]ProtocolIE, error) {
+	if ies, err := DecodeProcedureIEContainer(data); err == nil {
+		return ies, nil
+	}
+	return decodeBareIEContainer(data)
+}
+
+// decodeBareIEContainer decodes a SEQUENCE OF ProtocolIE-Field with no
+// enclosing procedure SEQUENCE.
+func decodeBareIEContainer(data []byte) ([]ProtocolIE, error) {
 	r := aper.NewBitReader(data)
 
 	// Count: constrained to 0..65535 → 16-bit aligned
@@ -162,7 +172,7 @@ func BuildInitiatingMessage(procCode uint8, criticality aper.Criticality, ies []
 		Type:          PDUTypeInitiatingMessage,
 		ProcedureCode: procCode,
 		Criticality:   criticality,
-		Value:         EncodeIEContainer(ies),
+		Value:         EncodeProcedureIEContainer(ies),
 	})
 }
 
@@ -172,7 +182,7 @@ func BuildSuccessfulOutcome(procCode uint8, criticality aper.Criticality, ies []
 		Type:          PDUTypeSuccessfulOutcome,
 		ProcedureCode: procCode,
 		Criticality:   criticality,
-		Value:         EncodeIEContainer(ies),
+		Value:         EncodeProcedureIEContainer(ies),
 	})
 }
 
@@ -182,6 +192,6 @@ func BuildUnsuccessfulOutcome(procCode uint8, criticality aper.Criticality, ies 
 		Type:          PDUTypeUnsuccessfulOutcome,
 		ProcedureCode: procCode,
 		Criticality:   criticality,
-		Value:         EncodeIEContainer(ies),
+		Value:         EncodeProcedureIEContainer(ies),
 	})
 }

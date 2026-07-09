@@ -21,12 +21,12 @@ import (
 
 type mbrMockS11 struct {
 	mu       sync.Mutex
-	mbrErr   error        // error returned from SendMBR (nil = success)
-	mbrCalls []uint32     // mmeUEIDs passed to SendMBR
+	mbrErr   error    // error returned from SendMBR (nil = success)
+	mbrCalls []uint32 // mmeUEIDs passed to SendMBR
 }
 
 func (m *mbrMockS11) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
-func (m *mbrMockS11) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error  { return nil }
+func (m *mbrMockS11) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
 func (m *mbrMockS11) SendMBR(mmeUEID uint32, _ *gtpv2.ModifyBearerRequest) error {
 	m.mu.Lock()
 	m.mbrCalls = append(m.mbrCalls, mmeUEID)
@@ -78,7 +78,7 @@ func buildPathSwitchUplinkListBytes(ebi uint8, teid uint32, ip net.IP) []byte {
 	iw.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(iw, int64(ebi), 0, 15)
 	// transportLayerAddress BIT STRING (1..160,...): ext=0, len=32, align, IPv4 bytes
-	iw.WriteBit(0) // BIT STRING ext=0 (no extension)
+	iw.WriteBit(0)                                        // BIT STRING ext=0 (no extension)
 	_ = aper.EncodeConstrainedWholeNumber(iw, 32, 1, 160) // length = 32 bits
 	iw.AlignToByte()
 	ipv4 := ip.To4()

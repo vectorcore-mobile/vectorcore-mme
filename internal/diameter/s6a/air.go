@@ -1,6 +1,7 @@
 package s6a
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"github.com/fiorix/go-diameter/v4/diam"
@@ -50,7 +51,10 @@ func (h *Handlers) SendAIR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 	}
 
 	metrics.S6aRequestsTotal.WithLabelValues("AIR", "sent").Inc()
-	h.log.Info("s6a: AIR sent", zap.String("imsi", imsi), zap.Uint32("mme_ue_id", mmeUEID))
+	h.log.Info("s6a: AIR sent",
+		zap.String("imsi", imsi),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("visited_plmn_id_hex", hex.EncodeToString(plmn[:])))
 	return nil
 }
 
@@ -113,6 +117,16 @@ func (h *Handlers) handleAIA(c diam.Conn, m *diam.Message) {
 
 	vec := aia.AIs[0].EUtranVector
 	h.log.Info("s6a: AIA received", zap.Uint32("mme_ue_id", mmeUEID))
+	h.log.Debug("s6a: AIA vector",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Int("rand_len", len(vec.RAND)),
+		zap.String("rand_hex", hex.EncodeToString([]byte(vec.RAND))),
+		zap.Int("autn_len", len(vec.AUTN)),
+		zap.String("autn_hex", hex.EncodeToString([]byte(vec.AUTN))),
+		zap.Int("xres_len", len(vec.XRES)),
+		zap.String("xres_hex", hex.EncodeToString([]byte(vec.XRES))),
+		zap.Int("kasme_len", len(vec.KASME)),
+		zap.String("kasme_hex", hex.EncodeToString([]byte(vec.KASME))))
 	h.nas.HandleAIAResult(mmeUEID,
 		[]byte(vec.RAND),
 		[]byte(vec.XRES),

@@ -6,6 +6,13 @@ import "fmt"
 // intAlgID and encAlgID are the selected EIA/EEA algorithm IDs (0..7).
 // ueSecCap is the UE network capability IE echoed back.
 func EncodeSecurityModeCommand(intAlgID, encAlgID uint8, ueSecCap []byte) []byte {
+	return EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID, ueSecCap, nil)
+}
+
+// EncodeSecurityModeCommandWithHashMME encodes a NAS Security Mode Command and
+// appends HashMME when provided. hashMME must be the 8-byte value from
+// TS 33.401 Annex I.2; the IE is encoded as IEI 0x4f, length 0x08, value.
+func EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID uint8, ueSecCap, hashMME []byte) []byte {
 	b := make([]byte, 0, 32)
 	b = append(b, PDEPSMobilityMgmt|SecurityHeaderPlain<<4)
 	b = append(b, MsgSecurityModeCommand)
@@ -20,6 +27,11 @@ func EncodeSecurityModeCommand(intAlgID, encAlgID uint8, ueSecCap []byte) []byte
 	// Replayed UE security capabilities (mandatory)
 	b = append(b, byte(len(ueSecCap)))
 	b = append(b, ueSecCap...)
+
+	if len(hashMME) == 8 {
+		b = append(b, 0x4f, 0x08)
+		b = append(b, hashMME...)
+	}
 
 	return b
 }

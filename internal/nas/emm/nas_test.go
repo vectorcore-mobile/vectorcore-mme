@@ -2,10 +2,39 @@ package emm_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 )
+
+// ── Identity ─────────────────────────────────────────────────────────────────
+
+func TestEncodeIdentityRequestIMSI(t *testing.T) {
+	b := emm.EncodeIdentityRequest(emm.IdentityTypeIMSI)
+	want := []byte{0x07, 0x55, 0x01}
+	if !bytes.Equal(b, want) {
+		t.Fatalf("Identity Request: got %x, want %x", b, want)
+	}
+}
+
+func TestDecodeIdentityResponseIMSI(t *testing.T) {
+	const imsi = "001010123456789"
+	mobileID := emm.EPSMobileIdentityIMSI(imsi)
+	body := append([]byte{byte(len(mobileID))}, mobileID...)
+
+	resp, err := emm.DecodeIdentityResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeIdentityResponse: %v", err)
+	}
+	if resp.IdentityType != emm.IdentityTypeIMSI {
+		t.Fatalf("IdentityType: got %d, want %d", resp.IdentityType, emm.IdentityTypeIMSI)
+	}
+	if resp.IMSI != imsi {
+		t.Fatalf("IMSI: got %q, want %q", resp.IMSI, imsi)
+	}
+}
 
 // ── Authentication ────────────────────────────────────────────────────────────
 
@@ -87,6 +116,21 @@ func TestEncodeAuthenticationReject(t *testing.T) {
 	}
 	if b[1] != emm.MsgAuthenticationReject {
 		t.Errorf("byte[1] msg type: got %#x, want %#x", b[1], emm.MsgAuthenticationReject)
+	}
+}
+
+func TestSecurityModeCommandWithHashMME(t *testing.T) {
+	attachRequest := mustHex(t, "21170876eb9d010741010bf613513400140ac000000502f07000050201d011d191e0")
+	hashMME := security.HashMME(attachRequest)
+	wantHash := mustHex(t, "4caba3d8e98b6958")
+	if !bytes.Equal(hashMME, wantHash) {
+		t.Fatalf("HashMME: got %x, want %x", hashMME, wantHash)
+	}
+
+	smc := emm.EncodeSecurityModeCommandWithHashMME(2, 2, []byte{0xf0, 0x70}, hashMME)
+	want := mustHex(t, "075d220002f0704f084caba3d8e98b6958")
+	if !bytes.Equal(smc, want) {
+		t.Fatalf("SMC with HashMME: got %x, want %x", smc, want)
 	}
 }
 
@@ -298,4 +342,13 @@ func TestAuthRequest_DecodeSecurityHeader(t *testing.T) {
 	if payload[0] != 0x05 {
 		t.Errorf("KSI in payload: got %#x, want 0x05", payload[0])
 	}
+}
+
+func mustHex(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		t.Fatalf("hex decode %q: %v", s, err)
+	}
+	return b
 }

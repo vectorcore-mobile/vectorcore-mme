@@ -20,6 +20,7 @@ type CreateSessionRequest struct {
 	ULIPLMN          [3]byte // PLMN for ULI TAI + ECGI
 	ULITAC           uint16  // Tracking Area Code
 	ULIECI           uint32  // 28-bit E-UTRAN Cell Identity
+	PCO              []byte  // Protocol Configuration Options from UE PDN Connectivity Request
 	PDNType          uint8
 	DefaultEBI       uint8
 	BearerQCI        uint8
@@ -45,9 +46,13 @@ func (r *CreateSessionRequest) Encode(seqNum uint32) []byte {
 		EncodeAPN(r.APN),
 		EncodePDNType(r.PDNType),
 		EncodePAA(net.IP{0, 0, 0, 0}), // request any IPv4 address
+		EncodeAPNRestriction(APNRestrictionNoRestriction),
 		EncodeAMBR(r.UplinkAMBRKbps, r.DownlinkAMBRKbps),
 		EncodeSelectionMode(SelectionModeMS),
 		bearerCtx,
+	}
+	if len(r.PCO) > 0 {
+		ies = append(ies, EncodePCO(r.PCO))
 	}
 
 	msg := &Message{

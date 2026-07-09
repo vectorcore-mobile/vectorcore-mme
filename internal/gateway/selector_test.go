@@ -26,7 +26,7 @@ func TestRootDomainDerivesPaddedMNC(t *testing.T) {
 
 func TestSGWQueryNameUsesLowByteHighByteTAC(t *testing.T) {
 	got := SGWQueryName(1, "epc.mnc435.mcc311.3gppnetwork.org")
-	want := "tac-lb01.tac-hb00.epc.mnc435.mcc311.3gppnetwork.org"
+	want := "tac-lb01.tac-hb00.tac.epc.mnc435.mcc311.3gppnetwork.org"
 	if got != want {
 		t.Fatalf("SGWQueryName() = %q, want %q", got, want)
 	}

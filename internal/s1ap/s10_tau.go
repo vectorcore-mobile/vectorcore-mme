@@ -209,7 +209,14 @@ func (s *Server) importContextAndContinueTAU(tempUE *uecontext.Context, tai *ies
 	// If S6a is a real client, send ULR and wait for ULA before completing TAU.
 	_, s6aNoop := s.s6a.(NoopS6aClient)
 	if !s6aNoop {
-		plmn := s.buildPLMN()
+		plmnBytes, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+		if err != nil || len(plmnBytes) != 3 {
+			log.Error("s10: failed to encode S6a visited PLMN", zap.Error(err))
+			s.sendTAUReject(mmeUEID, emm.CauseNetworkFailure)
+			return
+		}
+		var plmn [3]byte
+		copy(plmn[:], plmnBytes)
 		tempUE.Lock()
 		tempUE.AttachStep = uecontext.AttachStepWaitingULAInterMMETAU
 		imsi := tempUE.IMSI

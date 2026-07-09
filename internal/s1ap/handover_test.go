@@ -141,11 +141,11 @@ func buildERABAdmittedListBytes(ebi uint8, teid uint32, ip net.IP) []byte {
 func buildHORequiredIEs(mmeUEID, srcENBUEID uint32, targetID []byte) []pdu.ProtocolIE {
 	cause := ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)
 	return []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID,                        Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,                          Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBUEID)},
-		{ID: pdu.IEHandoverType,                       Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)},
-		{ID: pdu.IECause,                              Criticality: aper.CriticalityIgnore, Value: cause},
-		{ID: pdu.IETargetID,                           Criticality: aper.CriticalityReject, Value: targetID},
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBUEID)},
+		{ID: pdu.IEHandoverType, Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: cause},
+		{ID: pdu.IETargetID, Criticality: aper.CriticalityReject, Value: targetID},
 		{ID: pdu.IESourceToTargetTransparentContainer, Criticality: aper.CriticalityReject, Value: []byte{0xAA, 0xBB}},
 	}
 }
@@ -154,9 +154,9 @@ func buildHORequiredIEs(mmeUEID, srcENBUEID uint32, targetID []byte) []pdu.Proto
 func buildHORequestAckIEs(mmeUEID, tgtENBUEID uint32, ebi uint8, teid uint32, ip net.IP) []pdu.ProtocolIE {
 	admittedList := buildERABAdmittedListBytes(ebi, teid, ip)
 	return []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID,                        Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,                          Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(tgtENBUEID)},
-		{ID: pdu.IEERABAdmittedList,                   Criticality: aper.CriticalityReject, Value: admittedList},
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(tgtENBUEID)},
+		{ID: pdu.IEERABAdmittedList, Criticality: aper.CriticalityReject, Value: admittedList},
 		{ID: pdu.IETargetToSourceTransparentContainer, Criticality: aper.CriticalityReject, Value: []byte{0xCC, 0xDD}},
 	}
 }
@@ -165,7 +165,7 @@ func buildHORequestAckIEs(mmeUEID, tgtENBUEID uint32, ebi uint8, teid uint32, ip
 func buildHONotifyIEs(mmeUEID, tgtENBUEID uint32) []pdu.ProtocolIE {
 	return []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
-		{ID: pdu.IEENBS1APID,   Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(tgtENBUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(tgtENBUEID)},
 	}
 }
 
@@ -370,7 +370,7 @@ func TestHandover_RequestFailure(t *testing.T) {
 	// Target sends Failure.
 	failIEs := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(ue.MMEUES1APID)},
-		{ID: pdu.IECause,       Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)},
 	}
 	srv.handleHandoverRequestFailure(tgtAddr, &pdu.PDU{}, failIEs)
 

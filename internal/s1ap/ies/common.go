@@ -58,8 +58,8 @@ func EncodePLMN(mcc, mnc string) ([]byte, error) {
 		plmn[1] = 0xF0 | d(mcc, 2)
 		plmn[2] = d(mnc, 1)<<4 | d(mnc, 0)
 	} else {
-		plmn[1] = d(mnc, 2)<<4 | d(mcc, 2)
-		plmn[2] = d(mnc, 1)<<4 | d(mnc, 0)
+		plmn[1] = d(mnc, 0)<<4 | d(mcc, 2)
+		plmn[2] = d(mnc, 2)<<4 | d(mnc, 1)
 	}
 	// Encoded as OCTET STRING of exactly 3 bytes (fixed-length, no length determinant)
 	return plmn, nil
@@ -78,9 +78,9 @@ func DecodePLMN(data []byte) (mcc, mnc string, err error) {
 	d6 := (data[2] >> 4) & 0x0F
 	mcc = fmt.Sprintf("%d%d%d", d1, d2, d3)
 	if d4 == 0x0F {
-		mnc = fmt.Sprintf("%d%d", d6, d5)
+		mnc = fmt.Sprintf("%d%d", d5, d6)
 	} else {
-		mnc = fmt.Sprintf("%d%d%d", d4, d6, d5)
+		mnc = fmt.Sprintf("%d%d%d", d4, d5, d6)
 	}
 	return
 }
@@ -179,9 +179,10 @@ type ENBID struct {
 
 // GlobalENBID represents a Global eNB ID.
 type GlobalENBID struct {
-	MCC string
-	MNC string
-	ENB ENBID
+	MCC     string
+	MNC     string
+	PLMNRaw [3]byte
+	ENB     ENBID
 }
 
 // Serialise returns a compact string representation for use as a map key.
@@ -190,20 +191,43 @@ func (g GlobalENBID) Serialise() string {
 }
 
 // DecodeGlobalENBID decodes a Global-ENB-ID IE value.
-// Structure: PLMN(3) + choice(macro/home) + eNB identity
+// Structure: SEQUENCE header + PLMN(3) + choice(macro/home) + eNB identity.
 func DecodeGlobalENBID(data []byte) (GlobalENBID, error) {
-	if len(data) < 4 {
+	if len(data) < 5 {
 		return GlobalENBID{}, fmt.Errorf("ies: GlobalENBID too short: %d bytes", len(data))
 	}
-	mcc, mnc, err := DecodePLMN(data[:3])
+
+	seq := aper.NewBitReader(data)
+	extBit, err := seq.ReadBit()
 	if err != nil {
 		return GlobalENBID{}, err
 	}
+	if extBit == 1 {
+		return GlobalENBID{}, fmt.Errorf("ies: GlobalENBID extension not supported")
+	}
+	if _, err := seq.ReadBit(); err != nil { // iE-Extensions absent/present
+		return GlobalENBID{}, err
+	}
+	seq.AlignToByte()
+	body, err := seq.ReadOctets(seq.Remaining() / 8)
+	if err != nil {
+		return GlobalENBID{}, err
+	}
+	if len(body) < 4 {
+		return GlobalENBID{}, fmt.Errorf("ies: GlobalENBID body too short: %d bytes", len(body))
+	}
+
+	mcc, mnc, err := DecodePLMN(body[:3])
+	if err != nil {
+		return GlobalENBID{}, err
+	}
+	var plmnRaw [3]byte
+	copy(plmnRaw[:], body[:3])
 
 	// CHOICE: extension bit + 1-bit index (0=macro, 1=home), then BIT STRING
-	r := aper.NewBitReader(data[3:])
-	extBit, _ := r.ReadBit()
-	if extBit == 1 {
+	r := aper.NewBitReader(body[3:])
+	choiceExtBit, _ := r.ReadBit()
+	if choiceExtBit == 1 {
 		return GlobalENBID{}, fmt.Errorf("ies: GlobalENBID extension not supported")
 	}
 	choiceIdx, _ := r.ReadBit()
@@ -226,7 +250,7 @@ func DecodeGlobalENBID(data []byte) (GlobalENBID, error) {
 			Value: uint32(bs.Bytes[0])<<20 | uint32(bs.Bytes[1])<<12 | uint32(bs.Bytes[2])<<4 | uint32(bs.Bytes[3]>>4)}
 	}
 
-	return GlobalENBID{MCC: mcc, MNC: mnc, ENB: enbID}, nil
+	return GlobalENBID{MCC: mcc, MNC: mnc, PLMNRaw: plmnRaw, ENB: enbID}, nil
 }
 
 // ── Cause ──────────────────────────────────────────────────────────────────────
@@ -244,18 +268,18 @@ const (
 
 // Cause values by group.
 const (
-	CauseRadioNetworkUnspecified            uint8 = 0
-	CauseRadioNetworkNormalRelease          uint8 = 1
-	CauseRadioNetworkLoadBalancingRequired  uint8 = 2
-	CauseRadioNetworkSuccessfulHandover     uint8 = 2  // tx2relocoverall-expiry=1, successful-handover=2
-	CauseRadioNetworkHOCancelled            uint8 = 4  // handover-cancelled=4
-	CauseRadioNetworkUnknownTargetID        uint8 = 11 // unknown-targetID=11
-	CauseNASNormalRelease                   uint8 = 0
-	CauseNASAuthentication                  uint8 = 1
-	CauseNASDetach                          uint8 = 2
-	CauseNASUnspecified                     uint8 = 3
-	CauseMiscControlProcessingOverload      uint8 = 0
-	CauseMiscUnspecified                    uint8 = 5
+	CauseRadioNetworkUnspecified           uint8 = 0
+	CauseRadioNetworkNormalRelease         uint8 = 1
+	CauseRadioNetworkLoadBalancingRequired uint8 = 2
+	CauseRadioNetworkSuccessfulHandover    uint8 = 2  // tx2relocoverall-expiry=1, successful-handover=2
+	CauseRadioNetworkHOCancelled           uint8 = 4  // handover-cancelled=4
+	CauseRadioNetworkUnknownTargetID       uint8 = 11 // unknown-targetID=11
+	CauseNASNormalRelease                  uint8 = 0
+	CauseNASAuthentication                 uint8 = 1
+	CauseNASDetach                         uint8 = 2
+	CauseNASUnspecified                    uint8 = 3
+	CauseMiscControlProcessingOverload     uint8 = 0
+	CauseMiscUnspecified                   uint8 = 5
 )
 
 // EncodeCause encodes a Cause IE value (CHOICE with 5 alternatives).
@@ -270,6 +294,24 @@ func EncodeCause(group CauseGroup, value uint8) []byte {
 	w.AlignToByte()
 	w.WriteOctet(value)
 	return w.Bytes()
+}
+
+// DecodeCause decodes a Cause IE value encoded by EncodeCause.
+func DecodeCause(data []byte) (CauseGroup, uint8, error) {
+	r := aper.NewBitReader(data)
+	if _, err := r.ReadBit(); err != nil {
+		return 0, 0, err
+	}
+	group, err := r.ReadBits(3)
+	if err != nil {
+		return 0, 0, err
+	}
+	r.AlignToByte()
+	value, err := r.ReadOctet()
+	if err != nil {
+		return 0, 0, err
+	}
+	return CauseGroup(group), value, nil
 }
 
 // ── Security Key (KeNB) ────────────────────────────────────────────────────────
@@ -291,23 +333,58 @@ func EncodeSecurityKey(kenb []byte) []byte {
 // uplink and downlink are in bits/second.
 func EncodeUEAggregateMaxBitrate(downlink, uplink uint64) []byte {
 	w := aper.NewBitWriter()
-	// Both fields are constrained 0..10000000000 (10 Gbps)
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(downlink), 0, 10000000000)
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(uplink), 0, 10000000000)
+	// UEAggregateMaximumBitrate ::= SEQUENCE {
+	//   uEaggregateMaximumBitRateDL BitRate,
+	//   uEaggregateMaximumBitRateUL BitRate,
+	//   iE-Extensions ... OPTIONAL,
+	//   ...
+	// }
+	w.WriteBit(0) // extension additions absent
+	w.WriteBit(0) // iE-Extensions absent
+	encodeBitRate(w, downlink)
+	encodeBitRate(w, uplink)
 	return w.Bytes()
+}
+
+func encodeBitRate(w *aper.BitWriter, bitrate uint64) {
+	const maxBitRate = 10000000000
+	if bitrate > maxBitRate {
+		bitrate = maxBitRate
+	}
+	// BitRate ::= INTEGER (0..10000000000) spans 34 bits. Inside the
+	// UEAggregateMaximumBitrate SEQUENCE, the constrained integer bits are
+	// packed directly after the SEQUENCE preamble bits.
+	w.WriteBits(bitrate, 34)
 }
 
 // EncodeUESecurityCapabilities encodes the UE Security Capabilities IE.
 // ueNetCapability is the raw UE network capability bytes from the Attach Request.
 func EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte uint8) []byte {
-	// EEA algorithms: BIT STRING (SIZE (16)) — bits 15:0, where bit 15 = EEA0
-	// EIA algorithms: BIT STRING (SIZE (16)) — bits 15:0, where bit 15 = EIA0
 	w := aper.NewBitWriter()
-	eea := aper.BitString{Bytes: []byte{encAlgsByte, 0x00}, NumBits: 16}
-	eia := aper.BitString{Bytes: []byte{intAlgsByte, 0x00}, NumBits: 16}
-	_ = aper.EncodeBitString(w, eea, 16, 16)
-	_ = aper.EncodeBitString(w, eia, 16, 16)
+	// UESecurityCapabilities ::= SEQUENCE {
+	//   encryptionAlgorithms EncryptionAlgorithms,
+	//   integrityProtectionAlgorithms IntegrityProtectionAlgorithms,
+	//   iE-Extensions ... OPTIONAL,
+	//   ...
+	// }
+	w.WriteBit(0) // extension additions absent
+	w.WriteBit(0) // iE-Extensions absent
+	encodeExtensibleFixed16AlgorithmBitString(w, encAlgsByte)
+	encodeExtensibleFixed16AlgorithmBitString(w, intAlgsByte)
 	return w.Bytes()
+}
+
+func encodeExtensibleFixed16AlgorithmBitString(w *aper.BitWriter, algsByte uint8) {
+	// EncryptionAlgorithms / IntegrityProtectionAlgorithms are
+	// BIT STRING (SIZE(16,...)). For the root SIZE(16) case APER emits the
+	// extension bit, no length determinant, and then the 16 value bits.
+	//
+	// srsRAN/Open5GS store these fixed bitstrings as two octets where the
+	// second octet is the low-order/spare byte and the first octet carries
+	// EEA/EIA0..7. Their APER packer writes the high stored octet first.
+	w.WriteBit(0) // fixed-size root, no extension
+	w.WriteBits(0, 8)
+	w.WriteBits(uint64(algsByte), 8)
 }
 
 // EncodeNASPDU encodes a NAS PDU IE value (OCTET STRING).
@@ -323,6 +400,16 @@ func DecodeNASPDU(data []byte) ([]byte, error) {
 	return aper.DecodeOctetString(r, 0, -1)
 }
 
+// EncodeUERadioCapability encodes a UE-RadioCapability IE value (OCTET STRING).
+func EncodeUERadioCapability(capability []byte) []byte {
+	return EncodeNASPDU(capability)
+}
+
+// DecodeUERadioCapability decodes a UE-RadioCapability IE value (OCTET STRING).
+func DecodeUERadioCapability(data []byte) ([]byte, error) {
+	return DecodeNASPDU(data)
+}
+
 // EncodePagingDRX encodes the DefaultPagingDRX IE (ENUMERATED).
 // Values: 0=rf32, 1=rf64, 2=rf128, 3=rf256
 func EncodePagingDRX(drx uint8) []byte {
@@ -330,6 +417,13 @@ func EncodePagingDRX(drx uint8) []byte {
 	// ENUMERATED with extension marker, 4 root alternatives
 	w.WriteBit(0) // no extension
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(drx), 0, 3)
+	return w.Bytes()
+}
+
+// EncodeRelativeMMECapacity encodes RelativeMMECapacity INTEGER (0..255).
+func EncodeRelativeMMECapacity(v uint8) []byte {
+	w := aper.NewBitWriter()
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(v), 0, 255)
 	return w.Bytes()
 }
 
@@ -357,7 +451,6 @@ func DecodeRRCEstablishmentCause(data []byte) (uint8, error) {
 	v, err := aper.DecodeConstrainedWholeNumber(r, 0, 7)
 	return uint8(v), err
 }
-
 
 // ── S-TMSI ────────────────────────────────────────────────────────────────────
 
@@ -410,13 +503,16 @@ func EncodeHandoverType(v uint8) []byte {
 }
 
 // EncodeGlobalENBID encodes a Global-ENB-ID IE value.
-// Wire format mirrors DecodeGlobalENBID: PLMN(3B) + eNB-ID CHOICE(ext=0, type) + BIT STRING.
+// Wire format mirrors DecodeGlobalENBID: SEQUENCE header + PLMN(3B) + eNB-ID CHOICE(ext=0, type) + BIT STRING.
 func EncodeGlobalENBID(g GlobalENBID) ([]byte, error) {
 	plmn, err := EncodePLMN(g.MCC, g.MNC)
 	if err != nil {
 		return nil, err
 	}
 	w := aper.NewBitWriter()
+	w.WriteBit(0) // Global-ENB-ID SEQUENCE extension = 0
+	w.WriteBit(0) // iE-Extensions absent
+	w.AlignToByte()
 	w.WriteOctets(plmn)
 	w.WriteBit(0) // eNB-ID CHOICE extension = 0
 	if g.ENB.Type == ENBIDTypeMacro {

@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -34,21 +35,46 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	var mtmsi uint32
 	var stmsiPresent bool
 
-	for _, ie := range ieList {
+	for idx, ie := range ieList {
+		log.Debug("s1ap: InitialUE IE",
+			zap.Int("ie_index", idx),
+			zap.Uint16("ie_id", ie.ID),
+			zap.String("criticality", ie.Criticality.String()),
+			zap.Int("open_type_len", len(ie.Value)),
+			zap.String("raw", hex.EncodeToString(ie.Value)))
 		switch ie.ID {
 		case pdu.IEENBS1APID:
 			id, err := ies.DecodeENBUEApID(ie.Value)
 			if err != nil {
-				log.Warn("s1ap: InitialUE: ENB UE S1AP ID decode error", zap.Error(err))
+				log.Warn("s1ap: InitialUE: ENB UE S1AP ID decode error",
+					zap.Int("open_type_len", len(ie.Value)),
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.Error(err))
 				return
 			}
 			enbUEID = id
+			log.Debug("s1ap: InitialUE eNB-UE-S1AP-ID decoded", zap.Uint32("enb_ue_id", enbUEID))
 		case pdu.IENAS_PDU:
 			nasPDU, _ = ies.DecodeNASPDU(ie.Value)
 		case pdu.IETAI:
-			t, err := ies.DecodeTAI(ie.Value)
+			taiValue := ie.Value
+
+			// InitialUEMessage TAI open type may include the APER SEQUENCE prefix:
+			// ext=0 and iE-Extensions absent=0, aligned to one byte.
+			// The semantic TAI value is PLMN[3] + TAC[2].
+			if len(taiValue) == 6 && taiValue[0] == 0x00 {
+				taiValue = taiValue[1:]
+			}
+
+			t, err := ies.DecodeTAI(taiValue)
 			if err == nil {
 				tai = &t
+			} else {
+				log.Warn("s1ap: InitialUE: TAI decode error",
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.String("tai_value", hex.EncodeToString(taiValue)),
+					zap.Error(err),
+				)
 			}
 		case pdu.IECGI:
 			e, err := ies.DecodeECGI(ie.Value)
@@ -146,13 +172,26 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	// Store UE network capability for SMC
 	ue.Lock()
 	ue.UENetworkCapability = ar.UENetworkCapability
+	ue.InitialAttachRequestNAS = append([]byte(nil), nasPDU...)
 	ue.Unlock()
 
 	// Decode ESM container to get PTI
 	if esmMsg, _ := esm.Decode(ar.ESMContainer); esmMsg != nil {
+		pdnReq := esm.DecodePDNConnectivityRequest(ar.ESMContainer)
+		var pco []byte
+		if pdnReq != nil {
+			pco = append([]byte(nil), pdnReq.PCO...)
+		}
 		ue.Lock()
 		ue.PDNRequestPTI = esmMsg.Header.ProcedureTransactionID
+		ue.ESMContainer = append([]byte(nil), ar.ESMContainer...)
+		ue.PDNRequest = append([]byte(nil), ar.ESMContainer...)
+		ue.PCO = append([]byte(nil), pco...)
 		ue.Unlock()
+		log.Debug("s1ap: decoded Attach Request ESM container",
+			zap.String("esm_container_hex", hex.EncodeToString(ar.ESMContainer)),
+			zap.String("pdn_connectivity_request_hex", hex.EncodeToString(ar.ESMContainer)),
+			zap.String("pco_from_ue_hex", hex.EncodeToString(pco)))
 	}
 
 	// Resolve IMSI — either directly from Attach Request or via GUTI lookup
@@ -194,8 +233,10 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "request").Inc()
 	metrics.S1APMessagesTotal.WithLabelValues("InitialUEMessage", "inbound", "ok").Inc()
 
-	// Encode PLMN from config for S6a
-	plmn, err := ies.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	// Encode PLMN from config for S6a. Visited-PLMN-Id uses the
+	// serving-network format used by KASME derivation, not the S1AP PLMN
+	// octet order used inside S1AP IEs.
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
 	if err != nil {
 		log.Error("s1ap: failed to encode PLMN", zap.Error(err))
 		s.ueManager.Remove(ue)
@@ -294,7 +335,7 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 		// Expect plain Auth Response (or Auth Failure)
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
 	case attachStep == uecontext.AttachStepWaitingSMCCplt:
-		// SMC Complete arrives integrity-protected with new EPS security context
+		// SMC Complete arrives integrity-protected and ciphered with the new EPS security context.
 		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal)
 	case attachStep == uecontext.AttachStepWaitingAttachCplt:
 		// Attach Complete arrives integrity-protected (and possibly ciphered)
@@ -328,9 +369,11 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 	}
 
 	log.Debug("s1ap: processNAS",
+		zap.String("direction", "uplink"),
 		zap.Uint8("sec_hdr", result.SecHeaderType),
 		zap.Uint8("pd", result.PD),
-		zap.Uint8("msg_type", result.MsgType))
+		zap.Uint8("msg_type", result.MsgType),
+		zap.String("nas_hex", hex.EncodeToString(raw)))
 
 	switch result.PD {
 	case emm.PDEPSMobilityMgmt:
@@ -367,7 +410,13 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 		return s.processSMCComplete(ue, result.Inner, log)
 
 	case emm.MsgSecurityModeReject:
-		log.Warn("s1ap: Security Mode Reject from UE")
+		var cause uint8
+		if len(result.Inner) > 0 {
+			cause = result.Inner[0]
+		}
+		log.Warn("s1ap: Security Mode Reject from UE",
+			zap.Uint8("emm_cause", cause),
+			zap.String("emm_cause_name", emm.CauseName(cause)))
 		rejectPDU := emm.EncodeAttachReject(emm.CauseSecurityModeRejectedUnspecified)
 		s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, rejectPDU)
 		s.ueManager.Remove(ue)
@@ -407,6 +456,7 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	xres := ue.XRES
 	kasme := ue.KASME
 	ueCap := ue.UENetworkCapability
+	initialAttachRequestNAS := append([]byte(nil), ue.InitialAttachRequestNAS...)
 	mmeUEID := ue.MMEUES1APID
 	enbAddr := ue.ENBGlobalID
 	enbUEID := ue.ENBS1APID
@@ -445,18 +495,103 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	ue.KNASint = knasInt
 	ue.KNASenc = knasEnc
 	ue.AttachStep = uecontext.AttachStepWaitingSMCCplt
-	dlCount := ue.IncrementDLCount()
+	dlCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
+	var hashMME []byte
+	if len(initialAttachRequestNAS) > 0 {
+		hashMME = security.HashMME(initialAttachRequestNAS)
+	}
+
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
-	smcPlain := emm.EncodeSecurityModeCommand(intAlg, encAlg, ueCap)
+	smcPlain := emm.EncodeSecurityModeCommandWithHashMME(intAlg, encAlg, ueCap, hashMME)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
-	smcProtected, err := nas.EncodeIntegrityProtected(smcPlain, intAlg, knasInt, dlCount)
+	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
 		return fmt.Errorf("processAuthResponse: encode SMC: %w", err)
 	}
+	smcSeq := uint8(dlCount & 0xff)
+	smcMACInput := make([]byte, 1+len(smcPlain))
+	smcMACInput[0] = smcSeq
+	copy(smcMACInput[1:], smcPlain)
+	smcEIA2InputDL := security.EIA2CMACInput(dlCount, 0, 1, smcMACInput)
+	smcEIA2InputUL := security.EIA2CMACInput(dlCount, 0, 0, smcMACInput)
+	var smcMACDownlinkCandidate, smcMACUplinkCandidate []byte
+	var smcMACFirst16Candidate, smcMACLast16Candidate []byte
+	var smcEIA2Details *security.EIA2CMACDetails
+	var nasKeyMaterial *security.NASKeyMaterial
+	if intAlg == security.AlgIDEIA2 {
+		smcMACDownlinkCandidate, _ = security.ComputeNASMAC(intAlg, knasInt, dlCount, 0, 1, smcMACInput)
+		smcMACUplinkCandidate, _ = security.ComputeNASMAC(intAlg, knasInt, dlCount, 0, 0, smcMACInput)
+		smcEIA2Details, _ = security.ComputeEIA2CMACDetails(knasInt, dlCount, 0, 1, smcMACInput)
+		nasKeyMaterial, _ = security.DeriveNASKeyMaterial(kasme, intAlg, encAlg)
+		if nasKeyMaterial != nil && len(nasKeyMaterial.IntOut) == 32 {
+			smcMACFirst16Candidate, _ = security.ComputeNASMAC(intAlg, nasKeyMaterial.IntOut[:16], dlCount, 0, 1, smcMACInput)
+			smcMACLast16Candidate, _ = security.ComputeNASMAC(intAlg, nasKeyMaterial.IntOut[16:], dlCount, 0, 1, smcMACInput)
+		}
+	}
+	var intS, encS, intOut, encOut, intFirst16, intLast16, encFirst16, encLast16 []byte
+	if nasKeyMaterial != nil {
+		intS = nasKeyMaterial.IntS
+		encS = nasKeyMaterial.EncS
+		intOut = nasKeyMaterial.IntOut
+		encOut = nasKeyMaterial.EncOut
+		if len(intOut) == 32 {
+			intFirst16 = intOut[:16]
+			intLast16 = intOut[16:]
+		}
+		if len(encOut) == 32 {
+			encFirst16 = encOut[:16]
+			encLast16 = encOut[16:]
+		}
+	}
+	log.Debug("s1ap: Security Mode Command security",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("dl_nas_count", dlCount),
+		zap.Uint8("nas_sequence_number", smcSeq),
+		zap.Uint8("direction", 1),
+		zap.Uint8("bearer", 0),
+		zap.Uint8("security_header_type", smcProtected[0]>>4),
+		zap.Uint8("protocol_discriminator", smcProtected[0]&0x0f),
+		zap.Uint8("selected_int_alg", intAlg),
+		zap.Uint8("selected_enc_alg", encAlg),
+		zap.Int("kasme_len", len(kasme)),
+		zap.String("kasme_hex", hex.EncodeToString(kasme)),
+		zap.String("nas_int_kdf_s_hex", hex.EncodeToString(intS)),
+		zap.String("nas_enc_kdf_s_hex", hex.EncodeToString(encS)),
+		zap.String("nas_int_kdf_out_hex", hex.EncodeToString(intOut)),
+		zap.String("nas_int_kdf_first16_hex", hex.EncodeToString(intFirst16)),
+		zap.String("nas_int_kdf_last16_hex", hex.EncodeToString(intLast16)),
+		zap.String("nas_enc_kdf_out_hex", hex.EncodeToString(encOut)),
+		zap.String("nas_enc_kdf_first16_hex", hex.EncodeToString(encFirst16)),
+		zap.String("nas_enc_kdf_last16_hex", hex.EncodeToString(encLast16)),
+		zap.String("knas_int_hex", hex.EncodeToString(knasInt)),
+		zap.String("knas_enc_hex", hex.EncodeToString(knasEnc)),
+		zap.String("ue_security_capability_hex", hex.EncodeToString(ueCap)),
+		zap.String("initial_nas_attach_request_hex", hex.EncodeToString(initialAttachRequestNAS)),
+		zap.String("hash_mme_input_hex", hex.EncodeToString(initialAttachRequestNAS)),
+		zap.String("hash_mme_hex", hex.EncodeToString(hashMME)),
+		zap.String("plain_smc_hex", hex.EncodeToString(smcPlain)),
+		zap.String("plain_smc_hex_with_hash_mme", hex.EncodeToString(smcPlain)),
+		zap.String("nas_mac_input_hex", hex.EncodeToString(smcMACInput)),
+		zap.String("eia2_cmac_input_downlink_hex", hex.EncodeToString(smcEIA2InputDL)),
+		zap.String("eia2_cmac_input_uplink_hex", hex.EncodeToString(smcEIA2InputUL)),
+		zap.String("eia2_mac_downlink_candidate_hex", hex.EncodeToString(smcMACDownlinkCandidate)),
+		zap.String("eia2_mac_uplink_candidate_hex", hex.EncodeToString(smcMACUplinkCandidate)),
+		zap.String("eia2_mac_first16_knasint_candidate_hex", hex.EncodeToString(smcMACFirst16Candidate)),
+		zap.String("eia2_mac_last16_knasint_candidate_hex", hex.EncodeToString(smcMACLast16Candidate)),
+		zap.String("aes_cmac_full_16_hex", hex.EncodeToString(eia2DetailsFull(smcEIA2Details))),
+		zap.String("aes_cmac_first4_hex", hex.EncodeToString(eia2DetailsFirst4(smcEIA2Details))),
+		zap.String("aes_cmac_last4_hex", hex.EncodeToString(eia2DetailsLast4(smcEIA2Details))),
+		zap.String("aes_cmac_reversed_first4_hex", hex.EncodeToString(eia2DetailsReversedFirst4(smcEIA2Details))),
+		zap.String("aes_cmac_reversed_last4_hex", hex.EncodeToString(eia2DetailsReversedLast4(smcEIA2Details))),
+		zap.String("computed_mac_hex", hex.EncodeToString(smcProtected[1:5])),
+		zap.String("protected_smc_hex", hex.EncodeToString(smcProtected)))
 
 	s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, smcProtected)
+	ue.Lock()
+	ue.DLNASCount.Increment()
+	ue.Unlock()
 	log.Info("s1ap: Security Mode Command sent",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint8("int_alg", intAlg), zap.Uint8("enc_alg", encAlg))
@@ -476,7 +611,7 @@ func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap
 	log.Info("s1ap: Security Mode Complete received, sending ULR")
 	metrics.NASProceduresTotal.WithLabelValues("SecurityMode", "complete").Inc()
 
-	plmn, err := ies.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
 	if err != nil {
 		return fmt.Errorf("processSMCComplete: EncodePLMN: %w", err)
 	}
@@ -578,11 +713,27 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, log *zap.Logger) e
 			ENBU_IP:    mbrENBUIP,
 			RATType:    gtpv2.RATTypeEUTRAN,
 		}
+		s.log.Info("s1ap: sending S11 Modify Bearer Request",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint8("ebi", mbrDefaultEBI),
+			zap.String("sgw_s11_addr", mbrSGWAddr),
+			zap.Uint32("sgwc_teid", mbrSGWCTEID),
+			zap.String("sgwc_teid_hex", fmt.Sprintf("0x%08x", mbrSGWCTEID)),
+			zap.Uint32("enb_s1u_teid", mbrENBUTEID),
+			zap.String("enb_s1u_teid_hex", fmt.Sprintf("0x%08x", mbrENBUTEID)),
+			zap.String("enb_s1u_ipv4", mbrENBUIP.String()))
 		go func() {
 			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
 				s.log.Warn("s1ap: SendMBR failed on Attach Complete", zap.Error(err))
 			}
 		}()
+	} else {
+		s.log.Warn("s1ap: skipping S11 Modify Bearer Request after Attach Complete",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("enb_s1u_teid", mbrENBUTEID),
+			zap.String("enb_s1u_ipv4", mbrENBUIP.String()),
+			zap.Uint32("sgwc_teid", mbrSGWCTEID),
+			zap.Uint8("ebi", mbrDefaultEBI))
 	}
 
 	if s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterAttach {
@@ -655,7 +806,7 @@ func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log
 
 	log.Info("s1ap: Identity Response: IMSI obtained", zap.String("imsi", idResp.IMSI))
 
-	plmn, err := ies.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
 	if err != nil {
 		return fmt.Errorf("processIdentityResponse: EncodePLMN: %w", err)
 	}
@@ -663,4 +814,39 @@ func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log
 	copy(plmn3[:], plmn)
 
 	return s.s6a.SendAIR(idResp.IMSI, plmn3, mmeUEID)
+}
+
+func eia2DetailsFull(d *security.EIA2CMACDetails) []byte {
+	if d == nil {
+		return nil
+	}
+	return d.Full
+}
+
+func eia2DetailsFirst4(d *security.EIA2CMACDetails) []byte {
+	if d == nil {
+		return nil
+	}
+	return d.First4
+}
+
+func eia2DetailsLast4(d *security.EIA2CMACDetails) []byte {
+	if d == nil {
+		return nil
+	}
+	return d.Last4
+}
+
+func eia2DetailsReversedFirst4(d *security.EIA2CMACDetails) []byte {
+	if d == nil {
+		return nil
+	}
+	return d.ReversedFirst4
+}
+
+func eia2DetailsReversedLast4(d *security.EIA2CMACDetails) []byte {
+	if d == nil {
+		return nil
+	}
+	return d.ReversedLast4
 }

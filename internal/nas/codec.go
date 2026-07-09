@@ -109,7 +109,7 @@ func Decode(
 		}, nil
 
 	case emm.SecurityHeaderNewEPSSecurityCtx:
-		// Integrity-protected with new EPS security context (Security Mode Complete)
+		// Integrity-protected with new EPS security context.
 		// TS 33.401 §5.7.3: verify MAC with new KNASint at UL COUNT=0.
 		if len(raw) < 6 {
 			return nil, fmt.Errorf("nas: new-context message too short")
@@ -136,6 +136,36 @@ func Decode(
 			Inner:         inner[2:],
 		}, nil
 
+	case emm.SecurityHeaderCipherNewEPSSecCtx:
+		// Integrity-protected and ciphered with new EPS security context
+		// (Security Mode Complete).
+		if len(raw) < 6 {
+			return nil, fmt.Errorf("nas: ciphered new-context message too short")
+		}
+		mac := raw[1:5]
+		seq := raw[5]
+		encrypted := raw[6:]
+		count := (ulCount & 0xFFFFFF00) | uint32(seq)
+		msgForMAC := make([]byte, 1+len(encrypted))
+		msgForMAC[0] = seq
+		copy(msgForMAC[1:], encrypted)
+		if err := security.VerifyNASMAC(intAlgID, knasInt, count, 0, 0, msgForMAC, mac); err != nil {
+			return nil, fmt.Errorf("nas: SMC Complete MAC verification failed: %w", err)
+		}
+		plaintext, err := security.CipherNAS(encAlgID, knasEnc, count, 0, 0, encrypted)
+		if err != nil {
+			return nil, fmt.Errorf("nas: SMC Complete decryption failed: %w", err)
+		}
+		if len(plaintext) < 2 {
+			return nil, fmt.Errorf("nas: inner too short")
+		}
+		return &DecodeResult{
+			SecHeaderType: secHdrType,
+			PD:            pd,
+			MsgType:       plaintext[1],
+			Inner:         plaintext[2:],
+		}, nil
+
 	default:
 		return nil, fmt.Errorf("nas: unsupported security header type %d", secHdrType)
 	}
@@ -148,6 +178,28 @@ func EncodeIntegrityProtected(
 	knasInt []byte,
 	dlCount uint32,
 ) ([]byte, error) {
+	return encodeIntegrityProtectedWithHeader(plain, intAlgID, knasInt, dlCount, emm.SecurityHeaderIntegrityProtected)
+}
+
+// EncodeIntegrityProtectedNewEPSSecurityContext wraps a plain NAS PDU with
+// integrity protection using the new EPS security context header. This is used
+// for Security Mode Command before the new security context is fully active.
+func EncodeIntegrityProtectedNewEPSSecurityContext(
+	plain []byte,
+	intAlgID uint8,
+	knasInt []byte,
+	dlCount uint32,
+) ([]byte, error) {
+	return encodeIntegrityProtectedWithHeader(plain, intAlgID, knasInt, dlCount, emm.SecurityHeaderNewEPSSecurityCtx)
+}
+
+func encodeIntegrityProtectedWithHeader(
+	plain []byte,
+	intAlgID uint8,
+	knasInt []byte,
+	dlCount uint32,
+	securityHeaderType uint8,
+) ([]byte, error) {
 	seq := uint8(dlCount & 0xFF)
 	// Compute MAC over: [SN byte || plain NAS message] per TS 33.401 §B.2
 	msgForMAC := make([]byte, 1+len(plain))
@@ -158,9 +210,9 @@ func EncodeIntegrityProtected(
 		return nil, err
 	}
 	// Build security-protected message:
-	// Byte 0: PD (EMM) | security header = 0x01 (integrity only)
+	// Byte 0: PD (EMM) | security header.
 	b := make([]byte, 0, 6+len(plain))
-	b = append(b, emm.PDEPSMobilityMgmt|(emm.SecurityHeaderIntegrityProtected<<4))
+	b = append(b, emm.PDEPSMobilityMgmt|(securityHeaderType<<4))
 	b = append(b, mac...)
 	b = append(b, seq)
 	b = append(b, plain...)
