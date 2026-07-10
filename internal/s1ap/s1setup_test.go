@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +90,17 @@ func TestHandleS1SetupRequestStoresPLMNAndSupportedTA(t *testing.T) {
 	bp := enb.SupportedTAs[0].BroadcastPLMNs[0]
 	if bp.MCC != "311" || bp.MNC != "435" {
 		t.Fatalf("BroadcastPLMN: got %s/%s, want 311/435", bp.MCC, bp.MNC)
+	}
+
+	peer, ok := srv.enbTracker.Get(remoteAddr)
+	if !ok {
+		t.Fatal("eNB peer tracker entry was not stored")
+	}
+	if peer.SupportedTAs == "" || peer.SupportedTAs == "null" {
+		t.Fatalf("peer SupportedTAs = %q, want decoded TA JSON", peer.SupportedTAs)
+	}
+	if !strings.Contains(peer.SupportedTAs, `"TAC":1`) || !strings.Contains(peer.SupportedTAs, `"MCC":"311"`) || !strings.Contains(peer.SupportedTAs, `"MNC":"435"`) {
+		t.Fatalf("peer SupportedTAs = %s, want TAC 1 PLMN 311/435", peer.SupportedTAs)
 	}
 }
 

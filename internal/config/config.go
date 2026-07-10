@@ -24,10 +24,6 @@ type Config struct {
 
 // OperatorConfig holds network identity and NITZ settings pushed to UEs via EMM Information.
 type OperatorConfig struct {
-	PLMN struct {
-		MCC string `yaml:"mcc"`
-		MNC string `yaml:"mnc"`
-	} `yaml:"plmn"`
 	Name struct {
 		Full      string `yaml:"full"`
 		Short     string `yaml:"short"`

@@ -30,7 +30,7 @@ func registerOperatorHandlers(api huma.API, s *Server) {
 	huma.Register(api, huma.Operation{
 		OperationID: "get-operator",
 		Method:      http.MethodGet,
-		Path:        "/operator",
+		Path:        apiPrefix + "/operator",
 		Summary:     "Get operator identity and NITZ configuration",
 		Tags:        []string{"Operator"},
 	}, s.getOperator)
@@ -39,8 +39,8 @@ func registerOperatorHandlers(api huma.API, s *Server) {
 func (s *Server) getOperator(_ context.Context, _ *struct{}) (*operatorOutput, error) {
 	cfg := s.operCfg
 	out := &operatorOutput{}
-	out.Body.PLMN.MCC = cfg.PLMN.MCC
-	out.Body.PLMN.MNC = cfg.PLMN.MNC
+	out.Body.PLMN.MCC = s.nfCfg.MCC
+	out.Body.PLMN.MNC = s.nfCfg.MNC
 	out.Body.FullName = cfg.Name.Full
 	out.Body.ShortName = cfg.Name.Short
 	out.Body.ShowFull = cfg.Name.ShowFull

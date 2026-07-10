@@ -1,7 +1,7 @@
-.PHONY: ui build stressor test clean dev-ui all install uninstall
+.PHONY: ui build stressor test clean dev-ui all install uninstall version
 
 BINARY     = mme
-VERSION   ?= 1.0.0
+VERSION   ?= 0.0.1d
 PREFIX     = /opt/vectorcore
 BINDIR     = $(PREFIX)/bin
 ETCDIR     = $(PREFIX)/etc
@@ -10,6 +10,9 @@ SYSTEMD    = /lib/systemd/system/
 LDFLAGS    = -X github.com/vectorcore/mme/internal/buildinfo.Version=$(VERSION)
 
 all: ui build
+
+version:
+	@echo $(VERSION)
 
 # Build the React UI (required before `make build`)
 ui:

@@ -453,6 +453,48 @@ func (s *Server) HandleDSRResult(mmeUEID uint32, err error) {
 		return
 	}
 	s.log.Info("s1ap: DSRsp accepted, session deleted", zap.Uint32("mme_ue_id", mmeUEID))
+	s.cleanupDetachedUE(mmeUEID, "s11-delete-session")
+}
+
+func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		s.log.Debug("s1ap: detached UE cleanup skipped, context already removed",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("reason", reason))
+		return
+	}
+
+	ue.Lock()
+	emmState := ue.EMMState
+	imsi := ue.IMSI
+	ue.Unlock()
+	if emmState != emm.StateDeregisteredInitiated {
+		s.log.Debug("s1ap: DSRsp cleanup skipped, UE is not detaching",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("emm_state", emmState.String()),
+			zap.String("reason", reason))
+		return
+	}
+
+	s.ueManager.Remove(ue)
+	metrics.AttachedUEs.Dec()
+	s.log.Info("s1ap: detached UE context removed",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.String("reason", reason))
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.store.DeleteUEContext(ctx, mmeUEID); err != nil {
+			s.log.Warn("s1ap: failed to delete detached UE context from DB",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.String("imsi", imsi),
+				zap.Error(err))
+		}
+	}()
 }
 
 // sendDeleteSession sends a GTPv2-C Delete Session Request to the S-GW for the given UE.

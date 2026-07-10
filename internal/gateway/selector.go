@@ -56,6 +56,27 @@ type Selection struct {
 	Field       string
 }
 
+// DNSCacheEntry is a serializable snapshot of one gateway DNS cache entry.
+type DNSCacheEntry struct {
+	NodeType        string    `json:"node_type"`
+	QueryName       string    `json:"query_name"`
+	Service         string    `json:"service"`
+	PreferIPv6      bool      `json:"prefer_ipv6"`
+	Source          string    `json:"source,omitempty"`
+	Address         string    `json:"address,omitempty"`
+	Port            int       `json:"port,omitempty"`
+	UDPAddress      string    `json:"udp_address,omitempty"`
+	Hostname        string    `json:"hostname,omitempty"`
+	Interface       string    `json:"interface,omitempty"`
+	Target          string    `json:"target,omitempty"`
+	NAPTROrder      uint16    `json:"naptr_order,omitempty"`
+	NAPTRPreference uint16    `json:"naptr_preference,omitempty"`
+	Error           string    `json:"error,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	TTLSeconds      float64   `json:"ttl_seconds"`
+	Expired         bool      `json:"expired"`
+}
+
 func (s *Selection) UDPAddr() string {
 	if s == nil || s.Address == nil {
 		return ""
@@ -86,6 +107,20 @@ func NewSelector(cfg config.Config, log *zap.Logger) *Selector {
 	s.lookupNAPTRFn = s.exchangeNAPTR
 	s.lookupAddrFn = s.exchangeAddr
 	return s
+}
+
+func (s *Selector) DNSCacheSnapshot() []DNSCacheEntry {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	return s.cache.snapshot(s.now())
+}
+
+func (s *Selector) FlushDNSCache() int {
+	if s == nil || s.cache == nil {
+		return 0
+	}
+	return s.cache.clear()
 }
 
 func (s *Selector) SelectSGW(ctx context.Context, tac uint16) (*Selection, error) {
@@ -553,4 +588,62 @@ func (c *dnsCache) set(key cacheKey, entry cacheEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.entries[key] = entry
+}
+
+func (c *dnsCache) snapshot(now time.Time) []DNSCacheEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make([]DNSCacheEntry, 0, len(c.entries))
+	for key, entry := range c.entries {
+		expired := !entry.Expiry.After(now)
+		if expired {
+			delete(c.entries, key)
+			continue
+		}
+		sel := entry.Selection
+		item := DNSCacheEntry{
+			NodeType:        key.NodeType,
+			QueryName:       key.QueryName,
+			Service:         key.Service,
+			PreferIPv6:      key.PreferIPv6,
+			Source:          sel.Source,
+			Port:            sel.Port,
+			Hostname:        sel.Hostname,
+			Interface:       sel.Interface,
+			Target:          sel.Target,
+			NAPTROrder:      sel.NAPTROrder,
+			NAPTRPreference: sel.NAPTRPref,
+			Error:           entry.Err,
+			ExpiresAt:       entry.Expiry,
+			TTLSeconds:      entry.Expiry.Sub(now).Seconds(),
+			Expired:         expired,
+		}
+		if sel.Address != nil {
+			item.Address = sel.Address.String()
+			item.UDPAddress = sel.UDPAddr()
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].NodeType != out[j].NodeType {
+			return out[i].NodeType < out[j].NodeType
+		}
+		if out[i].QueryName != out[j].QueryName {
+			return out[i].QueryName < out[j].QueryName
+		}
+		if out[i].Service != out[j].Service {
+			return out[i].Service < out[j].Service
+		}
+		return !out[i].PreferIPv6 && out[j].PreferIPv6
+	})
+	return out
+}
+
+func (c *dnsCache) clear() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.entries)
+	c.entries = make(map[cacheKey]cacheEntry)
+	return n
 }

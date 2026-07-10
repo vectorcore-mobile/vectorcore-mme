@@ -16,6 +16,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/buildinfo"
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/repository"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -25,6 +26,8 @@ import (
 var appVersion = buildinfo.Version
 
 var startTime = time.Now()
+
+const apiPrefix = "/api/v1"
 
 // DiamStatus is a narrow interface for querying Diameter connection state.
 type DiamStatus interface {
@@ -46,11 +49,15 @@ type Server struct {
 	ueManager  *uecontext.Manager
 	s6a        DiamStatus
 	pager      Pager
+	gatewaySel *gateway.Selector
 	log        *zap.Logger
 }
 
 // SetPager wires the S1AP paging implementation into the API server.
 func (s *Server) SetPager(p Pager) { s.pager = p }
+
+// SetGatewaySelector wires gateway DNS cache inspection and control into the API server.
+func (s *Server) SetGatewaySelector(selector *gateway.Selector) { s.gatewaySel = selector }
 
 // New creates a new API Server.
 func New(
@@ -102,18 +109,16 @@ func (s *Server) Handler() http.Handler {
 	r.Handle("/ui/", ui)
 	r.Handle("/ui/*", ui)
 
-	// JSON API under /api/v1
+	// JSON API under /api/v1, with interactive docs mounted at /docs.
 	humaConfig := huma.DefaultConfig("VectorCore MME OAM API", appVersion)
-	humaConfig.OpenAPIPath = "/api/v1/openapi.json"
-	humaConfig.DocsPath = "/api/v1/docs"
-	humaConfig.SchemasPath = "/api/v1/schemas"
-	r.Route("/api/v1", func(sub chi.Router) {
-		api := humachi.New(sub, humaConfig)
-		registerENBHandlers(api, s)
-		registerUEHandlers(api, s)
-		registerOAMHandlers(api, s)
-		registerOperatorHandlers(api, s)
-	})
+	humaConfig.OpenAPIPath = "/openapi"
+	humaConfig.DocsPath = "/docs"
+	humaConfig.SchemasPath = "/schemas"
+	api := humachi.New(r, humaConfig)
+	registerENBHandlers(api, s)
+	registerUEHandlers(api, s)
+	registerOAMHandlers(api, s)
+	registerOperatorHandlers(api, s)
 
 	return r
 }

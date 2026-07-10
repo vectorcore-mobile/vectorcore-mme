@@ -19,6 +19,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/vectorcore/mme/internal/api"
+	"github.com/vectorcore/mme/internal/buildinfo"
 	"github.com/vectorcore/mme/internal/config"
 	s6a "github.com/vectorcore/mme/internal/diameter/s6a"
 	"github.com/vectorcore/mme/internal/gateway"
@@ -33,7 +34,14 @@ import (
 
 func main() {
 	cfgPath := flag.String("c", "config/mme.yaml", "path to config file")
+	showVersion := flag.Bool("v", false, "print version information and exit")
+	debugConsole := flag.Bool("d", false, "enable debug logging on the console")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("VectorCore-MME %s\n", buildinfo.Version)
+		return
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -41,10 +49,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	log := buildLogger(cfg.Logging)
+	log := buildLogger(cfg.Logging, *debugConsole)
 	defer func() { _ = log.Sync() }()
 
+	fmt.Println("Starting VectorCore-MME")
 	log.Info("VectorCore MME starting",
+		zap.String("version", buildinfo.Version),
 		zap.String("origin_host", cfg.NF.OriginHost),
 		zap.String("origin_realm", cfg.NF.OriginRealm))
 
@@ -96,8 +106,9 @@ func main() {
 	}
 
 	// S1AP server (accepts eNB SCTP connections)
+	gatewaySelector := gateway.NewSelector(*cfg, log)
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
-	s1apSrv.SetGatewaySelector(gateway.NewSelector(*cfg, log))
+	s1apSrv.SetGatewaySelector(gatewaySelector)
 
 	// Wire result callbacks
 	s6aHandlers.SetResultHandler(s1apSrv)
@@ -115,6 +126,7 @@ func main() {
 	if cfg.API.Enabled {
 		apiSrv := api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
 		apiSrv.SetPager(s1apSrv)
+		apiSrv.SetGatewaySelector(gatewaySelector)
 		go func() { errCh <- apiSrv.Start() }()
 	}
 
@@ -137,23 +149,32 @@ func main() {
 	}
 }
 
-func buildLogger(cfg config.LoggingConfig) *zap.Logger {
-	level := zapcore.InfoLevel
-	if err := level.UnmarshalText([]byte(cfg.Level)); err != nil {
-		level = zapcore.InfoLevel
+func buildLogger(cfg config.LoggingConfig, debugConsole bool) *zap.Logger {
+	fileLevel := zapcore.InfoLevel
+	if err := fileLevel.UnmarshalText([]byte(cfg.Level)); err != nil {
+		fileLevel = zapcore.InfoLevel
 	}
 
-	zapCfg := zap.NewProductionConfig()
-	zapCfg.Level = zap.NewAtomicLevelAt(level)
+	encoderCfg := zap.NewProductionEncoderConfig()
+	cores := make([]zapcore.Core, 0, 3)
+
 	if cfg.File != "" {
-		zapCfg.OutputPaths = []string{cfg.File, "stdout"}
+		fileSink, _, err := zap.Open(cfg.File)
+		if err != nil {
+			panic(fmt.Sprintf("failed to open log file: %v", err))
+		}
+		cores = append(cores, zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), fileSink, zap.LevelEnablerFunc(func(level zapcore.Level) bool {
+			return level >= fileLevel
+		})))
 	}
 
-	log, err := zapCfg.Build()
-	if err != nil {
-		panic(fmt.Sprintf("failed to build logger: %v", err))
+	if debugConsole {
+		cores = append(cores, zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), zapcore.Lock(os.Stdout), zap.DebugLevel))
+	} else {
+		cores = append(cores, zapcore.NewCore(zapcore.NewJSONEncoder(encoderCfg), zapcore.Lock(os.Stderr), zap.FatalLevel))
 	}
-	return log
+
+	return zap.New(zapcore.NewTee(cores...), zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 }
 
 func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {

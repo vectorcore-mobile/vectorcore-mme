@@ -475,60 +475,6 @@ h1, h2, h3, h4, h5 {
   margin-left: auto;
 }
 
-/* ============================================================
-   Badge
-   ============================================================ */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  white-space: nowrap;
-}
-
-.badge-open {
-  background: var(--success-bg);
-  color: var(--success);
-  border: 1px solid rgba(63, 185, 80, 0.3);
-}
-
-.badge-closed {
-  background: var(--danger-bg);
-  color: var(--danger);
-  border: 1px solid rgba(248, 81, 73, 0.3);
-}
-
-.badge-connecting,
-.badge-wait_cea,
-.badge-wait_conn_ack,
-.badge-closing {
-  background: var(--warning-bg);
-  color: var(--warning);
-  border: 1px solid rgba(210, 153, 34, 0.3);
-}
-
-.badge-disabled {
-  background: var(--muted-bg);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-}
-
-.badge-active {
-  background: var(--info-bg);
-  color: var(--info);
-  border: 1px solid rgba(88, 166, 255, 0.3);
-}
-
-.badge-passive {
-  background: var(--muted-bg);
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-}
-
 .badge-tcp {
   background: rgba(88, 166, 255, 0.1);
   color: var(--accent);
@@ -919,73 +865,6 @@ tbody tr.expandable {
   height: 15px;
   cursor: pointer;
   accent-color: var(--accent);
-}
-
-/* ============================================================
-   Modal
-   ============================================================ */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 20px;
-}
-
-.modal {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  width: 100%;
-  max-width: 560px;
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--shadow-lg);
-}
-
-.modal-lg {
-  max-width: 720px;
-}
-
-.modal-xl {
-  max-width: 880px;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.modal-title {
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.modal-body {
-  padding: 20px;
-  overflow-y: auto;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 14px 20px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
 }
 
 /* ============================================================

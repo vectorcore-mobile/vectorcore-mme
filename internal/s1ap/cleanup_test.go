@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"testing"
 
-	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/gtpv2"
@@ -187,6 +187,43 @@ func TestSendDeleteSession_NoopWhenNoSession(t *testing.T) {
 
 	if len(mock.dsrCalls) != 0 {
 		t.Errorf("expected 0 DSR calls when SGWC_TEID=0, got %d", len(mock.dsrCalls))
+	}
+}
+
+func TestHandleDSRResult_RemovesDetachedUEContext(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "001010123456789"
+	ue.EMMState = emm.StateDeregisteredInitiated
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+	srv.ueManager.Register(ue)
+
+	srv.HandleDSRResult(mmeID, nil)
+
+	if _, ok := srv.ueManager.GetByMMEID(mmeID); ok {
+		t.Fatal("detached UE still present by MME UE S1AP ID after DSR success")
+	}
+	if _, ok := srv.ueManager.GetByIMSI("001010123456789"); ok {
+		t.Fatal("detached UE still present by IMSI after DSR success")
+	}
+}
+
+func TestHandleDSRResult_DoesNotRemoveRegisteredUE(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "001010123456780"
+	ue.EMMState = emm.StateRegistered
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+	srv.ueManager.Register(ue)
+
+	srv.HandleDSRResult(mmeID, nil)
+
+	if _, ok := srv.ueManager.GetByMMEID(mmeID); !ok {
+		t.Fatal("registered UE was removed by DSR success")
 	}
 }
 

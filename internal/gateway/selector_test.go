@@ -72,6 +72,27 @@ func TestSelectSGWUsesMatchingNAPTRAndCaches(t *testing.T) {
 	if naptrCount != 1 {
 		t.Fatalf("NAPTR query count = %d, want 1", naptrCount)
 	}
+
+	entries := sel.DNSCacheSnapshot()
+	if len(entries) != 1 {
+		t.Fatalf("DNSCacheSnapshot len = %d, want 1", len(entries))
+	}
+	entry := entries[0]
+	if entry.NodeType != NodeSGW || entry.QueryName != query || entry.Service != ServiceSGWS11 {
+		t.Fatalf("cache key = node %q query %q service %q", entry.NodeType, entry.QueryName, entry.Service)
+	}
+	if entry.Address != "10.90.250.20" || entry.UDPAddress != "10.90.250.20:2123" {
+		t.Fatalf("cache address = %q udp %q", entry.Address, entry.UDPAddress)
+	}
+	if entry.TTLSeconds <= 0 {
+		t.Fatalf("cache TTLSeconds = %f, want positive", entry.TTLSeconds)
+	}
+	if got := sel.FlushDNSCache(); got != 1 {
+		t.Fatalf("FlushDNSCache() = %d, want 1", got)
+	}
+	if entries := sel.DNSCacheSnapshot(); len(entries) != 0 {
+		t.Fatalf("DNSCacheSnapshot after flush len = %d, want 0", len(entries))
+	}
 }
 
 func TestSelectPGWFallsBackToStaticWhenDNSHasNoMatchingService(t *testing.T) {

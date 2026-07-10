@@ -76,24 +76,29 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 	// in the SCTP layer by having the server also act as a send dispatcher.
 	s.enbs.Store(remoteAddr, enb)
 
+	tasJSON := encodeSupportedTAsJSON(supportedTAs)
+	now := time.Now().UTC()
+
 	// Track in peer tracker
 	s.enbTracker.Add(peertracker.Peer{
-		Name:       enbName,
-		RemoteAddr: remoteAddr,
-		Transport:  "sctp",
+		Name:         enbName,
+		GlobalENBID:  globalENBID.Serialise(),
+		SupportedTAs: string(tasJSON),
+		RemoteAddr:   remoteAddr,
+		Transport:    "sctp",
+		LastSeen:     now,
 	})
 	metrics.S1APConnectedENBs.Set(float64(s.enbTracker.Count()))
 
 	// Persist eNB registration
 	go func() {
-		tas, _ := json.Marshal(supportedTAs)
 		reg := &models.ENBRegistration{
 			GlobalENBID:  globalENBID.Serialise(),
 			ENBName:      enbName,
-			SupportedTAs: string(tas),
+			SupportedTAs: string(tasJSON),
 			RemoteAddr:   remoteAddr,
-			LastSeen:     time.Now().UTC().Format(time.RFC3339),
-			LastModified: time.Now().UTC().Format(time.RFC3339),
+			LastSeen:     now.Format(time.RFC3339),
+			LastModified: now.Format(time.RFC3339),
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -114,6 +119,17 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 	log.Info("s1ap: sent S1 Setup Response",
 		zap.Duration("duration", time.Since(start)))
 	metrics.S1APMessagesTotal.WithLabelValues("S1Setup", "inbound", "success").Inc()
+}
+
+func encodeSupportedTAsJSON(tas []SupportedTA) string {
+	if tas == nil {
+		tas = []SupportedTA{}
+	}
+	b, err := json.Marshal(tas)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 func (s *Server) buildS1SetupResponseIEs() []pdu.ProtocolIE {

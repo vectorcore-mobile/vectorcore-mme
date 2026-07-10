@@ -9,6 +9,27 @@ function formatTs(ts) {
   try { return new Date(ts).toLocaleString() } catch { return String(ts) }
 }
 
+function formatSupportedTAs(value) {
+  if (!value) return '—'
+  let tas = value
+  if (typeof value === 'string') {
+    try {
+      tas = JSON.parse(value)
+    } catch {
+      return value
+    }
+  }
+  if (!Array.isArray(tas) || tas.length === 0) return '—'
+  return tas.map((ta) => {
+    const tac = ta.TAC ?? ta.tac
+    const plmns = ta.BroadcastPLMNs ?? ta.broadcast_plmns ?? []
+    const plmnText = Array.isArray(plmns) && plmns.length > 0
+      ? plmns.map((p) => `${p.MCC ?? p.mcc}/${p.MNC ?? p.mnc}`).join(', ')
+      : 'no PLMN'
+    return `TAC ${tac}: ${plmnText}`
+  }).join('; ')
+}
+
 export default function ENBs() {
   const fetchFn = useCallback(getENBs, [])
   const { data: enbs, error, loading, refresh } = usePoller(fetchFn, 5000)
@@ -92,7 +113,7 @@ export default function ENBs() {
                     ) : '—'}
                   </td>
                   <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {enb.supported_tas || '—'}
+                    {formatSupportedTAs(enb.supported_tas)}
                   </td>
                   <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                     {formatTs(enb.connected_at)}

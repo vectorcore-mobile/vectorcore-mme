@@ -9,10 +9,13 @@ import (
 
 // Peer represents a single connected peer.
 type Peer struct {
-	Name       string
-	RemoteAddr string
-	Transport  string
-	ConnectedAt time.Time
+	Name         string
+	GlobalENBID  string
+	SupportedTAs string
+	RemoteAddr   string
+	Transport    string
+	ConnectedAt  time.Time
+	LastSeen     time.Time
 }
 
 // Tracker is a concurrent-safe live-peer map with optional TTL expiry.
@@ -35,8 +38,12 @@ func NewWithMaxAge(maxAge time.Duration) *Tracker {
 
 // Add inserts or replaces a peer entry.
 func (t *Tracker) Add(p Peer) {
+	now := time.Now()
 	if p.ConnectedAt.IsZero() {
-		p.ConnectedAt = time.Now()
+		p.ConnectedAt = now
+	}
+	if p.LastSeen.IsZero() {
+		p.LastSeen = now
 	}
 	t.mu.Lock()
 	t.peers[p.RemoteAddr] = p
@@ -55,9 +62,18 @@ func (t *Tracker) Rename(remoteAddr, name string) {
 	t.mu.Lock()
 	if p, ok := t.peers[remoteAddr]; ok {
 		p.Name = name
+		p.LastSeen = time.Now()
 		t.peers[remoteAddr] = p
 	}
 	t.mu.Unlock()
+}
+
+// Get returns a single peer snapshot by remote address.
+func (t *Tracker) Get(remoteAddr string) (Peer, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	p, ok := t.peers[remoteAddr]
+	return p, ok
 }
 
 // List returns a snapshot of all live peers, applying TTL expiry if configured.
