@@ -3,6 +3,7 @@ package s1ap
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -338,7 +339,16 @@ func decodeICSResponseERABSetup(data []byte) (*icsResponseERABSetup, error) {
 	if _, err := ir.ReadBit(); err != nil {
 		return nil, fmt.Errorf("decode E-RAB setup item optional bitmap: %w", err)
 	}
-	// E-RAB-ID (0..15)
+	// E-RAB-ID INTEGER (0..15,...) includes an integer extension marker before
+	// the root constrained value. srsRAN/asn1c emits this bit even when the
+	// value is inside the root range.
+	erabIDExt, err := ir.ReadBit()
+	if err != nil {
+		return nil, fmt.Errorf("decode E-RAB ID extension bit: %w", err)
+	}
+	if erabIDExt != 0 {
+		return nil, fmt.Errorf("decode E-RAB ID: extension value not supported")
+	}
 	erabID, err := aper.DecodeConstrainedWholeNumber(ir, 0, 15)
 	if err != nil {
 		return nil, fmt.Errorf("decode E-RAB ID: %w", err)
@@ -467,6 +477,13 @@ func (s *Server) sendUEContextReleaseCommandCause(enbAddr string, mmeUEID, enbUE
 		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcUEContextRelease, aper.CriticalityReject, ieList)
+	s.log.Info("s1ap: UE Context Release Command sent",
+		zap.String("remote", enbAddr),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
+		zap.Uint8("cause_group", uint8(group)),
+		zap.Uint8("cause", cause),
+		zap.String("ue_s1ap_ids_hex", hex.EncodeToString(idsValue)))
 	s.sendToAddr(enbAddr, msg)
 	metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "outbound", "command").Inc()
 }

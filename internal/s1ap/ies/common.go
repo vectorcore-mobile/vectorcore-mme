@@ -455,8 +455,28 @@ func DecodeRRCEstablishmentCause(data []byte) (uint8, error) {
 // ── S-TMSI ────────────────────────────────────────────────────────────────────
 
 // DecodeSTMSI decodes the S-TMSI IE value (TS 36.413 §9.2.3.11).
-// Wire format: MMEC (BIT STRING SIZE 8 → 1 byte) + M-TMSI (BIT STRING SIZE 32 → 4 bytes).
+// Wire format: S-TMSI SEQUENCE preamble followed by MMEC BIT STRING SIZE(8)
+// and M-TMSI BIT STRING SIZE(32), bit-packed in APER.
 func DecodeSTMSI(data []byte) (mmec uint8, mtmsi uint32, err error) {
+	if len(data) >= 6 {
+		r := aper.NewBitReader(data)
+		if _, err := r.ReadBit(); err != nil {
+			return 0, 0, err
+		}
+		if _, err := r.ReadBit(); err != nil {
+			return 0, 0, err
+		}
+		mmecBits, err := r.ReadBits(8)
+		if err != nil {
+			return 0, 0, err
+		}
+		r.AlignToByte()
+		mtmsiBits, err := r.ReadBits(32)
+		if err != nil {
+			return 0, 0, err
+		}
+		return uint8(mmecBits), uint32(mtmsiBits), nil
+	}
 	if len(data) < 5 {
 		return 0, 0, fmt.Errorf("ies: S-TMSI IE too short: %d bytes", len(data))
 	}

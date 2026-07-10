@@ -33,6 +33,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	var rrcCause uint8
 	var mmec uint8
 	var mtmsi uint32
+	var stmsiRaw []byte
 	var stmsiPresent bool
 
 	for idx, ie := range ieList {
@@ -84,7 +85,21 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		case pdu.IERRCEstablishmentCause:
 			rrcCause, _ = ies.DecodeRRCEstablishmentCause(ie.Value)
 		case pdu.IESTMSI:
-			mmec, mtmsi, _ = ies.DecodeSTMSI(ie.Value)
+			stmsiRaw = append([]byte(nil), ie.Value...)
+			decodedMMEC, decodedMTMSI, err := ies.DecodeSTMSI(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: ServiceRequest: S-TMSI decode error",
+					zap.String("stmsi_raw", hex.EncodeToString(ie.Value)),
+					zap.Error(err))
+			} else {
+				mmec = decodedMMEC
+				mtmsi = decodedMTMSI
+				log.Info("s1ap: ServiceRequest: S-TMSI decoded from InitialUE",
+					zap.String("stmsi_raw", hex.EncodeToString(ie.Value)),
+					zap.Uint8("mmec", mmec),
+					zap.Uint32("mtmsi", mtmsi),
+					zap.String("mtmsi_hex", fmt.Sprintf("0x%08x", mtmsi)))
+			}
 			stmsiPresent = true
 		}
 	}
@@ -141,7 +156,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			}
 		}
 		if secHdr == emm.SecurityHeaderServiceRequest {
-			s.handleServiceRequest(ue, mmec, mtmsi, stmsiPresent, tai, nasPDU)
+			s.handleServiceRequest(ue, mmec, mtmsi, stmsiRaw, stmsiPresent, tai, nasPDU)
 			return
 		}
 		log.Warn("s1ap: InitialUE: NAS decode error", zap.Error(err))
@@ -423,7 +438,7 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 		return nil
 
 	case emm.MsgAttachComplete:
-		return s.processAttachComplete(ue, log)
+		return s.processAttachComplete(ue, result.Inner, log)
 
 	case emm.MsgDetachRequest:
 		return s.processDetach(ue, result.Inner, log)
@@ -626,8 +641,9 @@ func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap
 }
 
 // processAttachComplete handles a NAS Attach Complete from the UE.
-func (s *Server) processAttachComplete(ue *uecontext.Context, log *zap.Logger) error {
+func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *zap.Logger) error {
 	ue.Lock()
+	expectedEBI := ue.DefaultEBI
 	ue.SetEMMState(emm.StateRegistered)
 	ue.SetECMState(emm.ECMConnected)
 	ue.AttachStep = uecontext.AttachStepNone
@@ -689,6 +705,24 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, log *zap.Logger) e
 		dbCtx.TAI = fmt.Sprintf("%02X%02X%02X-%04X", ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
 	}
 	ue.Unlock()
+
+	if attachComplete, err := emm.DecodeAttachComplete(body); err != nil {
+		log.Warn("s1ap: Attach Complete ESM container decode failed",
+			zap.Error(err),
+			zap.String("attach_complete_body_hex", hex.EncodeToString(body)))
+	} else if accept, err := esm.DecodeActivateDefaultEPSBearerContextAccept(attachComplete.ESMContainer); err != nil {
+		log.Warn("s1ap: Attach Complete ESM accept decode failed",
+			zap.Error(err),
+			zap.String("esm_container_hex", hex.EncodeToString(attachComplete.ESMContainer)))
+	} else {
+		log.Info("s1ap: Activate Default EPS Bearer Context Accept received",
+			zap.Uint8("ebi", accept.EPSBearerID),
+			zap.Uint8("expected_ebi", expectedEBI),
+			zap.Uint8("procedure_transaction_id", accept.ProcedureTransactionID),
+			zap.Int("pco_len", len(accept.PCO)),
+			zap.String("pco_hex", hex.EncodeToString(accept.PCO)),
+			zap.String("esm_container_hex", hex.EncodeToString(attachComplete.ESMContainer)))
+	}
 
 	metrics.AttachedUEs.Inc()
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "complete").Inc()

@@ -344,6 +344,21 @@ func TestAuthRequest_DecodeSecurityHeader(t *testing.T) {
 	}
 }
 
+func TestDecodeAttachCompleteESMContainer(t *testing.T) {
+	body := []byte{
+		0x00, 0x03,
+		0x52, 0x01, 0xc2,
+	}
+	got, err := emm.DecodeAttachComplete(body)
+	if err != nil {
+		t.Fatalf("DecodeAttachComplete: %v", err)
+	}
+	want := []byte{0x52, 0x01, 0xc2}
+	if !bytes.Equal(got.ESMContainer, want) {
+		t.Fatalf("ESM container got %x, want %x", got.ESMContainer, want)
+	}
+}
+
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)

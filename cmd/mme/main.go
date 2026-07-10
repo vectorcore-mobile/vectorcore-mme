@@ -64,31 +64,24 @@ func main() {
 
 	// S6a Diameter client (connects to HSS)
 	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.NF, ueManager, nil, log)
-	// When S6a is disabled, s1apSrv uses NoopS6aClient so inter-MME TAU skips ULR.
-	var s6aClient s1ap.S6aClient = s1ap.NoopS6aClient{}
-	if cfg.S6a.Enabled {
-		s6aClient = s6aHandlers
-	}
+	var s6aClient s1ap.S6aClient = s6aHandlers
 
 	// S11 GTPv2-C client (connects to S-GW)
-	var s11c s1ap.S11Client = s1ap.NoopS11Client{}
+	c, err := s11client.NewClient(cfg.S11, log)
+	if err != nil {
+		log.Fatal("s11: init failed", zap.Error(err))
+	}
+	var s11c s1ap.S11Client = c
 	var s11LocalIP []byte = net.ParseIP("127.0.0.1").To4()
 	var pgwIP []byte
-	if cfg.S11.Enabled {
-		c, err := s11client.NewClient(cfg.S11, log)
-		if err != nil {
-			log.Fatal("s11: init failed", zap.Error(err))
-		}
-		s11c = c
-		if ip := net.ParseIP(cfg.S11.BindAddress).To4(); ip != nil {
-			s11LocalIP = ip
-		}
-		if ip := net.ParseIP(strings.Split(cfg.GatewaySelection.PGW.PGWAddress, ":")[0]).To4(); ip != nil {
-			pgwIP = ip
-		}
-		go func() { errCh <- c.Start() }()
-		// Wire s11 → s1ap result callbacks after s1apSrv is created below.
+	if ip := net.ParseIP(cfg.S11.BindAddress).To4(); ip != nil {
+		s11LocalIP = ip
 	}
+	if ip := net.ParseIP(strings.Split(cfg.GatewaySelection.PGW.PGWAddress, ":")[0]).To4(); ip != nil {
+		pgwIP = ip
+	}
+	go func() { errCh <- c.Start() }()
+	// Wire s11 → s1ap result callbacks after s1apSrv is created below.
 
 	// S10 GTPv2-C server (inter-MME context transfer)
 	var s10c s1ap.S10Client = s1ap.NoopS10Client{}
@@ -109,11 +102,7 @@ func main() {
 	// Wire result callbacks
 	s6aHandlers.SetResultHandler(s1apSrv)
 	s6aHandlers.SetDetachFn(s1apSrv.HandleNetworkDetach)
-	if cfg.S11.Enabled {
-		if c, ok := s11c.(*s11client.Client); ok {
-			c.SetHandler(s1apSrv)
-		}
-	}
+	c.SetHandler(s1apSrv)
 	if cfg.S10.Enabled {
 		if srv, ok := s10c.(*s10server.Server); ok {
 			srv.SetHandler(s1apSrv)
@@ -141,12 +130,8 @@ func main() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		s1apSrv.Shutdown(shutCtx)
-		if cfg.S11.Enabled {
-			if c, ok := s11c.(*s11client.Client); ok {
-				if err := c.Close(); err != nil {
-					log.Warn("mme: s11 close error", zap.Error(err))
-				}
-			}
+		if err := c.Close(); err != nil {
+			log.Warn("mme: s11 close error", zap.Error(err))
 		}
 		log.Info("mme: shutdown complete")
 	}

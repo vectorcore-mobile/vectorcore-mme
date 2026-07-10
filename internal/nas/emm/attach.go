@@ -14,26 +14,31 @@ const (
 
 // EPSMobileIdentityType values.
 const (
-	IdentityTypeIMSI  uint8 = 0x01
-	IdentityTypeIMEI  uint8 = 0x02
+	IdentityTypeIMSI   uint8 = 0x01
+	IdentityTypeIMEI   uint8 = 0x02
 	IdentityTypeIMEISV uint8 = 0x03
-	IdentityTypeTMSI  uint8 = 0x04
-	IdentityTypeGUTI  uint8 = 0x06
+	IdentityTypeTMSI   uint8 = 0x04
+	IdentityTypeGUTI   uint8 = 0x06
 )
 
 // AttachRequest holds the decoded fields of a NAS Attach Request.
 type AttachRequest struct {
-	AttachType         uint8
+	AttachType          uint8
 	NASKeySetIdentifier uint8
 	EPS_MobileIdentity  []byte // raw mobile identity (GUTI, IMSI, etc.)
 	IdentityType        uint8  // parsed from EPS_MobileIdentity
-	IMSI               string // set if IdentityType == IMSI
-	GUTI               *GUTI  // set if IdentityType == GUTI
+	IMSI                string // set if IdentityType == IMSI
+	GUTI                *GUTI  // set if IdentityType == GUTI
 	UENetworkCapability []byte
-	ESMContainer       []byte // contains NAS ESM message (PDN Connectivity Request)
-	OldTAI             *TAI
-	TAI                *TAI   // last visited TAI
-	LastVisitedTAI     *TAI
+	ESMContainer        []byte // contains NAS ESM message (PDN Connectivity Request)
+	OldTAI              *TAI
+	TAI                 *TAI // last visited TAI
+	LastVisitedTAI      *TAI
+}
+
+// AttachComplete holds the decoded Attach Complete body.
+type AttachComplete struct {
+	ESMContainer []byte
 }
 
 // DecodeAttachRequest decodes a NAS Attach Request message body (after the 2-byte header).
@@ -133,6 +138,19 @@ func DecodeAttachRequest(data []byte) (*AttachRequest, error) {
 	}
 
 	return ar, nil
+}
+
+// DecodeAttachComplete decodes a NAS Attach Complete message body (after the
+// EMM header). The body contains a mandatory ESM message container.
+func DecodeAttachComplete(data []byte) (*AttachComplete, error) {
+	if len(data) < 2 {
+		return nil, fmt.Errorf("emm: Attach Complete truncated before ESM container")
+	}
+	esmLen := int(binary.BigEndian.Uint16(data[0:2]))
+	if len(data) < 2+esmLen {
+		return nil, fmt.Errorf("emm: Attach Complete ESM container truncated")
+	}
+	return &AttachComplete{ESMContainer: append([]byte(nil), data[2:2+esmLen]...)}, nil
 }
 
 // EncodeAttachAccept encodes a NAS Attach Accept message.

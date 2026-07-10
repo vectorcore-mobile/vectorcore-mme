@@ -16,9 +16,8 @@ s1ap:
   sctp_streams: 2
 
 s6a:
-  enabled: true
-  # Client mode: connect outbound to the VectorCore HSS.
-  hss_address: "127.0.0.2:3868"
+  # Client mode: connect outbound to the Diameter peer.
+  peer_address: "127.0.0.2:3868"
   # Server mode (alternative): uncomment to listen instead.
   # bind_address: "127.0.0.2"
   # bind_port: 3868
@@ -34,7 +33,6 @@ s10:
   #     address: "10.0.0.2:2124"
 
 s11:
-  enabled: true
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
 

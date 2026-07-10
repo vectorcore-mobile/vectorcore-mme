@@ -381,7 +381,7 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 			zap.String("erab_list_hex", hex.EncodeToString(erabValue)),
 			zap.String("erab_item_hex", hex.EncodeToString(firstERABItemValue(erabValue))),
 			zap.String("erab_item_optional_bitmap", fmt.Sprintf("nas_pdu_present=%t ie_extensions_present=false", len(nasPDU) > 0)),
-			zap.String("erab_id_encoded_bits", fmt.Sprintf("extension=0 value=%04b", bearer.EBI&0x0f)),
+			zap.String("erab_id_encoded_bits", fmt.Sprintf("integer_extension=0 value=%04b", bearer.EBI&0x0f)),
 			zap.String("qos_encoded_summary", "qci=9 arp_priority=8 preemption_capability=shall-not-trigger preemption_vulnerability=pre-emptable"),
 			zap.String("transport_layer_address", fmt.Sprintf("extension=0 bits=32 ipv4=%s encoded_bitstring=%s", hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)), hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)))),
 			zap.String("gtp_teid_encoded_hex", fmt.Sprintf("%08x", bearer.SGWU_TEID)),
@@ -453,7 +453,7 @@ func encodeEmptyERABList() []byte {
 // APER layout of E-RABToBeSetupItemCtxtSUReq:
 //
 //	ext=0 | nAS-PDU-present=0|1 | iE-Extensions-present=0
-//	E-RAB-ID (0..15): 4 bits constrained
+//	E-RAB-ID (0..15,...): extension bit + 4 bits constrained
 //	E-RABLevelQoSParameters SEQUENCE: ext=0, QCI(0..255), ARP
 //	transportLayerAddress BIT STRING (SIZE 1..160,...): ext=0, constrained-len=32, 4-byte IP
 //	GTP-TEID OCTET STRING (SIZE 4): 4 bytes big-endian
@@ -473,7 +473,8 @@ func encodeERABList(b *BearerInfo, nasPDU []byte) []byte {
 	}
 	w.WriteBit(0) // iE-Extensions absent
 
-	// E-RAB-ID (CONSTRAINED WHOLE NUMBER 0..15)
+	// E-RAB-ID (INTEGER (0..15,...)): extension marker followed by root value.
+	w.WriteBit(0)
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.EBI), 0, 15)
 
 	// E-RABLevelQoSParameters SEQUENCE

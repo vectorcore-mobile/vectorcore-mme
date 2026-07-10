@@ -29,7 +29,7 @@ type NASTransport interface {
 }
 
 // S11Client is the interface the S1AP layer uses to drive GTPv2-C S11 sessions.
-// Implemented by internal/gtpv2/s11.Client. NoopS11Client is used when S11 is disabled.
+// Implemented by internal/gtpv2/s11.Client. NoopS11Client is retained for unit tests.
 type S11Client interface {
 	SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error
 	SendMBR(mmeUEID uint32, req *gtpv2.ModifyBearerRequest) error
@@ -43,15 +43,14 @@ type BearerInfo struct {
 	SGWU_IP   []byte // 4-byte IPv4
 }
 
-// NoopS6aClient is used when S6a is disabled. All operations succeed silently.
-// The s10_tau.go code uses a type assertion on this to detect S6a-disabled state.
+// NoopS6aClient is retained for unit tests. Runtime MME always starts S6a.
 type NoopS6aClient struct{}
 
 func (NoopS6aClient) SendAIR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (NoopS6aClient) SendULR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (NoopS6aClient) SendPUR(_ string) error                      { return nil }
 
-// NoopS11Client is used when S11 is disabled. All operations succeed silently.
+// NoopS11Client is retained for unit tests. Runtime MME always starts S11.
 type NoopS11Client struct{}
 
 func (NoopS11Client) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
