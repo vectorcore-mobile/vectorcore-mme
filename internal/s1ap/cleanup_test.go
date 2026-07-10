@@ -56,18 +56,30 @@ func (m *mockS11) SendDSR(_ uint32, req *gtpv2.DeleteSessionRequest) error {
 // noopStore implements repository.Repository for tests that don't need a real DB.
 type noopStore struct{}
 
-func (noopStore) UpsertUEContext(_ context.Context, _ *models.UEContext) error { return nil }
-func (noopStore) GetUEContextByMMEID(_ context.Context, _ uint32) (*models.UEContext, error) {
+func (noopStore) UpsertUERecoveryRecord(_ context.Context, _ *models.UERecoveryRecord) error {
+	return nil
+}
+func (noopStore) GetUERecoveryByIMSI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
 	return nil, repository.ErrNotFound
 }
-func (noopStore) GetUEContextByIMSI(_ context.Context, _ string) (*models.UEContext, error) {
+func (noopStore) GetUERecoveryByGUTI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
 	return nil, repository.ErrNotFound
 }
-func (noopStore) GetUEContextByGUTI(_ context.Context, _ string) (*models.UEContext, error) {
-	return nil, repository.ErrNotFound
+func (noopStore) ListUERecoveryRecords(_ context.Context, _ repository.UERecoveryFilter) ([]models.UERecoveryRecord, error) {
+	return nil, nil
 }
-func (noopStore) DeleteUEContext(_ context.Context, _ uint32) error { return nil }
-func (noopStore) ListUEContexts(_ context.Context) ([]models.UEContext, error) {
+func (noopStore) DeleteUERecoveryRecordsByIMSI(_ context.Context, _ []string) error { return nil }
+func (noopStore) MarkRecoveryRecordsStaleAfterRestart(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+func (noopStore) UpsertSessionRecoveryRecord(_ context.Context, _ *models.SessionRecoveryRecord) error {
+	return nil
+}
+func (noopStore) ListSessionRecoveryRecords(_ context.Context, _ string) ([]models.SessionRecoveryRecord, error) {
+	return nil, nil
+}
+func (noopStore) AppendRecoveryEvent(_ context.Context, _ *models.RecoveryEvent) error { return nil }
+func (noopStore) ListRecoveryEvents(_ context.Context, _ string, _ int) ([]models.RecoveryEvent, error) {
 	return nil, nil
 }
 func (noopStore) UpsertENBRegistration(_ context.Context, _ *models.ENBRegistration) error {

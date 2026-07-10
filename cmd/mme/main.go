@@ -67,6 +67,14 @@ func main() {
 	}
 
 	store := dbstore.New(db)
+	restartEpoch := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	if n, err := store.MarkRecoveryRecordsStaleAfterRestart(context.Background(), restartEpoch); err != nil {
+		log.Warn("database recovery stale marking failed", zap.Error(err))
+	} else {
+		log.Info("database recovery records marked stale",
+			zap.String("restart_epoch", restartEpoch),
+			zap.Int64("records_marked", n))
+	}
 	ueManager := uecontext.NewManager()
 	enbTracker := peertracker.New()
 
@@ -108,6 +116,7 @@ func main() {
 	// S1AP server (accepts eNB SCTP connections)
 	gatewaySelector := gateway.NewSelector(*cfg, log)
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+	s1apSrv.SetRecoveryEpoch(restartEpoch)
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 
 	// Wire result callbacks

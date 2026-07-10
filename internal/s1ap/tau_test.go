@@ -103,7 +103,7 @@ func TestProcessTrackingAreaUpdate_Accept(t *testing.T) {
 
 	// Build a minimal TAU Request body (no security header — already decoded inner)
 	innerBody := []byte{(0x07 << 4) | emm.EPSUpdateTypePeriodic}
-	innerBody = append(innerBody, 0x00) // mobile identity length = 0 (no GUTI — OK for connected TAU)
+	innerBody = append(innerBody, 0x00)       // mobile identity length = 0 (no GUTI — OK for connected TAU)
 	innerBody = append(innerBody, 0x01, 0xE0) // UE net cap LV
 
 	log := srv.log.With(zap.String("test", "tau"))

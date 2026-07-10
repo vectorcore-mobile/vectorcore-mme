@@ -1,7 +1,6 @@
 package s1ap
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -328,53 +327,6 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 	mbrENBUTEID := ue.ENBU_TEID
 	mbrENBUIP := append(net.IP(nil), ue.ENBU_IP...)
 
-	dbCtx := &models.UEContext{
-		MMEUES1APID:  ue.MMEUES1APID,
-		IMSI:         ue.IMSI,
-		EMMState:     ue.EMMState.String(),
-		KASME:        append([]byte(nil), ue.KASME...),
-		KNASint:      append([]byte(nil), ue.KNASint...),
-		KNASenc:      append([]byte(nil), ue.KNASenc...),
-		ULNASCount:   uint32(ue.ULNASCount),
-		DLNASCount:   uint32(ue.DLNASCount),
-		IntAlg:       ue.IntAlg,
-		EncAlg:       ue.EncAlg,
-		ENBS1APID:    ue.ENBS1APID,
-		ENBGlobalID:  ue.ENBGlobalID,
-		DefaultEBI:   uint32(ue.DefaultEBI),
-		SGWU_TEID:    ue.SGWU_TEID,
-		SGWC_TEID:    ue.SGWC_TEID,
-		ENBU_TEID:    ue.ENBU_TEID,
-		LastModified: time.Now().UTC().Format(time.RFC3339),
-	}
-	if ue.MSISDN != "" {
-		ms := ue.MSISDN
-		dbCtx.MSISDN = &ms
-	}
-	if ue.APN != "" {
-		a := ue.APN
-		dbCtx.APN = &a
-	}
-	if ue.UEIPv4 != nil {
-		dbCtx.UEIPv4 = ue.UEIPv4.String()
-	}
-	if ue.SGWU_IP != nil {
-		dbCtx.SGWU_IP = ue.SGWU_IP.String()
-	}
-	if ue.SGWC_IP != nil {
-		dbCtx.SGWC_IP = ue.SGWC_IP.String()
-	}
-	if ue.ENBU_IP != nil {
-		dbCtx.ENBU_IP = ue.ENBU_IP.String()
-	}
-	if ue.GUTI != nil {
-		g := uecontext.SerialiseGUTI(ue.GUTI)
-		dbCtx.GUTI = &g
-	}
-	if ue.TAI != nil {
-		dbCtx.TAI = fmt.Sprintf("%02X%02X%02X-%04X",
-			ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
-	}
 	ue.Unlock()
 
 	metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "accept").Inc()
@@ -383,13 +335,7 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 	}
 	log.Info("s1ap: Service Request re-established", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.store.UpsertUEContext(ctx, dbCtx); err != nil {
-			s.log.Warn("s1ap: ServiceRequest: failed to persist UE context", zap.Error(err))
-		}
-	}()
+	s.persistUERecoverySnapshot(ue, models.RecoveryStateRecovered, "ESTABLISHED")
 
 	if mbrSGWCTEID != 0 && mbrEBI != 0 && mbrENBUTEID != 0 {
 		mbr := &gtpv2.ModifyBearerRequest{

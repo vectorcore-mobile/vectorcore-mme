@@ -13,16 +13,36 @@ type errString string
 
 func (e errString) Error() string { return string(e) }
 
+// UERecoveryFilter restricts recovery record list queries.
+type UERecoveryFilter struct {
+	IMSI             string
+	GUTI             string
+	RecoveryState    string
+	StaleOnly        bool
+	DisconnectedOnly bool
+	Limit            int
+	Offset           int
+}
+
 // Repository is the only way handlers touch the database.
-// Handlers import repository, never gorm.
+// Handlers import repository, never gorm. Runtime UE state remains in memory;
+// repository methods expose recovery/correlation snapshots only.
 type Repository interface {
-	// UE contexts
-	UpsertUEContext(ctx context.Context, ue *models.UEContext) error
-	GetUEContextByMMEID(ctx context.Context, mmeS1APID uint32) (*models.UEContext, error)
-	GetUEContextByIMSI(ctx context.Context, imsi string) (*models.UEContext, error)
-	GetUEContextByGUTI(ctx context.Context, guti string) (*models.UEContext, error)
-	DeleteUEContext(ctx context.Context, mmeS1APID uint32) error
-	ListUEContexts(ctx context.Context) ([]models.UEContext, error)
+	// UE recovery records
+	UpsertUERecoveryRecord(ctx context.Context, ue *models.UERecoveryRecord) error
+	GetUERecoveryByIMSI(ctx context.Context, imsi string) (*models.UERecoveryRecord, error)
+	GetUERecoveryByGUTI(ctx context.Context, guti string) (*models.UERecoveryRecord, error)
+	ListUERecoveryRecords(ctx context.Context, filter UERecoveryFilter) ([]models.UERecoveryRecord, error)
+	DeleteUERecoveryRecordsByIMSI(ctx context.Context, imsis []string) error
+	MarkRecoveryRecordsStaleAfterRestart(ctx context.Context, restartEpoch string) (int64, error)
+
+	// Session recovery records
+	UpsertSessionRecoveryRecord(ctx context.Context, session *models.SessionRecoveryRecord) error
+	ListSessionRecoveryRecords(ctx context.Context, imsi string) ([]models.SessionRecoveryRecord, error)
+
+	// Recovery audit events
+	AppendRecoveryEvent(ctx context.Context, event *models.RecoveryEvent) error
+	ListRecoveryEvents(ctx context.Context, imsi string, limit int) ([]models.RecoveryEvent, error)
 
 	// eNB registrations
 	UpsertENBRegistration(ctx context.Context, enb *models.ENBRegistration) error

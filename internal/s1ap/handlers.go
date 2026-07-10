@@ -3,6 +3,7 @@ package s1ap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/gtpv2/s10"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/repository"
@@ -79,22 +81,23 @@ func (NoopS10Client) LocalAddr() string                                        {
 
 // Server is the S1AP layer: manages eNB connections and dispatches messages.
 type Server struct {
-	cfg        config.S1APConfig
-	nfCfg      config.NFConfig
-	secCfg     config.SecurityConfig
-	s10Cfg     config.S10Config
-	operCfg    config.OperatorConfig
-	store      repository.Repository
-	ueManager  *uecontext.Manager
-	enbTracker *peertracker.Tracker
-	gutiAlloc  *uecontext.GUTIAllocator
-	s6a        S6aClient
-	s10        S10Client
-	s11        S11Client
-	s11LocalIP []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
-	pgwIP      []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
-	gatewaySel *gateway.Selector
-	log        *zap.Logger
+	cfg          config.S1APConfig
+	nfCfg        config.NFConfig
+	secCfg       config.SecurityConfig
+	s10Cfg       config.S10Config
+	operCfg      config.OperatorConfig
+	store        repository.Repository
+	ueManager    *uecontext.Manager
+	enbTracker   *peertracker.Tracker
+	gutiAlloc    *uecontext.GUTIAllocator
+	s6a          S6aClient
+	s10          S10Client
+	s11          S11Client
+	s11LocalIP   []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
+	pgwIP        []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
+	gatewaySel   *gateway.Selector
+	restartEpoch string
+	log          *zap.Logger
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
@@ -122,22 +125,27 @@ func NewServer(
 		log.Warn("s1ap: GUTI allocator init failed, GUTI will not be assigned", zap.Error(err))
 	}
 	return &Server{
-		cfg:        cfg,
-		nfCfg:      nfCfg,
-		secCfg:     secCfg,
-		s10Cfg:     s10Cfg,
-		operCfg:    operCfg,
-		store:      store,
-		ueManager:  ueManager,
-		enbTracker: enbTracker,
-		gutiAlloc:  gutiAlloc,
-		s6a:        s6a,
-		s10:        s10,
-		s11:        s11,
-		s11LocalIP: s11LocalIP,
-		pgwIP:      pgwIP,
-		log:        log,
+		cfg:          cfg,
+		nfCfg:        nfCfg,
+		secCfg:       secCfg,
+		s10Cfg:       s10Cfg,
+		operCfg:      operCfg,
+		store:        store,
+		ueManager:    ueManager,
+		enbTracker:   enbTracker,
+		gutiAlloc:    gutiAlloc,
+		s6a:          s6a,
+		s10:          s10,
+		s11:          s11,
+		s11LocalIP:   s11LocalIP,
+		pgwIP:        pgwIP,
+		restartEpoch: fmt.Sprintf("%d", time.Now().UnixNano()),
+		log:          log,
 	}
+}
+
+func (s *Server) SetRecoveryEpoch(epoch string) {
+	s.restartEpoch = epoch
 }
 
 func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
@@ -312,23 +320,12 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 			zap.String("remote", remoteAddr))
 
 		s.sendDeleteSession(ue) // idempotent: no-op if SGWC_TEID == 0
+		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
 		s.ueManager.Remove(ue)
 		if wasAttached {
 			metrics.AttachedUEs.Dec()
 		}
 		evicted++
-
-		if s.store != nil {
-			id := mmeID
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.store.DeleteUEContext(ctx, id); err != nil {
-					s.log.Warn("s1ap: DB delete on eNB disconnect failed",
-						zap.Uint32("mme_ue_id", id), zap.Error(err))
-				}
-			}()
-		}
 	}
 
 	s.log.Info("s1ap: eNB disconnected",

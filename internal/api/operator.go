@@ -13,16 +13,18 @@ type operatorOutput struct {
 			MCC string `json:"mcc"`
 			MNC string `json:"mnc"`
 		} `json:"plmn"`
-		FullName        string `json:"full_name,omitempty"`
-		ShortName       string `json:"short_name,omitempty"`
-		ShowFull        bool   `json:"show_full"`
-		ShowShort       bool   `json:"show_short"`
-		NITZEnabled     bool   `json:"nitz_enabled"`
-		TimezoneOffset  int    `json:"timezone_offset_minutes,omitempty"`
-		DaylightSaving  uint8  `json:"daylight_saving,omitempty"`
-		EMMInfoEnabled  bool   `json:"emm_information_enabled"`
-		SendAfterAttach bool   `json:"send_after_attach"`
-		SendAfterTAU    bool   `json:"send_after_tau"`
+		FullName           string `json:"full_name,omitempty"`
+		ShortName          string `json:"short_name,omitempty"`
+		NameEncoding       string `json:"name_encoding"`
+		AddCountryInitials bool   `json:"add_country_initials"`
+		ShowFull           bool   `json:"show_full"`
+		ShowShort          bool   `json:"show_short"`
+		NITZEnabled        bool   `json:"nitz_enabled"`
+		TimezoneOffset     int    `json:"timezone_offset_minutes,omitempty"`
+		DaylightSaving     uint8  `json:"daylight_saving,omitempty"`
+		EMMInfoEnabled     bool   `json:"emm_information_enabled"`
+		SendAfterAttach    bool   `json:"send_after_attach"`
+		SendAfterTAU       bool   `json:"send_after_tau"`
 	}
 }
 
@@ -43,6 +45,8 @@ func (s *Server) getOperator(_ context.Context, _ *struct{}) (*operatorOutput, e
 	out.Body.PLMN.MNC = s.nfCfg.MNC
 	out.Body.FullName = cfg.Name.Full
 	out.Body.ShortName = cfg.Name.Short
+	out.Body.NameEncoding = cfg.Name.Encoding
+	out.Body.AddCountryInitials = cfg.Name.AddCountryInitials
 	out.Body.ShowFull = cfg.Name.ShowFull
 	out.Body.ShowShort = cfg.Name.ShowShort
 	out.Body.NITZEnabled = cfg.NITZ.Enabled

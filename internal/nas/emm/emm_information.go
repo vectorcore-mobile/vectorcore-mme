@@ -7,17 +7,19 @@ import "time"
 func EncodeEMMInformation(
 	fullName string, showFull bool,
 	shortName string, showShort bool,
+	nameEncoding string,
+	addCountryInitials bool,
 	nitzEnabled bool, tzOffsetMinutes int, dst uint8,
 ) []byte {
 	var ies []byte
 
 	if showFull {
-		if b := EncodeFullNetworkName(fullName); b != nil {
+		if b := EncodeFullNetworkNameWithEncoding(fullName, nameEncoding, addCountryInitials); b != nil {
 			ies = append(ies, b...)
 		}
 	}
 	if showShort {
-		if b := EncodeShortNetworkName(shortName); b != nil {
+		if b := EncodeShortNetworkNameWithEncoding(shortName, nameEncoding, addCountryInitials); b != nil {
 			ies = append(ies, b...)
 		}
 	}

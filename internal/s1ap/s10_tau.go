@@ -1,7 +1,6 @@
 package s1ap
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"time"
@@ -277,16 +276,7 @@ func (s *Server) finishInterMMETAU(ue *uecontext.Context, log *zap.Logger, s10Ad
 	// Send Modify Bearer Request to update the SGW with the new MME's S11 TEID.
 	s.sendInterMMETAUMBR(ue, log)
 
-	// Persist UE context asynchronously.
-	go func() {
-		dbCtx := s.buildInterMMETAUDBContext(ue)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.store.UpsertUEContext(ctx, dbCtx); err != nil {
-			s.log.Warn("s10: DB upsert after inter-MME TAU failed",
-				zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
-		}
-	}()
+	s.persistUERecoverySnapshot(ue, models.RecoveryStateActiveSnapshot, "ESTABLISHED")
 
 	metrics.InterMMETAUTotal.WithLabelValues("success").Inc()
 	log.Info("s10: inter-MME TAU complete", zap.Uint32("mme_ue_id", mmeUEID))
@@ -325,59 +315,6 @@ func (s *Server) sendInterMMETAUMBR(ue *uecontext.Context, log *zap.Logger) {
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		metrics.InterMMETAUTotal.WithLabelValues("s11_error").Inc()
 	}
-}
-
-func (s *Server) buildInterMMETAUDBContext(ue *uecontext.Context) *models.UEContext {
-	ue.Lock()
-	defer ue.Unlock()
-	dbCtx := &models.UEContext{
-		MMEUES1APID:  ue.MMEUES1APID,
-		IMSI:         ue.IMSI,
-		EMMState:     ue.EMMState.String(),
-		KASME:        append([]byte(nil), ue.KASME...),
-		KNASint:      append([]byte(nil), ue.KNASint...),
-		KNASenc:      append([]byte(nil), ue.KNASenc...),
-		ULNASCount:   uint32(ue.ULNASCount),
-		DLNASCount:   uint32(ue.DLNASCount),
-		IntAlg:       ue.IntAlg,
-		EncAlg:       ue.EncAlg,
-		ENBS1APID:    ue.ENBS1APID,
-		ENBGlobalID:  ue.ENBGlobalID,
-		DefaultEBI:   uint32(ue.DefaultEBI),
-		SGWU_TEID:    ue.SGWU_TEID,
-		SGWC_TEID:    ue.SGWC_TEID,
-		ENBU_TEID:    ue.ENBU_TEID,
-		LastModified: time.Now().UTC().Format(time.RFC3339),
-	}
-	if ue.GUTI != nil {
-		gutiStr := uecontext.SerialiseGUTI(ue.GUTI)
-		dbCtx.GUTI = &gutiStr
-	}
-	if ue.TAI != nil {
-		dbCtx.TAI = fmt.Sprintf("%02X%02X%02X-%04X",
-			ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
-	}
-	if ue.MSISDN != "" {
-		ms := ue.MSISDN
-		dbCtx.MSISDN = &ms
-	}
-	if ue.APN != "" {
-		a := ue.APN
-		dbCtx.APN = &a
-	}
-	if ue.UEIPv4 != nil {
-		dbCtx.UEIPv4 = ue.UEIPv4.String()
-	}
-	if ue.SGWU_IP != nil {
-		dbCtx.SGWU_IP = ue.SGWU_IP.String()
-	}
-	if ue.SGWC_IP != nil {
-		dbCtx.SGWC_IP = ue.SGWC_IP.String()
-	}
-	if ue.ENBU_IP != nil {
-		dbCtx.ENBU_IP = ue.ENBU_IP.String()
-	}
-	return dbCtx
 }
 
 // --- Old MME role ---
