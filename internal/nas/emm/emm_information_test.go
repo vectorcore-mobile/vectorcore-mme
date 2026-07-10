@@ -8,22 +8,78 @@ import (
 // ── IE-level tests ─────────────────────────────────────────────────────────────
 
 func TestEncodeFullNetworkName(t *testing.T) {
-	b := EncodeFullNetworkName("Test Net")
+	b := EncodeFullNetworkName("TN")
 	if b == nil {
 		t.Fatal("expected non-nil result")
 	}
 	if b[0] != 0x43 {
 		t.Errorf("IEI: got 0x%02X, want 0x43", b[0])
 	}
-	wantLen := byte(1 + len("Test Net")) // coding byte + name bytes
+	wantLen := byte(3) // coding byte + two packed GSM7 bytes
 	if b[1] != wantLen {
 		t.Errorf("length byte: got %d, want %d", b[1], wantLen)
 	}
-	if b[2] != 0x80 {
-		t.Errorf("coding byte: got 0x%02X, want 0x80", b[2])
+	if b[2] != 0x82 {
+		t.Errorf("coding byte: got 0x%02X, want 0x82", b[2])
 	}
-	if string(b[3:]) != "Test Net" {
-		t.Errorf("name bytes: got %q, want %q", string(b[3:]), "Test Net")
+	if got, want := b[3:], []byte{0x54, 0x27}; string(got) != string(want) {
+		t.Errorf("packed GSM7 name bytes: got %x, want %x", got, want)
+	}
+}
+
+func TestEncodeFullNetworkNameUCS2(t *testing.T) {
+	b := EncodeFullNetworkNameWithEncoding("例", "ucs2", false)
+	if b == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if got, want := b[0], byte(0x43); got != want {
+		t.Fatalf("IEI got 0x%02x, want 0x%02x", got, want)
+	}
+	if got, want := b[1], byte(3); got != want {
+		t.Fatalf("length got %d, want %d", got, want)
+	}
+	if got, want := b[2], byte(0x90); got != want {
+		t.Fatalf("coding got 0x%02x, want 0x%02x", got, want)
+	}
+	if got, want := b[3:], []byte{0x4f, 0x8b}; string(got) != string(want) {
+		t.Fatalf("UCS2 bytes got %x, want %x", got, want)
+	}
+}
+
+func TestEncodeNetworkNameGSM7Vectors(t *testing.T) {
+	tests := []struct {
+		name    string
+		ie      []byte
+		payload []byte
+	}{
+		{name: "A", ie: []byte{0x43, 0x02, 0x81, 0x41}, payload: []byte{0x41}},
+		{name: "VectorCore", ie: []byte{0x43, 0x0a, 0x82, 0xd6, 0xf2, 0x98, 0xfe, 0x96, 0x0f, 0xdf, 0xf2, 0x32}, payload: []byte{0xd6, 0xf2, 0x98, 0xfe, 0x96, 0x0f, 0xdf, 0xf2, 0x32}},
+		{name: "VectorCore Mobile", ie: []byte{0x43, 0x10, 0x81, 0xd6, 0xf2, 0x98, 0xfe, 0x96, 0x0f, 0xdf, 0xf2, 0x32, 0xa8, 0xf9, 0x16, 0xa7, 0xd9, 0x65}, payload: []byte{0xd6, 0xf2, 0x98, 0xfe, 0x96, 0x0f, 0xdf, 0xf2, 0x32, 0xa8, 0xf9, 0x16, 0xa7, 0xd9, 0x65}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EncodeFullNetworkName(tt.name)
+			if string(got) != string(tt.ie) {
+				t.Fatalf("IE got %x, want %x", got, tt.ie)
+			}
+			if string(got[3:]) != string(tt.payload) {
+				t.Fatalf("payload got %x, want %x", got[3:], tt.payload)
+			}
+		})
+	}
+}
+
+func TestEncodeNetworkNameAddCountryInitials(t *testing.T) {
+	b := EncodeFullNetworkNameWithEncoding("A", "gsm7", true)
+	if got, want := b[2], byte(0x89); got != want {
+		t.Fatalf("coding byte got 0x%02x, want 0x%02x", got, want)
+	}
+}
+
+func TestEncodeNetworkNameUnsupportedGSM7Character(t *testing.T) {
+	b := EncodeFullNetworkName("😀")
+	if got, want := b, []byte{0x43, 0x02, 0x81, 0x3f}; string(got) != string(want) {
+		t.Fatalf("unsupported GSM7 character got %x, want %x", got, want)
 	}
 }
 
@@ -42,8 +98,11 @@ func TestEncodeShortNetworkName(t *testing.T) {
 	if b[0] != 0x45 {
 		t.Errorf("IEI: got 0x%02X, want 0x45", b[0])
 	}
-	if string(b[3:]) != "TN" {
-		t.Errorf("name: got %q, want TN", string(b[3:]))
+	if b[2] != 0x82 {
+		t.Errorf("coding byte: got 0x%02X, want 0x82", b[2])
+	}
+	if got, want := b[3:], []byte{0x54, 0x27}; string(got) != string(want) {
+		t.Errorf("packed GSM7 name: got %x, want %x", got, want)
 	}
 }
 
@@ -140,7 +199,7 @@ func TestEncodeUniversalTimeAndLocalTimeZone(t *testing.T) {
 // ── EncodeEMMInformation tests ────────────────────────────────────────────────
 
 func TestEncodeEMMInformation_AllEnabled(t *testing.T) {
-	pdu := EncodeEMMInformation("Test Net", true, "TN", true, true, 120, 1)
+	pdu := EncodeEMMInformation("Test Net", true, "TN", true, "gsm7", false, true, 120, 1)
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU")
 	}
@@ -168,14 +227,14 @@ func TestEncodeEMMInformation_AllEnabled(t *testing.T) {
 }
 
 func TestEncodeEMMInformation_NothingEnabled(t *testing.T) {
-	pdu := EncodeEMMInformation("", false, "", false, false, 0, 0)
+	pdu := EncodeEMMInformation("", false, "", false, "gsm7", false, false, 0, 0)
 	if pdu != nil {
 		t.Errorf("expected nil PDU when nothing enabled, got %d bytes", len(pdu))
 	}
 }
 
 func TestEncodeEMMInformation_OnlyFullName(t *testing.T) {
-	pdu := EncodeEMMInformation("Joran Mobile", true, "", false, false, 0, 0)
+	pdu := EncodeEMMInformation("Joran Mobile", true, "", false, "gsm7", false, false, 0, 0)
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU")
 	}
@@ -194,9 +253,25 @@ func TestEncodeEMMInformation_OnlyFullName(t *testing.T) {
 	}
 }
 
+func TestEncodeEMMInformation_OnlyShortName(t *testing.T) {
+	pdu := EncodeEMMInformation("", false, "VC", true, "gsm7", false, false, 0, 0)
+	if pdu == nil {
+		t.Fatal("expected non-nil PDU")
+	}
+	body := pdu[3:]
+	if body[0] != 0x45 {
+		t.Errorf("first IE should be Short Network Name (0x45), got 0x%02X", body[0])
+	}
+	for _, b := range body {
+		if b == 0x43 {
+			t.Error("Full Network Name IEI 0x43 should not be present")
+		}
+	}
+}
+
 func TestEncodeEMMInformation_NITZNoDST(t *testing.T) {
 	// DST=0 → Daylight Saving Time IE (0x49) should be absent
-	pdu := EncodeEMMInformation("", false, "", false, true, 60, 0)
+	pdu := EncodeEMMInformation("", false, "", false, "gsm7", false, true, 60, 0)
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU (nitz enabled)")
 	}

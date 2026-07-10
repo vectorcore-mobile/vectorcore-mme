@@ -1,11 +1,9 @@
 package s1ap
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -17,7 +15,6 @@ import (
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
-	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 // handlePathSwitchRequest handles S1AP Path Switch Request from a target eNB.
@@ -127,10 +124,9 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 			}
 		}
 
-		// Snapshot for Ack and DB.
+		// Snapshot for Ack.
 		ackNH := currentNH
 		ackNCC := currentNCC
-		dbCtx := buildPathSwitchDBContext(ue)
 		ue.Unlock()
 
 		log.Info("s1ap: PathSwitch: success, sending Ack",
@@ -140,16 +136,7 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		secCtxValue := encodeSecurityContextIE(ackNH, ackNCC)
 		s.sendPathSwitchAck(remoteAddr, mmeUEID, enbUEID, secCtxValue)
 
-		if s.store != nil {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.store.UpsertUEContext(ctx, dbCtx); err != nil {
-					s.log.Warn("s1ap: PathSwitch: DB upsert failed",
-						zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
-				}
-			}()
-		}
+		s.persistUERecoverySnapshot(ue, models.RecoveryStateActiveSnapshot, "ESTABLISHED")
 	}()
 }
 
@@ -279,59 +266,4 @@ func (s *Server) sendPathSwitchFailure(enbAddr string, mmeUEID, enbUEID uint32) 
 	}
 	msg := pdu.BuildUnsuccessfulOutcome(pdu.ProcPathSwitchRequest, aper.CriticalityReject, ieList)
 	s.sendToAddr(enbAddr, msg)
-}
-
-// buildPathSwitchDBContext snapshots UE fields for persistence after a successful path switch.
-// Must be called under ue.Lock().
-func buildPathSwitchDBContext(ue *uecontext.Context) *models.UEContext {
-	db := &models.UEContext{
-		MMEUES1APID:  ue.MMEUES1APID,
-		IMSI:         ue.IMSI,
-		EMMState:     ue.EMMState.String(),
-		KASME:        append([]byte(nil), ue.KASME...),
-		KNASint:      append([]byte(nil), ue.KNASint...),
-		KNASenc:      append([]byte(nil), ue.KNASenc...),
-		ULNASCount:   uint32(ue.ULNASCount),
-		DLNASCount:   uint32(ue.DLNASCount),
-		IntAlg:       ue.IntAlg,
-		EncAlg:       ue.EncAlg,
-		ENBS1APID:    ue.ENBS1APID,
-		ENBGlobalID:  ue.ENBGlobalID,
-		DefaultEBI:   uint32(ue.DefaultEBI),
-		SGWU_TEID:    ue.SGWU_TEID,
-		SGWC_TEID:    ue.SGWC_TEID,
-		ENBU_TEID:    ue.ENBU_TEID,
-		NH:           append([]byte(nil), ue.NH...),
-		NCC:          ue.NCC,
-		LastModified: time.Now().UTC().Format(time.RFC3339),
-	}
-	if ue.MSISDN != "" {
-		ms := ue.MSISDN
-		db.MSISDN = &ms
-	}
-	if ue.APN != "" {
-		a := ue.APN
-		db.APN = &a
-	}
-	if ue.UEIPv4 != nil {
-		db.UEIPv4 = ue.UEIPv4.String()
-	}
-	if ue.SGWU_IP != nil {
-		db.SGWU_IP = ue.SGWU_IP.String()
-	}
-	if ue.SGWC_IP != nil {
-		db.SGWC_IP = ue.SGWC_IP.String()
-	}
-	if ue.ENBU_IP != nil {
-		db.ENBU_IP = ue.ENBU_IP.String()
-	}
-	if ue.GUTI != nil {
-		g := uecontext.SerialiseGUTI(ue.GUTI)
-		db.GUTI = &g
-	}
-	if ue.TAI != nil {
-		db.TAI = fmt.Sprintf("%02X%02X%02X-%04X",
-			ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
-	}
-	return db
 }

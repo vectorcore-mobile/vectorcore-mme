@@ -13,6 +13,7 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/models"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/esm"
@@ -480,21 +481,11 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 
 	s.ueManager.Remove(ue)
 	metrics.AttachedUEs.Dec()
+	s.persistUERecoverySnapshot(ue, models.RecoveryStateDetached, "DELETED")
 	s.log.Info("s1ap: detached UE context removed",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("imsi", imsi),
 		zap.String("reason", reason))
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.store.DeleteUEContext(ctx, mmeUEID); err != nil {
-			s.log.Warn("s1ap: failed to delete detached UE context from DB",
-				zap.Uint32("mme_ue_id", mmeUEID),
-				zap.String("imsi", imsi),
-				zap.Error(err))
-		}
-	}()
 }
 
 // sendDeleteSession sends a GTPv2-C Delete Session Request to the S-GW for the given UE.

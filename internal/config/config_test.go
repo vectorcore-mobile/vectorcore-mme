@@ -58,3 +58,50 @@ gateway_selection:
 		t.Fatalf("derived root domain = %q, want %q", got, want)
 	}
 }
+
+func TestLoadOperatorNameEncodingDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.Operator.Name.Encoding != "gsm7" {
+		t.Fatalf("operator.name.encoding = %q, want gsm7", cfg.Operator.Name.Encoding)
+	}
+}
+
+func TestLoadOperatorNameEncodingInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+operator:
+  name:
+    encoding: "latin1"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load() expected invalid operator.name.encoding error")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+	"unicode/utf16"
 )
 
 // GUTI represents the Globally Unique Temporary Identifier.
@@ -130,29 +131,181 @@ func (c *UENetworkCapability) SupportedCipheringAlgs() []string {
 // EncodeFullNetworkName encodes a Full Network Name IE (IEI 0x43, TS 24.008 §10.5.3.5a).
 // Returns nil if name is empty.
 func EncodeFullNetworkName(name string) []byte {
+	return EncodeFullNetworkNameWithEncoding(name, "gsm7", false)
+}
+
+// EncodeFullNetworkNameWithEncoding encodes a Full Network Name IE using "gsm7" or "ucs2".
+func EncodeFullNetworkNameWithEncoding(name, encoding string, addCountryInitials bool) []byte {
 	if name == "" {
 		return nil
 	}
-	b := make([]byte, 3+len(name))
-	b[0] = 0x43
-	b[1] = byte(1 + len(name)) // length: coding byte + name bytes
-	b[2] = 0x80                 // coding = GSM 7-bit default alphabet, CI=0, spare=0
-	copy(b[3:], name)
-	return b
+	return encodeNetworkNameIE(0x43, name, encoding, addCountryInitials)
 }
 
 // EncodeShortNetworkName encodes a Short Network Name IE (IEI 0x45, TS 24.008 §10.5.3.5a).
 // Returns nil if name is empty.
 func EncodeShortNetworkName(name string) []byte {
+	return EncodeShortNetworkNameWithEncoding(name, "gsm7", false)
+}
+
+// EncodeShortNetworkNameWithEncoding encodes a Short Network Name IE using "gsm7" or "ucs2".
+func EncodeShortNetworkNameWithEncoding(name, encoding string, addCountryInitials bool) []byte {
 	if name == "" {
 		return nil
 	}
-	b := make([]byte, 3+len(name))
-	b[0] = 0x45
-	b[1] = byte(1 + len(name))
-	b[2] = 0x80
-	copy(b[3:], name)
+	return encodeNetworkNameIE(0x45, name, encoding, addCountryInitials)
+}
+
+func encodeNetworkNameIE(iei byte, name, encoding string, addCountryInitials bool) []byte {
+	coding := byte(0x80) // ext=1, GSM 7-bit default alphabet, CI=0.
+	payload := packGSM7(name)
+	spareBits := gsm7SpareBits(len([]rune(name)))
+	if encoding == "ucs2" {
+		coding = 0x90 // ext=1, UCS2, CI=0.
+		payload = encodeUCS2(name)
+		spareBits = 0
+	}
+	if addCountryInitials {
+		coding |= 0x08
+	}
+	coding |= byte(spareBits & 0x07)
+	b := make([]byte, 3+len(payload))
+	b[0] = iei
+	b[1] = byte(1 + len(payload)) // coding byte + encoded name bytes
+	b[2] = coding
+	copy(b[3:], payload)
 	return b
+}
+
+func gsm7SpareBits(septets int) int {
+	if septets == 0 {
+		return 0
+	}
+	return (8 - ((septets * 7) % 8)) % 8
+}
+
+func packGSM7(s string) []byte {
+	if s == "" {
+		return nil
+	}
+	septets := make([]byte, 0, len(s))
+	for _, r := range s {
+		septets = append(septets, gsm7Codepoint(r))
+	}
+	out := make([]byte, (len(septets)*7+7)/8)
+	bit := 0
+	for _, septet := range septets {
+		v := septet & 0x7f
+		for i := 0; i < 7; i++ {
+			if v&(1<<i) != 0 {
+				out[bit/8] |= 1 << uint(bit%8)
+			}
+			bit++
+		}
+	}
+	return out
+}
+
+func gsm7Codepoint(r rune) byte {
+	switch r {
+	case '\n':
+		return 0x0a
+	case '\r':
+		return 0x0d
+	case '@':
+		return 0x00
+	case '£':
+		return 0x01
+	case '$':
+		return 0x02
+	case '¥':
+		return 0x03
+	case 'è':
+		return 0x04
+	case 'é':
+		return 0x05
+	case 'ù':
+		return 0x06
+	case 'ì':
+		return 0x07
+	case 'ò':
+		return 0x08
+	case 'Ç':
+		return 0x09
+	case 'Ø':
+		return 0x0b
+	case 'ø':
+		return 0x0c
+	case 'Å':
+		return 0x0e
+	case 'å':
+		return 0x0f
+	case 'Δ':
+		return 0x10
+	case '_':
+		return 0x11
+	case 'Φ':
+		return 0x12
+	case 'Γ':
+		return 0x13
+	case 'Λ':
+		return 0x14
+	case 'Ω':
+		return 0x15
+	case 'Π':
+		return 0x16
+	case 'Ψ':
+		return 0x17
+	case 'Σ':
+		return 0x18
+	case 'Θ':
+		return 0x19
+	case 'Ξ':
+		return 0x1a
+	case 'Æ':
+		return 0x1c
+	case 'æ':
+		return 0x1d
+	case 'ß':
+		return 0x1e
+	case 'É':
+		return 0x1f
+	case 'Ä':
+		return 0x5b
+	case 'Ö':
+		return 0x5c
+	case 'Ñ':
+		return 0x5d
+	case 'Ü':
+		return 0x5e
+	case '§':
+		return 0x5f
+	case '¿':
+		return 0x60
+	case 'ä':
+		return 0x7b
+	case 'ö':
+		return 0x7c
+	case 'ñ':
+		return 0x7d
+	case 'ü':
+		return 0x7e
+	case 'à':
+		return 0x7f
+	}
+	if r >= 0x20 && r <= 0x7a && (r < 0x5b || r > 0x60) {
+		return byte(r)
+	}
+	return '?'
+}
+
+func encodeUCS2(s string) []byte {
+	encoded := utf16.Encode([]rune(s))
+	out := make([]byte, len(encoded)*2)
+	for i, v := range encoded {
+		binary.BigEndian.PutUint16(out[i*2:], v)
+	}
+	return out
 }
 
 // encodeTZByte encodes a timezone offset in units of 15 minutes to the TS 23.040 §9.2.3.11

@@ -1,7 +1,6 @@
 package s1ap
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -394,7 +393,6 @@ func (s *Server) handleHandoverNotify(remoteAddr string, p *pdu.PDU, ieList []pd
 			}
 		}
 
-		dbCtx := buildHandoverDBContext(ue)
 		ue.Unlock()
 
 		metrics.HandoverTotal.WithLabelValues("execution", "success").Inc()
@@ -405,16 +403,7 @@ func (s *Server) handleHandoverNotify(remoteAddr string, p *pdu.PDU, ieList []pd
 		s.sendUEContextReleaseCommandCause(srcAddr, mmeUEID, srcENBUEID,
 			ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkSuccessfulHandover)
 
-		if s.store != nil {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				if err := s.store.UpsertUEContext(ctx, dbCtx); err != nil {
-					s.log.Warn("s1ap: HandoverNotify: DB upsert failed",
-						zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
-				}
-			}()
-		}
+		s.persistUERecoverySnapshot(ue, models.RecoveryStateActiveSnapshot, "ESTABLISHED")
 	}()
 }
 
@@ -708,59 +697,4 @@ func (s *Server) sendHandoverPrepFailure(srcAddr string, mmeUEID, srcENBUEID uin
 	msg := pdu.BuildUnsuccessfulOutcome(pdu.ProcHandoverPreparation, aper.CriticalityReject, ieList)
 	s.sendToAddr(srcAddr, msg)
 	metrics.S1APMessagesTotal.WithLabelValues("HandoverPrepFailure", "outbound", "sent").Inc()
-}
-
-// buildHandoverDBContext snapshots UE fields for persistence after a successful handover.
-// Must be called under ue.Lock().
-func buildHandoverDBContext(ue *uecontext.Context) *models.UEContext {
-	db := &models.UEContext{
-		MMEUES1APID:  ue.MMEUES1APID,
-		IMSI:         ue.IMSI,
-		EMMState:     ue.EMMState.String(),
-		KASME:        append([]byte(nil), ue.KASME...),
-		KNASint:      append([]byte(nil), ue.KNASint...),
-		KNASenc:      append([]byte(nil), ue.KNASenc...),
-		ULNASCount:   uint32(ue.ULNASCount),
-		DLNASCount:   uint32(ue.DLNASCount),
-		IntAlg:       ue.IntAlg,
-		EncAlg:       ue.EncAlg,
-		ENBS1APID:    ue.ENBS1APID,
-		ENBGlobalID:  ue.ENBGlobalID,
-		DefaultEBI:   uint32(ue.DefaultEBI),
-		SGWU_TEID:    ue.SGWU_TEID,
-		SGWC_TEID:    ue.SGWC_TEID,
-		ENBU_TEID:    ue.ENBU_TEID,
-		NH:           append([]byte(nil), ue.NH...),
-		NCC:          ue.NCC,
-		LastModified: time.Now().UTC().Format(time.RFC3339),
-	}
-	if ue.MSISDN != "" {
-		ms := ue.MSISDN
-		db.MSISDN = &ms
-	}
-	if ue.APN != "" {
-		a := ue.APN
-		db.APN = &a
-	}
-	if ue.UEIPv4 != nil {
-		db.UEIPv4 = ue.UEIPv4.String()
-	}
-	if ue.SGWU_IP != nil {
-		db.SGWU_IP = ue.SGWU_IP.String()
-	}
-	if ue.SGWC_IP != nil {
-		db.SGWC_IP = ue.SGWC_IP.String()
-	}
-	if ue.ENBU_IP != nil {
-		db.ENBU_IP = ue.ENBU_IP.String()
-	}
-	if ue.GUTI != nil {
-		g := uecontext.SerialiseGUTI(ue.GUTI)
-		db.GUTI = &g
-	}
-	if ue.TAI != nil {
-		db.TAI = fmt.Sprintf("%02X%02X%02X-%04X",
-			ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
-	}
-	return db
 }

@@ -1,11 +1,15 @@
 package s1ap
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/s1ap/ies"
+	"github.com/vectorcore/mme/internal/s1ap/pdu"
 )
 
 // operCfgWithName returns an OperatorConfig with a full name configured and EMM Information enabled.
@@ -15,6 +19,8 @@ func operCfgWithName(full, short string) config.OperatorConfig {
 	cfg.Name.Short = short
 	cfg.Name.ShowFull = full != ""
 	cfg.Name.ShowShort = short != ""
+	cfg.Name.Encoding = "gsm7"
+	cfg.Name.AddCountryInitials = false
 	cfg.EMMInformation.Enabled = true
 	cfg.EMMInformation.SendAfterAttach = true
 	cfg.EMMInformation.SendAfterTAU = true
@@ -67,6 +73,7 @@ func TestSendEMMInformation_Sent(t *testing.T) {
 	ue.KNASint = fakeKeys()
 	ue.KNASenc = fakeKeys()
 	mmeUEID := ue.MMEUES1APID
+	startDLCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
 	before := counterVecValue(metrics.EMMInformationTotal, "attach", "sent")
@@ -79,7 +86,25 @@ func TestSendEMMInformation_Sent(t *testing.T) {
 
 	// The PDU should have arrived in the sends channel.
 	if len(ch) == 0 {
-		t.Error("expected a PDU in the sends channel, channel is empty")
+		t.Fatal("expected a PDU in the sends channel, channel is empty")
+	}
+	gotNAS := decodeDownlinkNASFromRawPDU(t, <-ch)
+	if len(gotNAS) < 6 {
+		t.Fatalf("protected NAS too short: %x", gotNAS)
+	}
+	if got, want := gotNAS[0], byte(emm.PDEPSMobilityMgmt|(emm.SecurityHeaderIntegrityProtected<<4)); got != want {
+		t.Fatalf("security header byte got 0x%02x, want 0x%02x", got, want)
+	}
+	if got, want := gotNAS[5], byte(startDLCount+1); got != want {
+		t.Fatalf("NAS sequence got %d, want %d", got, want)
+	}
+	plain := gotNAS[6:]
+	if len(plain) < 3 || plain[2] != emm.MsgEMMInformation {
+		t.Fatalf("plain NAS is not EMM Information: %x", plain)
+	}
+	wantPlain := emm.EncodeEMMInformation("Test Net", true, "TN", true, "gsm7", false, false, 0, 0)
+	if !bytes.Equal(plain, wantPlain) {
+		t.Fatalf("plain EMM Information got %x, want %x", plain, wantPlain)
 	}
 }
 
@@ -109,6 +134,7 @@ func TestSendEMMInformation_NothingToSend(t *testing.T) {
 	ue.KNASint = fakeKeys()
 	ue.KNASenc = fakeKeys()
 	mmeUEID := ue.MMEUES1APID
+	startDLCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
 	before := counterVecValue(metrics.EMMInformationTotal, "attach", "sent")
@@ -118,4 +144,36 @@ func TestSendEMMInformation_NothingToSend(t *testing.T) {
 	if after != before {
 		t.Errorf("sent counter should not change when nothing to send: before=%.0f after=%.0f", before, after)
 	}
+	ue.Lock()
+	defer ue.Unlock()
+	if uint32(ue.DLNASCount) != startDLCount {
+		t.Errorf("DL NAS count changed when nothing was sent: got %d, want %d", ue.DLNASCount, startDLCount)
+	}
+}
+
+func decodeDownlinkNASFromRawPDU(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode S1AP PDU: %v", err)
+	}
+	if msg.ProcedureCode != pdu.ProcDownlinkNASTransport {
+		t.Fatalf("procedureCode got %d, want DownlinkNASTransport", msg.ProcedureCode)
+	}
+	container, err := pdu.DecodeProcedureIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeProcedureIEContainer: %v", err)
+	}
+	for _, ie := range container {
+		if ie.ID != pdu.IENAS_PDU {
+			continue
+		}
+		nasPDU, err := ies.DecodeNASPDU(ie.Value)
+		if err != nil {
+			t.Fatalf("DecodeNASPDU: %v", err)
+		}
+		return nasPDU
+	}
+	t.Fatal("missing NAS-PDU IE")
+	return nil
 }

@@ -1,12 +1,10 @@
 package s1ap
 
 import (
-	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -75,25 +73,14 @@ func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ie
 			ue.ENBGlobalID = ""
 			ue.ENBU_TEID = 0
 			ue.ENBU_IP = nil
-			dbState := ue.EMMState.String()
-			dbMmeID := ue.MMEUES1APID
 			ue.Unlock()
 
 			s.log.Info("s1ap: UE going ECM-IDLE (release request)",
 				zap.String("remote", remoteAddr),
-				zap.Uint32("mme_ue_id", dbMmeID),
+				zap.Uint32("mme_ue_id", mmeUEID),
 				zap.Uint32("enb_ue_id", enbUEID),
 				zap.String("imsi", imsi))
-			if s.store != nil {
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-					if err := s.store.UpsertUEContext(ctx, buildIdleDBContext(ue, dbMmeID, imsi, dbState)); err != nil {
-						s.log.Warn("s1ap: failed to persist ECM-IDLE context",
-							zap.Uint32("mme_ue_id", dbMmeID), zap.String("imsi", imsi), zap.Error(err))
-					}
-				}()
-			}
+			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
 		} else {
 			ue.Unlock()
 		}
@@ -175,21 +162,12 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		ue.S1ReleasePending = false
 		ue.S1ReleaseENBID = 0
 		ue.S1ReleaseENBAddr = ""
-		dbState := ue.EMMState.String()
-		dbMmeID := ue.MMEUES1APID
 		ue.Unlock()
 
 		log.Info("s1ap: UE going ECM-IDLE (registered)", zap.String("imsi", imsi))
 		metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "inbound", "idle").Inc()
 
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := s.store.UpsertUEContext(ctx, buildIdleDBContext(ue, dbMmeID, imsi, dbState)); err != nil {
-				s.log.Warn("s1ap: failed to persist ECM-IDLE context",
-					zap.Uint32("mme_ue_id", dbMmeID), zap.String("imsi", imsi), zap.Error(err))
-			}
-		}()
+		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
 		return
 
 	case emm.StateDeregisteredInitiated:
@@ -206,65 +184,7 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "inbound", "complete").Inc()
 	}
 
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := s.store.DeleteUEContext(ctx, mmeUEID); err != nil {
-			s.log.Warn("s1ap: failed to delete UE context from DB",
-				zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi), zap.Error(err))
-		}
-	}()
-}
-
-// buildIdleDBContext constructs a models.UEContext snapshot for an ECM-IDLE UE.
-// Called without the UE lock held — all fields passed explicitly to avoid races.
-func buildIdleDBContext(ue *uecontext.Context, mmeID uint32, imsi, emmState string) *models.UEContext {
-	ue.Lock()
-	defer ue.Unlock()
-	dbCtx := &models.UEContext{
-		MMEUES1APID:  mmeID,
-		IMSI:         imsi,
-		EMMState:     emmState,
-		KASME:        append([]byte(nil), ue.KASME...),
-		KNASint:      append([]byte(nil), ue.KNASint...),
-		KNASenc:      append([]byte(nil), ue.KNASenc...),
-		ULNASCount:   uint32(ue.ULNASCount),
-		DLNASCount:   uint32(ue.DLNASCount),
-		IntAlg:       ue.IntAlg,
-		EncAlg:       ue.EncAlg,
-		ENBGlobalID:  ue.ENBGlobalID,
-		DefaultEBI:   uint32(ue.DefaultEBI),
-		SGWU_TEID:    ue.SGWU_TEID,
-		SGWC_TEID:    ue.SGWC_TEID,
-		LastModified: time.Now().UTC().Format(time.RFC3339),
-	}
-	if ue.MSISDN != "" {
-		ms := ue.MSISDN
-		dbCtx.MSISDN = &ms
-	}
-	if ue.APN != "" {
-		a := ue.APN
-		dbCtx.APN = &a
-	}
-	if ue.UEIPv4 != nil {
-		dbCtx.UEIPv4 = ue.UEIPv4.String()
-	}
-	if ue.SGWU_IP != nil {
-		dbCtx.SGWU_IP = ue.SGWU_IP.String()
-	}
-	if ue.SGWC_IP != nil {
-		dbCtx.SGWC_IP = ue.SGWC_IP.String()
-	}
-	if ue.GUTI != nil {
-		g := uecontext.SerialiseGUTI(ue.GUTI)
-		dbCtx.GUTI = &g
-	}
-	if ue.TAI != nil {
-		tai := fmt.Sprintf("%02X%02X%02X-%04X",
-			ue.TAI.PLMN[0], ue.TAI.PLMN[1], ue.TAI.PLMN[2], ue.TAI.TAC)
-		dbCtx.TAI = tai
-	}
-	return dbCtx
+	_ = mmeUEID
 }
 
 // handleInitialContextSetupResponse handles a successful Initial Context Setup response.

@@ -119,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 	registerUEHandlers(api, s)
 	registerOAMHandlers(api, s)
 	registerOperatorHandlers(api, s)
+	registerRecoveryHandlers(api, s)
 
 	return r
 }

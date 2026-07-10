@@ -25,10 +25,12 @@ type Config struct {
 // OperatorConfig holds network identity and NITZ settings pushed to UEs via EMM Information.
 type OperatorConfig struct {
 	Name struct {
-		Full      string `yaml:"full"`
-		Short     string `yaml:"short"`
-		ShowFull  bool   `yaml:"show_full"`
-		ShowShort bool   `yaml:"show_short"`
+		Full               string `yaml:"full"`
+		Short              string `yaml:"short"`
+		ShowFull           bool   `yaml:"show_full"`
+		ShowShort          bool   `yaml:"show_short"`
+		Encoding           string `yaml:"encoding"`
+		AddCountryInitials bool   `yaml:"add_country_initials"`
 	} `yaml:"name"`
 	NITZ struct {
 		Enabled               bool  `yaml:"enabled"`
@@ -248,6 +250,14 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.S6a.BindAddress == "" && cfg.S6a.PeerAddress == "" {
 		return nil, fmt.Errorf("config: s6a.peer_address is required when s6a.bind_address is not set")
+	}
+	if cfg.Operator.Name.Encoding == "" {
+		cfg.Operator.Name.Encoding = "gsm7"
+	}
+	switch cfg.Operator.Name.Encoding {
+	case "gsm7", "ucs2":
+	default:
+		return nil, fmt.Errorf("config: operator.name.encoding must be \"gsm7\" or \"ucs2\", got %q", cfg.Operator.Name.Encoding)
 	}
 
 	return cfg, nil

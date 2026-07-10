@@ -90,6 +90,8 @@ security:
 #     short: "ExNet"
 #     show_full: true
 #     show_short: true
+#     encoding: "gsm7"   # gsm7 or ucs2
+#     add_country_initials: false
 #   nitz:
 #     enabled: true
 #     timezone_offset_minutes: 60
