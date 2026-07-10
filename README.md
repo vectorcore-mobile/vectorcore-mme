@@ -176,8 +176,6 @@ The recovery DB stores:
 - MME and S-GW S11 TEIDs/IP, P-GW info when known
 - restart epoch and timestamps
 
-`REALLOCATED GUTI` is identity-management state. It is not a handover or S10 transaction counter.
-
 ### Restart Behavior
 
 On startup, the MME generates a new restart epoch and marks older recovery records as `STALE_AFTER_RESTART`. It does not load database rows as active UE contexts.
