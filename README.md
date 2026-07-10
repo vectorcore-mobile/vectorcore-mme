@@ -50,8 +50,8 @@ Key fields:
 |---|---|
 | `nf.mcc` / `nf.mnc` | Your PLMN |
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
-| `s6a.hss_address` | VectorCore HSS Diameter endpoint |
-| `s11.sgw_address` | S-GW S11 GTP-C address |
+| `s6a.peer_address` | S6a Diameter peer endpoint |
+| `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `database.db_type` | Database driver: `postgres` or `sqlite` |
 | `database.*` | Database connection settings. For SQLite, `database.database` is the DB file path. |
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |

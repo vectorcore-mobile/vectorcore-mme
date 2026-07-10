@@ -77,8 +77,8 @@ func (s *Server) HandleAIAResult(mmeUEID uint32, rand, xres, autn, kasme []byte,
 }
 
 // HandleULAResult is called by the S6a layer when a ULA (subscription data) arrives.
-// When S11 is enabled it sends a Create Session Request; when disabled (noop client)
-// it builds an Attach Accept with a PDN Connectivity Reject immediately.
+// Runtime MME sends a Create Session Request over S11. A no-op S11 path remains
+// only for unit tests that exercise NAS/S1AP without a GTPv2-C client.
 func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr error) {
 	var apnCfg *gateway.APNConfiguration
 	if apn != "" {
@@ -141,10 +141,8 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID
 
-	// Check if S11 is a real client (not noop) by attempting to send CSR.
-	// We always call SendCSR; the noop client returns nil immediately and the flow
-	// falls through to HandleCSRResult which the noop never calls — so for the noop
-	// path we go directly to ICS from here.
+	// Unit-test no-op path: build Attach Accept with PDN Connectivity Reject
+	// directly when tests construct the server without a GTPv2-C client.
 	_, isNoop := s.s11.(NoopS11Client)
 	if isNoop {
 		// No S-GW: build Attach Accept with PDN Connectivity Reject (Phase 1 backward compat).

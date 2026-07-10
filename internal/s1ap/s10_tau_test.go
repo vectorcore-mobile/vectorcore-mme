@@ -23,8 +23,8 @@ import (
 // ── Mock S10Client ────────────────────────────────────────────────────────────
 
 type mockS10 struct {
-	reqCh  chan ctxReqCall  // fed by SendContextRequest
-	ackCh  chan ctxAckCall  // fed by SendContextAcknowledge
+	reqCh  chan ctxReqCall           // fed by SendContextRequest
+	ackCh  chan ctxAckCall           // fed by SendContextAcknowledge
 	respCh chan s10pkg.ContextResult // callers read from this
 }
 
@@ -34,9 +34,9 @@ type ctxReqCall struct {
 }
 
 type ctxAckCall struct {
-	peerAddr  string
-	peerTEID  uint32
-	cause     uint8
+	peerAddr string
+	peerTEID uint32
+	cause    uint8
 }
 
 func newMockS10() *mockS10 {
@@ -66,18 +66,24 @@ func (errMockS10) SendContextRequest(_ string, _ *s10pkg.ContextRequest) (<-chan
 	return nil, errors.New("s10 disabled")
 }
 func (errMockS10) SendContextAcknowledge(_ string, _ uint32, _ uint8) error { return nil }
-func (errMockS10) LocalAddr() string                                          { return "" }
+func (errMockS10) LocalAddr() string                                        { return "" }
 
 // ── Mock S6a (capturing) ──────────────────────────────────────────────────────
 
 type capturingS6a struct {
-	ulrCalls chan struct{ imsi string; mmeUEID uint32 }
-	err      error
+	ulrCalls chan struct {
+		imsi    string
+		mmeUEID uint32
+	}
+	err error
 }
 
 func (c *capturingS6a) SendAIR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (c *capturingS6a) SendULR(imsi string, _ [3]byte, mmeUEID uint32) error {
-	c.ulrCalls <- struct{ imsi string; mmeUEID uint32 }{imsi, mmeUEID}
+	c.ulrCalls <- struct {
+		imsi    string
+		mmeUEID uint32
+	}{imsi, mmeUEID}
 	return c.err
 }
 func (c *capturingS6a) SendPUR(_ string) error { return nil }
@@ -154,7 +160,7 @@ func sampleContextResponse() *s10pkg.ContextResponse {
 			APN:        "internet",
 		},
 		PDNConnection: gtpv2.PDNParams{
-			EBI: 5,
+			EBI:        5,
 			SGWC_FTEID: gtpv2.FTEID{TEID: 0x1000, IP: net.ParseIP("10.0.1.1").To4()},
 			SGWU_FTEID: gtpv2.FTEID{TEID: 0x2000, IP: net.ParseIP("10.0.1.2").To4()},
 			ENBU_FTEID: gtpv2.FTEID{TEID: 0x3000, IP: net.ParseIP("10.0.1.3").To4()},
@@ -223,9 +229,9 @@ func TestResolveOldMME_MMEGIFilter(t *testing.T) {
 
 // ── handleInterMMETAU / importContextAndContinueTAU ──────────────────────────
 
-// TestInterMMETAU_SuccessNoS6a verifies the full new-MME path when S6a is disabled:
+// TestInterMMETAU_SuccessNoopS6a verifies the full new-MME path with the S6a test fake:
 // context import → TAU Accept sent → CTX-Ack sent to old MME → MBR sent to SGW.
-func TestInterMMETAU_SuccessNoS6a(t *testing.T) {
+func TestInterMMETAU_SuccessNoopS6a(t *testing.T) {
 	ms10 := newMockS10()
 	ms11 := &capturingS11{}
 	srv := newS10TAUServer(ms10, NoopS6aClient{}, ms11)
@@ -412,7 +418,10 @@ func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 	ms10 := newMockS10()
 	ms11 := &capturingS11{}
 	s6a := &capturingS6a{
-		ulrCalls: make(chan struct{ imsi string; mmeUEID uint32 }, 1),
+		ulrCalls: make(chan struct {
+			imsi    string
+			mmeUEID uint32
+		}, 1),
 	}
 	srv := newS10TAUServer(ms10, s6a, ms11)
 
@@ -428,7 +437,10 @@ func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 	ms10.respCh <- s10pkg.ContextResult{Resp: sampleContextResponse()}
 
 	// Wait for ULR to be sent.
-	var ulrCall struct{ imsi string; mmeUEID uint32 }
+	var ulrCall struct {
+		imsi    string
+		mmeUEID uint32
+	}
 	select {
 	case ulrCall = <-s6a.ulrCalls:
 	case <-time.After(500 * time.Millisecond):
@@ -469,7 +481,10 @@ func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 func TestInterMMETAU_ULRFailed(t *testing.T) {
 	ms10 := newMockS10()
 	s6a := &capturingS6a{
-		ulrCalls: make(chan struct{ imsi string; mmeUEID uint32 }, 1),
+		ulrCalls: make(chan struct {
+			imsi    string
+			mmeUEID uint32
+		}, 1),
 	}
 	srv := newS10TAUServer(ms10, s6a, NoopS11Client{})
 
@@ -484,7 +499,10 @@ func TestInterMMETAU_ULRFailed(t *testing.T) {
 	<-ms10.reqCh
 	ms10.respCh <- s10pkg.ContextResult{Resp: sampleContextResponse()}
 
-	var ulrCall struct{ imsi string; mmeUEID uint32 }
+	var ulrCall struct {
+		imsi    string
+		mmeUEID uint32
+	}
 	select {
 	case ulrCall = <-s6a.ulrCalls:
 	case <-time.After(500 * time.Millisecond):
@@ -804,4 +822,3 @@ func TestImportContext_NASKeysDerivation(t *testing.T) {
 		t.Error("KNASenc mismatch")
 	}
 }
-

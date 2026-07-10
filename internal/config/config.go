@@ -66,7 +66,6 @@ type PeerMMEConfig struct {
 
 // S11Config holds the GTPv2-C S11 interface configuration (MME ↔ S-GW).
 type S11Config struct {
-	Enabled     bool   `yaml:"enabled"`
 	BindAddress string `yaml:"bind_address"` // local IP for MME S11 socket
 	BindPort    int    `yaml:"bind_port"`    // default 2123
 }
@@ -132,8 +131,7 @@ type S1APConfig struct {
 }
 
 type S6aConfig struct {
-	Enabled     bool          `yaml:"enabled"`
-	HSSAddress  string        `yaml:"hss_address"`  // client mode: connect outbound to HSS/DRA
+	PeerAddress string        `yaml:"peer_address"` // client mode: connect outbound to Diameter peer
 	BindAddress string        `yaml:"bind_address"` // server mode: listen for inbound Diameter connections
 	BindPort    int           `yaml:"bind_port"`    // server mode port (default 3868)
 	OriginHost  string        `yaml:"origin_host"`
@@ -190,7 +188,6 @@ func Load(path string) (*Config, error) {
 			SCTPStreams: 2,
 		},
 		S6a: S6aConfig{
-			Enabled:    false,
 			RetryDelay: 5 * time.Second,
 		},
 		S10: S10Config{
@@ -252,6 +249,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.S6a.OriginRealm == "" {
 		cfg.S6a.OriginRealm = cfg.NF.OriginRealm
+	}
+	if cfg.S6a.BindAddress == "" && cfg.S6a.PeerAddress == "" {
+		return nil, fmt.Errorf("config: s6a.peer_address is required when s6a.bind_address is not set")
 	}
 
 	return cfg, nil

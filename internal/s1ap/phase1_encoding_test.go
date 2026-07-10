@@ -3,6 +3,7 @@ package s1ap
 import (
 	"bytes"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -347,7 +348,7 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 }
 
 func TestDecodeInitialContextSetupResponseERABSetupVector(t *testing.T) {
-	raw, err := hex.DecodeString("000032400a141fc0a8692200000001")
+	raw, err := hex.DecodeString("000032400a0a1fc0a8692200000001")
 	if err != nil {
 		t.Fatalf("DecodeString: %v", err)
 	}
@@ -424,8 +425,13 @@ func TestSendInitialContextSetupEncodesRel16IEs(t *testing.T) {
 		if len(erabItem) == 0 {
 			t.Fatal("E-RABToBeSetupItemCtxtSUReq item value is empty")
 		}
-		if erabItem[0] != 0x4a {
-			t.Fatalf("E-RAB item first byte got 0x%02x, want 0x4a", erabItem[0])
+		if erabItem[0] != 0x45 {
+			t.Fatalf("E-RAB item first byte got 0x%02x, want 0x45", erabItem[0])
+		}
+		if got, err := decodeSrsRANERABToBeSetupItemID(erabItem); err != nil {
+			t.Fatalf("decode E-RAB-ID using srsRAN-compatible layout: %v", err)
+		} else if got != 5 {
+			t.Fatalf("srsRAN-compatible E-RAB-ID decode got %d, want 5", got)
 		}
 		wantTLA := []byte{0x0f, 0x80, 0x0a, 0x00, 0x00, 0x01}
 		if !bytes.Contains(erabItem, wantTLA) {
@@ -437,6 +443,34 @@ func TestSendInitialContextSetupEncodesRel16IEs(t *testing.T) {
 	}
 	if !seenSecurityCapabilities {
 		t.Fatal("UESecurityCapabilities IE missing")
+	}
+}
+
+func TestERABToBeSetupItemERABIDUsesExtensibleInteger(t *testing.T) {
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x802de005, SGWU_IP: []byte{10, 90, 250, 81}}
+	erabItem := firstERABItemValue(encodeERABList(bearer, []byte{0x27, 0x42}))
+	if len(erabItem) == 0 {
+		t.Fatal("E-RAB item is empty")
+	}
+	if got, want := erabItem[0], byte(0x45); got != want {
+		t.Fatalf("E-RAB item first byte got 0x%02x, want 0x%02x", got, want)
+	}
+	id, err := decodeSrsRANERABToBeSetupItemID(erabItem)
+	if err != nil {
+		t.Fatalf("decode E-RAB-ID: %v", err)
+	}
+	if id != 5 {
+		t.Fatalf("E-RAB-ID got %d, want 5", id)
+	}
+}
+
+func TestOldERABToBeSetupItemPrefixWouldDecodeAs10(t *testing.T) {
+	id, err := decodeSrsRANERABToBeSetupItemID([]byte{0x4a, 0x00})
+	if err != nil {
+		t.Fatalf("decode old E-RAB-ID prefix: %v", err)
+	}
+	if id != 10 {
+		t.Fatalf("old 0x4a prefix decoded E-RAB-ID got %d, want 10", id)
 	}
 }
 
@@ -607,6 +641,31 @@ func decodeAttachAcceptESMContainer(t *testing.T, plainAttachAccept []byte) []by
 		t.Fatalf("Attach Accept ESM length %d exceeds message: %x", esmLen, plainAttachAccept)
 	}
 	return plainAttachAccept[esmStart : esmStart+esmLen]
+}
+
+func decodeSrsRANERABToBeSetupItemID(item []byte) (uint8, error) {
+	r := aper.NewBitReader(item)
+	if _, err := r.ReadBit(); err != nil {
+		return 0, err
+	}
+	if _, err := r.ReadBit(); err != nil {
+		return 0, err
+	}
+	if _, err := r.ReadBit(); err != nil {
+		return 0, err
+	}
+	ext, err := r.ReadBit()
+	if err != nil {
+		return 0, err
+	}
+	if ext != 0 {
+		return 0, fmt.Errorf("unexpected E-RAB-ID extension value")
+	}
+	id, err := aper.DecodeConstrainedWholeNumber(r, 0, 15)
+	if err != nil {
+		return 0, err
+	}
+	return uint8(id), nil
 }
 
 func buildAttachRequestWithGUTIForS1APTest() []byte {

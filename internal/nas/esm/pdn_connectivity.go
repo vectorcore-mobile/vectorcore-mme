@@ -1,6 +1,9 @@
 package esm
 
-import "net"
+import (
+	"fmt"
+	"net"
+)
 
 // PDNType values.
 const (
@@ -17,6 +20,13 @@ type PDNConnectivityRequest struct {
 	PDNType                uint8
 	RequestType            uint8
 	APN                    string // optional
+	PCO                    []byte // optional Protocol Configuration Options value part
+}
+
+// ActivateDefaultEPSBearerContextAccept holds the UE response embedded in Attach Complete.
+type ActivateDefaultEPSBearerContextAccept struct {
+	EPSBearerID            uint8
+	ProcedureTransactionID uint8
 	PCO                    []byte // optional Protocol Configuration Options value part
 }
 
@@ -79,6 +89,53 @@ func DecodePDNConnectivityRequest(data []byte) *PDNConnectivityRequest {
 		i += ieLen
 	}
 	return r
+}
+
+// DecodeActivateDefaultEPSBearerContextAccept decodes an ESM Activate Default EPS Bearer
+// Context Accept from an Attach Complete ESM message container.
+func DecodeActivateDefaultEPSBearerContextAccept(data []byte) (*ActivateDefaultEPSBearerContextAccept, error) {
+	if len(data) < 3 {
+		return nil, fmt.Errorf("esm: Activate Default EPS Bearer Context Accept too short: %d", len(data))
+	}
+	if data[0]&0x0f != PDEPSSessionMgmt {
+		return nil, fmt.Errorf("esm: unexpected protocol discriminator %d", data[0]&0x0f)
+	}
+	if data[2] != MsgActivateDefaultEPSBearerContextAccept {
+		return nil, fmt.Errorf("esm: unexpected message type %#x", data[2])
+	}
+	accept := &ActivateDefaultEPSBearerContextAccept{
+		EPSBearerID:            data[0] >> 4,
+		ProcedureTransactionID: data[1],
+	}
+	for i := 3; i < len(data); {
+		iei := data[i]
+		i++
+		switch iei {
+		case 0x27:
+			if i >= len(data) {
+				return nil, fmt.Errorf("esm: truncated PCO length")
+			}
+			pcoLen := int(data[i])
+			i++
+			if i+pcoLen > len(data) {
+				return nil, fmt.Errorf("esm: truncated PCO value")
+			}
+			accept.PCO = append([]byte(nil), data[i:i+pcoLen]...)
+			i += pcoLen
+		default:
+			// Preserve forward compatibility with optional TLV IEs we do not use yet.
+			if i >= len(data) {
+				return nil, fmt.Errorf("esm: truncated optional IE %#x", iei)
+			}
+			ieLen := int(data[i])
+			i++
+			if i+ieLen > len(data) {
+				return nil, fmt.Errorf("esm: optional IE %#x truncated", iei)
+			}
+			i += ieLen
+		}
+	}
+	return accept, nil
 }
 
 // EncodePDNConnectivityReject encodes an ESM PDN Connectivity Reject.

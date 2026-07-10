@@ -99,7 +99,7 @@ func (h *Handlers) SetDetachFn(fn func(ue *uecontext.Context)) {
 
 // Start runs the Diameter layer. Two modes:
 //   - If s6a.bind_address is set: listen for inbound connections (DRA or HSS connects to us).
-//   - Otherwise: connect outbound to s6a.hss_address and reconnect on failure.
+//   - Otherwise: connect outbound to s6a.peer_address and reconnect on failure.
 //
 // Blocking in both cases.
 func (h *Handlers) Start() error {
@@ -109,7 +109,7 @@ func (h *Handlers) Start() error {
 	for {
 		if err := h.connect(); err != nil {
 			h.log.Warn("s6a: connection failed, retrying",
-				zap.String("peer", h.cfg.HSSAddress), zap.Error(err))
+				zap.String("peer", h.cfg.PeerAddress), zap.Error(err))
 		}
 		time.Sleep(h.retryDelay())
 	}
@@ -229,23 +229,23 @@ func (h *Handlers) connect() error {
 		},
 	}
 
-	conn, err := cli.DialNetwork("tcp", h.cfg.HSSAddress)
+	conn, err := cli.DialNetwork("tcp", h.cfg.PeerAddress)
 	if err != nil {
-		return fmt.Errorf("s6a: dial %s: %w", h.cfg.HSSAddress, err)
+		return fmt.Errorf("s6a: dial %s: %w", h.cfg.PeerAddress, err)
 	}
 
 	h.connMu.Lock()
 	h.conn = conn
 	h.connMu.Unlock()
 
-	h.log.Info("s6a: connected to peer", zap.String("peer", h.cfg.HSSAddress))
+	h.log.Info("s6a: connected to peer", zap.String("peer", h.cfg.PeerAddress))
 	metrics.S6aRequestsTotal.WithLabelValues("connect", "ok").Inc()
 
 	<-conn.(diam.CloseNotifier).CloseNotify()
 	h.connMu.Lock()
 	h.conn = nil
 	h.connMu.Unlock()
-	h.log.Warn("s6a: peer connection lost", zap.String("peer", h.cfg.HSSAddress))
+	h.log.Warn("s6a: peer connection lost", zap.String("peer", h.cfg.PeerAddress))
 	return nil
 }
 

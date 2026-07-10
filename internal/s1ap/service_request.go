@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"time"
@@ -25,7 +26,7 @@ import (
 // found by constructing a GUTI from the S-TMSI carried in the S1AP message.
 func (s *Server) handleServiceRequest(
 	tempUE *uecontext.Context,
-	mmec uint8, mtmsi uint32, stmsiPresent bool,
+	mmec uint8, mtmsi uint32, stmsiRaw []byte, stmsiPresent bool,
 	tai *ies.TAI, nasPDU []byte,
 ) {
 	tempUE.Lock()
@@ -38,9 +39,23 @@ func (s *Server) handleServiceRequest(
 		zap.String("remote", enbAddr),
 		zap.String("procedure", "ServiceRequest"),
 		zap.Uint32("tmp_mme_ue_id", tempMmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
 	)
+	log.Info("s1ap: ServiceRequest received",
+		zap.String("nas_hex", hex.EncodeToString(nasPDU)),
+		zap.String("stmsi_raw", hex.EncodeToString(stmsiRaw)),
+		zap.Bool("stmsi_present", stmsiPresent),
+		zap.Uint8("decoded_mmec", mmec),
+		zap.Uint32("decoded_mtmsi", mtmsi),
+		zap.String("decoded_mtmsi_hex", fmt.Sprintf("0x%08x", mtmsi)))
 
 	reject := func(cause uint8) {
+		log.Warn("s1ap: ServiceRequest rejected",
+			zap.Uint8("emm_cause", cause),
+			zap.String("nas_hex", hex.EncodeToString(nasPDU)),
+			zap.String("stmsi_raw", hex.EncodeToString(stmsiRaw)),
+			zap.Uint8("decoded_mmec", mmec),
+			zap.Uint32("decoded_mtmsi", mtmsi))
 		s.sendServiceReject(tempMmeUEID, enbUEID, enbAddr, cause)
 		s.ueManager.Remove(tempUE)
 		metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
@@ -70,7 +85,11 @@ func (s *Server) handleServiceRequest(
 	realUE, ok := s.ueManager.GetByGUTI(gutiStr)
 	if !ok {
 		log.Warn("s1ap: ServiceRequest: GUTI not found",
-			zap.Uint8("mmec", mmec), zap.Uint32("mtmsi", mtmsi))
+			zap.String("lookup_result", "miss"),
+			zap.String("lookup_guti", gutiStr),
+			zap.Uint8("mmec", mmec),
+			zap.Uint32("mtmsi", mtmsi),
+			zap.String("mtmsi_hex", fmt.Sprintf("0x%08x", mtmsi)))
 		reject(emm.CauseImplicitlyDetached)
 		return
 	}
@@ -86,9 +105,21 @@ func (s *Server) handleServiceRequest(
 	emmState := realUE.EMMState
 	ecmState := realUE.ECMState
 	realMmeUEID := realUE.MMEUES1APID
+	imsi := realUE.IMSI
 	realUE.Unlock()
 
 	log = log.With(zap.Uint32("mme_ue_id", realMmeUEID))
+	log.Info("s1ap: ServiceRequest lookup result",
+		zap.String("lookup_result", "hit"),
+		zap.String("lookup_guti", gutiStr),
+		zap.String("imsi", imsi),
+		zap.Stringer("emm_state", emmState),
+		zap.Stringer("ecm_state", ecmState),
+		zap.Uint8("default_ebi", defaultEBI),
+		zap.Uint32("sgw_s1u_teid", sgwUTEID),
+		zap.String("sgw_s1u_teid_hex", fmt.Sprintf("0x%08x", sgwUTEID)),
+		zap.String("sgw_s1u_ipv4", sgwUIP.String()),
+		zap.Uint32("ul_nas_count", ulCount))
 
 	// Validate UE state.
 	if emmState != emm.StateRegistered {
@@ -110,10 +141,15 @@ func (s *Server) handleServiceRequest(
 	// Verify short MAC.
 	ok, reconstructedCount := emm.VerifyShortMAC(nasPDU, intAlg, knasInt, ulCount)
 	if !ok {
-		log.Warn("s1ap: ServiceRequest: short MAC verification failed")
+		log.Warn("s1ap: ServiceRequest: short MAC verification failed",
+			zap.Uint32("stored_ul_nas_count", ulCount),
+			zap.String("nas_hex", hex.EncodeToString(nasPDU)))
 		reject(emm.CauseUEIdentityCannotBeDerived)
 		return
 	}
+	log.Info("s1ap: ServiceRequest short MAC verified",
+		zap.Uint32("stored_ul_nas_count", ulCount),
+		zap.Uint32("reconstructed_ul_nas_count", reconstructedCount))
 
 	// Transfer S1AP context from tempUE to the real UE.
 	realUE.Lock()
@@ -139,7 +175,11 @@ func (s *Server) handleServiceRequest(
 	s.ueManager.Remove(tempUE)
 
 	metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "attempt").Inc()
-	log.Info("s1ap: Service Request accepted, sending ICS")
+	log.Info("s1ap: Service Request accepted, sending ICS resume",
+		zap.Uint8("ebi", defaultEBI),
+		zap.Uint32("sgw_s1u_teid", sgwUTEID),
+		zap.String("sgw_s1u_teid_hex", fmt.Sprintf("0x%08x", sgwUTEID)),
+		zap.String("sgw_s1u_ipv4", sgwUIP.String()))
 
 	// Send ICS Request with the existing default bearer.  No NAS PDU for Service Request.
 	if err := s.SendInitialContextSetup(realMmeUEID, nil, &BearerInfo{
@@ -154,7 +194,12 @@ func (s *Server) handleServiceRequest(
 		realUE.AttachStep = uecontext.AttachStepNone
 		realUE.Unlock()
 		metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+		return
 	}
+	log.Info("s1ap: ServiceRequest ICS resume sent",
+		zap.Uint32("mme_ue_id", realMmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
+		zap.Uint8("ebi", defaultEBI))
 }
 
 // handleServiceRequestReestablished is called from handleInitialContextSetupResponse

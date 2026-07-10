@@ -1,14 +1,18 @@
 package s1ap
 
 import (
+	"encoding/hex"
 	"net"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/s1ap/ies"
+	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -51,10 +55,10 @@ func makeRegisteredIdleUE(srv *Server, remoteAddr string) (*uecontext.Context, u
 // allocated UEs (ULNASCount=0: count=1 > 0, MAC from EIA0 is {0,0,0,0}).
 func buildSRPDU(sn uint8) []byte {
 	return []byte{
-		0xC7,  // security header 0x0C | PD 0x07
-		sn,    // KSI=0 | SN
-		0x00,  // ShortMAC high (EIA0 → 0)
-		0x00,  // ShortMAC low  (EIA0 → 0)
+		0xC7, // security header 0x0C | PD 0x07
+		sn,   // KSI=0 | SN
+		0x00, // ShortMAC high (EIA0 → 0)
+		0x00, // ShortMAC low  (EIA0 → 0)
 	}
 }
 
@@ -72,7 +76,7 @@ func TestHandleServiceRequest_NoSTMSI(t *testing.T) {
 	tempUE.Unlock()
 
 	before := srv.ueManager.Count()
-	srv.handleServiceRequest(tempUE, 0, 0, false /*stmsiPresent=false*/, nil, buildSRPDU(1))
+	srv.handleServiceRequest(tempUE, 0, 0, nil, false /*stmsiPresent=false*/, nil, buildSRPDU(1))
 
 	// Service Reject sent
 	select {
@@ -99,7 +103,7 @@ func TestHandleServiceRequest_UnknownSTMSI(t *testing.T) {
 
 	before := srv.ueManager.Count()
 	// MMEC/MTMSI not registered in the manager
-	srv.handleServiceRequest(tempUE, 0xFE, 0xDEADFFFF, true, nil, buildSRPDU(1))
+	srv.handleServiceRequest(tempUE, 0xFE, 0xDEADFFFF, nil, true, nil, buildSRPDU(1))
 
 	select {
 	case <-ch:
@@ -128,7 +132,7 @@ func TestHandleServiceRequest_AlreadyConnected(t *testing.T) {
 	tempUE.ENBGlobalID = addr
 	tempUE.Unlock()
 
-	srv.handleServiceRequest(tempUE, mmec, mtmsi, true, nil, buildSRPDU(1))
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
 
 	select {
 	case <-ch:
@@ -159,7 +163,7 @@ func TestHandleServiceRequest_MissingBearer(t *testing.T) {
 	tempUE.ENBGlobalID = addr
 	tempUE.Unlock()
 
-	srv.handleServiceRequest(tempUE, mmec, mtmsi, true, nil, buildSRPDU(1))
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
 
 	select {
 	case <-ch:
@@ -183,7 +187,7 @@ func TestHandleServiceRequest_InvalidMAC(t *testing.T) {
 
 	// Wrong MAC bytes — EIA0 produces {0,0} but we send {0x01,0x02}
 	badMAC := []byte{0xC7, 0x01, 0x01, 0x02}
-	srv.handleServiceRequest(tempUE, mmec, mtmsi, true, nil, badMAC)
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, badMAC)
 
 	select {
 	case <-ch:
@@ -206,7 +210,7 @@ func TestHandleServiceRequest_ValidKnownUE(t *testing.T) {
 	tempUE.Unlock()
 
 	countBefore := srv.ueManager.Count()
-	srv.handleServiceRequest(tempUE, mmec, mtmsi, true, nil, buildSRPDU(1))
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
 
 	// ICS Request should be sent (tempUE removed, realUE still present)
 	select {
@@ -231,6 +235,51 @@ func TestHandleServiceRequest_ValidKnownUE(t *testing.T) {
 	}
 	if enbUEID != 105 {
 		t.Errorf("ENBS1APID: got %d, want 105 (transferred from tempUE)", enbUEID)
+	}
+}
+
+func TestInitialUEMessageServiceRequestUsesSTMSIIE(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.16:36412"
+	ch := setupSendCapture(srv, addr)
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+
+	stmsi, err := hex.DecodeString("004000000002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taiValue, err := ies.EncodeTAI(ies.TAI{MCC: "001", MNC: "01", TAC: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(106)},
+		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(buildSRPDU(1))},
+		{ID: pdu.IETAI, Criticality: aper.CriticalityReject, Value: taiValue},
+		{ID: pdu.IESTMSI, Criticality: aper.CriticalityReject, Value: stmsi},
+	}
+
+	before := srv.ueManager.Count()
+	srv.handleMessage(addr, pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, aper.CriticalityIgnore, ieList))
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no ICS Request PDU sent on Service Request")
+	}
+	if srv.ueManager.Count() != before {
+		t.Fatalf("manager count got %d, want %d", srv.ueManager.Count(), before)
+	}
+	realUE.Lock()
+	step := realUE.AttachStep
+	enbUEID := realUE.ENBS1APID
+	realUE.Unlock()
+	if step != uecontext.AttachStepWaitingICSRespSR {
+		t.Fatalf("AttachStep got %d, want WaitingICSRespSR", step)
+	}
+	if enbUEID != 106 {
+		t.Fatalf("eNB UE ID got %d, want 106", enbUEID)
 	}
 }
 

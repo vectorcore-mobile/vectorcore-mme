@@ -19,9 +19,10 @@ nf:
   mcc: "001"
   mnc: "01"
 s11:
-  enabled: true
   bind_address: "127.0.0.1"
   bind_port: 2123
+s6a:
+  peer_address: "127.0.0.1:3868"
 gateway_selection:
   dns:
     enabled: true
