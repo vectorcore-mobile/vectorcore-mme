@@ -272,6 +272,7 @@ const (
 	CauseRadioNetworkNormalRelease         uint8 = 1
 	CauseRadioNetworkLoadBalancingRequired uint8 = 2
 	CauseRadioNetworkSuccessfulHandover    uint8 = 2  // tx2relocoverall-expiry=1, successful-handover=2
+	CauseRadioNetworkUserInactivity        uint8 = 20 // user-inactivity=20
 	CauseRadioNetworkHOCancelled           uint8 = 4  // handover-cancelled=4
 	CauseRadioNetworkUnknownTargetID       uint8 = 11 // unknown-targetID=11
 	CauseNASNormalRelease                  uint8 = 0
@@ -285,14 +286,11 @@ const (
 // EncodeCause encodes a Cause IE value (CHOICE with 5 alternatives).
 func EncodeCause(group CauseGroup, value uint8) []byte {
 	w := aper.NewBitWriter()
-	// Cause is a CHOICE with extension marker, 5 root alternatives
-	// Extension bit = 0, choice index = group (3 bits needed? Let's check: 5 alternatives → bitsNeeded(5)=3)
+	// Cause is a CHOICE with extension marker, 5 root alternatives.
 	w.WriteBit(0) // extension bit
 	w.WriteBits(uint64(group), 3)
-	// The cause value in each group: variable sizes, e.g. RadioNetwork has ~40 values
-	// For simplicity we use 8-bit unconstrained for the value within the group
-	w.AlignToByte()
-	w.WriteOctet(value)
+	w.WriteBit(0) // ENUMERATED extension bit
+	w.WriteBits(uint64(value), causeRootBits(group))
 	return w.Bytes()
 }
 
@@ -306,12 +304,148 @@ func DecodeCause(data []byte) (CauseGroup, uint8, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	r.AlignToByte()
-	value, err := r.ReadOctet()
+	groupID := CauseGroup(group)
+	if _, err := r.ReadBit(); err != nil {
+		return 0, 0, err
+	}
+	value, err := r.ReadBits(causeRootBits(groupID))
 	if err != nil {
 		return 0, 0, err
 	}
-	return CauseGroup(group), value, nil
+	if len(data) == 2 && data[0]&0x0f == 0 && data[1]&0x07 == 0 {
+		shifted := data[1] >> 3
+		if shifted > uint8(value) && CauseName(groupID, shifted) != "unknown" {
+			value = uint64(shifted)
+		}
+	}
+	return groupID, uint8(value), nil
+}
+
+func causeRootBits(group CauseGroup) int {
+	switch group {
+	case CauseGroupTransport:
+		return 1 // CauseTransport ::= ENUMERATED {0..1,...}
+	case CauseGroupNAS:
+		return 2 // CauseNas ::= ENUMERATED {0..3,...}
+	case CauseGroupRadioNetwork:
+		return 6 // CauseRadioNetwork root in TS 36.413 Rel-16 / asn1c: 0..35
+	case CauseGroupProtocol:
+		return 3 // CauseProtocol ::= ENUMERATED {0..6,...}
+	case CauseGroupMisc:
+		return 3 // CauseMisc ::= ENUMERATED {0..5,...}
+	default:
+		return 8
+	}
+}
+
+// CauseGroupName returns the TS 36.413 Cause CHOICE alternative name.
+func CauseGroupName(group CauseGroup) string {
+	switch group {
+	case CauseGroupRadioNetwork:
+		return "radioNetwork"
+	case CauseGroupTransport:
+		return "transport"
+	case CauseGroupNAS:
+		return "nas"
+	case CauseGroupProtocol:
+		return "protocol"
+	case CauseGroupMisc:
+		return "misc"
+	default:
+		return "unknown"
+	}
+}
+
+// CauseName returns a human-readable TS 36.413 cause name for common attach path causes.
+func CauseName(group CauseGroup, value uint8) string {
+	switch group {
+	case CauseGroupRadioNetwork:
+		switch value {
+		case 0:
+			return "unspecified"
+		case 1:
+			return "tx2relocoverall-expiry"
+		case 2:
+			return "successful-handover"
+		case 3:
+			return "release-due-to-eutran-generated-reason"
+		case 4:
+			return "handover-cancelled"
+		case 11:
+			return "unknown-targetID"
+		case 13:
+			return "unknown-mme-ue-s1ap-id"
+		case 14:
+			return "unknown-enb-ue-s1ap-id"
+		case 15:
+			return "unknown-pair-ue-s1ap-id"
+		case 20:
+			return "user-inactivity"
+		case 21:
+			return "radio-connection-with-ue-lost"
+		case 25:
+			return "radio-resources-not-available"
+		case 26:
+			return "failure-in-radio-interface-procedure"
+		case 28:
+			return "interrat-redirection"
+		case 29:
+			return "interaction-with-other-procedure"
+		case 30:
+			return "unknown-E-RAB-ID"
+		}
+	case CauseGroupTransport:
+		if value == 0 {
+			return "transport-resource-unavailable"
+		}
+		if value == 1 {
+			return "unspecified"
+		}
+	case CauseGroupNAS:
+		switch value {
+		case 0:
+			return "normal-release"
+		case 1:
+			return "authentication-failure"
+		case 2:
+			return "detach"
+		case 3:
+			return "unspecified"
+		}
+	case CauseGroupProtocol:
+		switch value {
+		case 0:
+			return "transfer-syntax-error"
+		case 1:
+			return "abstract-syntax-error-reject"
+		case 2:
+			return "abstract-syntax-error-ignore-and-notify"
+		case 3:
+			return "message-not-compatible-with-receiver-state"
+		case 4:
+			return "semantic-error"
+		case 5:
+			return "abstract-syntax-error-falsely-constructed-message"
+		case 6:
+			return "unspecified"
+		}
+	case CauseGroupMisc:
+		switch value {
+		case 0:
+			return "control-processing-overload"
+		case 1:
+			return "not-enough-user-plane-processing-resources"
+		case 2:
+			return "hardware-failure"
+		case 3:
+			return "om-intervention"
+		case 4:
+			return "unspecified"
+		case 5:
+			return "unknown-PLMN"
+		}
+	}
+	return "unknown"
 }
 
 // ── Security Key (KeNB) ────────────────────────────────────────────────────────

@@ -1,9 +1,11 @@
 package emm_test
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 )
 
 func TestDecodeServiceRequest_Valid(t *testing.T) {
@@ -73,6 +75,34 @@ func TestVerifyShortMAC_EIA0_Invalid(t *testing.T) {
 	ok, _ := emm.VerifyShortMAC(pdu, 0, make([]byte, 16), 0)
 	if ok {
 		t.Error("VerifyShortMAC: expected false for mismatched MAC")
+	}
+}
+
+func TestVerifyShortMAC_EIA2UsesFirstTwoOctetsAndLastTwoMACBytes(t *testing.T) {
+	key, err := hex.DecodeString("00112233445566778899aabbccddeeff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pdu := []byte{0xC7, 0x02, 0x00, 0x00}
+	mac, err := security.ComputeNASMAC(security.AlgIDEIA2, key, 2, 0, 0, pdu[:2])
+	if err != nil {
+		t.Fatalf("ComputeNASMAC: %v", err)
+	}
+	copy(pdu[2:], mac[2:4])
+
+	ok, details := emm.VerifyShortMACDetailed(pdu, security.AlgIDEIA2, key, 1)
+	if !ok {
+		t.Fatalf("VerifyShortMACDetailed failed: computed=%x expected=%x input=%x count=%d",
+			details.ComputedShortMAC, details.ExpectedShortMAC, details.MessageForMAC, details.ReconstructedCount)
+	}
+	if details.ReconstructedCount != 2 {
+		t.Fatalf("reconstructed count got %d, want 2", details.ReconstructedCount)
+	}
+	if got, want := hex.EncodeToString(details.MessageForMAC), "c702"; got != want {
+		t.Fatalf("MAC input got %s, want %s", got, want)
+	}
+	if got, want := hex.EncodeToString(details.ComputedShortMAC), hex.EncodeToString(mac[2:4]); got != want {
+		t.Fatalf("short MAC got %s, want %s", got, want)
 	}
 }
 

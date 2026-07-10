@@ -67,8 +67,9 @@ func (s *Server) handleServiceRequest(
 		return
 	}
 
-	// Construct GUTI from S-TMSI + our own PLMN + MMEGI.
-	plmn, err := ies.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	// Construct GUTI from S-TMSI + our own PLMN + MMEGI. GUTI uses the NAS/EMM
+	// TBCD PLMN layout, not the S1AP PLMNIdentity helper.
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
 	if err != nil {
 		log.Error("s1ap: ServiceRequest: failed to encode PLMN", zap.Error(err))
 		reject(emm.CauseNetworkFailure)
@@ -104,6 +105,8 @@ func (s *Server) handleServiceRequest(
 	sgwUIP := append(net.IP(nil), realUE.SGWU_IP...)
 	emmState := realUE.EMMState
 	ecmState := realUE.ECMState
+	releasePending := realUE.S1ReleasePending
+	releaseENBID := realUE.S1ReleaseENBID
 	realMmeUEID := realUE.MMEUES1APID
 	imsi := realUE.IMSI
 	realUE.Unlock()
@@ -119,7 +122,9 @@ func (s *Server) handleServiceRequest(
 		zap.Uint32("sgw_s1u_teid", sgwUTEID),
 		zap.String("sgw_s1u_teid_hex", fmt.Sprintf("0x%08x", sgwUTEID)),
 		zap.String("sgw_s1u_ipv4", sgwUIP.String()),
-		zap.Uint32("ul_nas_count", ulCount))
+		zap.Uint32("ul_nas_count", ulCount),
+		zap.Bool("s1_release_pending", releasePending),
+		zap.Uint32("s1_release_enb_ue_id", releaseENBID))
 
 	// Validate UE state.
 	if emmState != emm.StateRegistered {
@@ -139,17 +144,36 @@ func (s *Server) handleServiceRequest(
 	}
 
 	// Verify short MAC.
-	ok, reconstructedCount := emm.VerifyShortMAC(nasPDU, intAlg, knasInt, ulCount)
+	ok, macDetails := emm.VerifyShortMACDetailed(nasPDU, intAlg, knasInt, ulCount)
+	var reconstructedCount uint32
+	if macDetails != nil {
+		reconstructedCount = macDetails.ReconstructedCount
+	}
 	if !ok {
 		log.Warn("s1ap: ServiceRequest: short MAC verification failed",
 			zap.Uint32("stored_ul_nas_count", ulCount),
-			zap.String("nas_hex", hex.EncodeToString(nasPDU)))
+			zap.String("nas_hex_full", hex.EncodeToString(nasPDU)),
+			zap.String("nas_hex_used_for_mac", serviceRequestMACInputHex(macDetails)),
+			zap.String("extracted_short_mac_hex", serviceRequestExpectedShortMACHex(macDetails)),
+			zap.Uint8("ksi", serviceRequestKSI(macDetails)),
+			zap.Uint8("sequence_number_raw", serviceRequestSequenceNumber(macDetails)),
+			zap.Uint32("reconstructed_count", reconstructedCount),
+			zap.Uint32("overflow", serviceRequestOverflow(macDetails)),
+			zap.Uint8("bearer", serviceRequestBearer(macDetails)),
+			zap.Uint8("direction", serviceRequestDirection(macDetails)),
+			zap.String("knas_int_prefix_hex", truncateHex(knasInt, 8)),
+			zap.String("computed_mac_hex", serviceRequestComputedMACHex(macDetails)),
+			zap.String("computed_short_mac_hex", serviceRequestComputedShortMACHex(macDetails)),
+			zap.String("expected_short_mac_hex", serviceRequestExpectedShortMACHex(macDetails)))
 		reject(emm.CauseUEIdentityCannotBeDerived)
 		return
 	}
 	log.Info("s1ap: ServiceRequest short MAC verified",
 		zap.Uint32("stored_ul_nas_count", ulCount),
-		zap.Uint32("reconstructed_ul_nas_count", reconstructedCount))
+		zap.Uint32("reconstructed_ul_nas_count", reconstructedCount),
+		zap.String("nas_hex_used_for_mac", serviceRequestMACInputHex(macDetails)),
+		zap.String("computed_short_mac_hex", serviceRequestComputedShortMACHex(macDetails)),
+		zap.String("expected_short_mac_hex", serviceRequestExpectedShortMACHex(macDetails)))
 
 	// Transfer S1AP context from tempUE to the real UE.
 	realUE.Lock()
@@ -179,27 +203,110 @@ func (s *Server) handleServiceRequest(
 		zap.Uint8("ebi", defaultEBI),
 		zap.Uint32("sgw_s1u_teid", sgwUTEID),
 		zap.String("sgw_s1u_teid_hex", fmt.Sprintf("0x%08x", sgwUTEID)),
-		zap.String("sgw_s1u_ipv4", sgwUIP.String()))
+		zap.String("sgw_s1u_ipv4", sgwUIP.String()),
+		zap.Bool("s1_release_pending", releasePending))
 
-	// Send ICS Request with the existing default bearer.  No NAS PDU for Service Request.
-	if err := s.SendInitialContextSetup(realMmeUEID, nil, &BearerInfo{
-		EBI:       defaultEBI,
-		SGWU_TEID: sgwUTEID,
-		SGWU_IP:   sgwUIP.To4(),
-	}); err != nil {
-		log.Error("s1ap: ServiceRequest: SendInitialContextSetup failed", zap.Error(err))
-		realUE.Lock()
-		realUE.SetEMMState(emm.StateRegistered)
-		realUE.SetECMState(emm.ECMIdle)
-		realUE.AttachStep = uecontext.AttachStepNone
-		realUE.Unlock()
-		metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+	sendResumeICS := func() {
+		if err := s.SendInitialContextSetup(realMmeUEID, nil, &BearerInfo{
+			EBI:       defaultEBI,
+			SGWU_TEID: sgwUTEID,
+			SGWU_IP:   sgwUIP.To4(),
+		}); err != nil {
+			log.Error("s1ap: ServiceRequest: SendInitialContextSetup failed", zap.Error(err))
+			realUE.Lock()
+			realUE.SetEMMState(emm.StateRegistered)
+			realUE.SetECMState(emm.ECMIdle)
+			realUE.AttachStep = uecontext.AttachStepNone
+			realUE.Unlock()
+			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+			return
+		}
+		log.Info("s1ap: ServiceRequest ICS resume sent",
+			zap.Uint32("mme_ue_id", realMmeUEID),
+			zap.Uint32("enb_ue_id", enbUEID),
+			zap.Uint8("ebi", defaultEBI),
+			zap.Bool("delayed_for_release_complete", releasePending))
+	}
+
+	// EPS has no NAS Service Accept message. Open5GS accepts a normal LTE
+	// Service Request by sending InitialContextSetupRequest without NAS-PDU.
+	// If the previous UE Context Release is still pending, defer slightly so
+	// srsENB can finish cleaning up the old RRC/E-RAB context before resume ICS.
+	if releasePending {
+		log.Info("s1ap: ServiceRequest resume ICS delayed pending UE Context Release Complete",
+			zap.Uint32("old_enb_ue_id", releaseENBID),
+			zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.Duration("delay", 150*time.Millisecond))
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			sendResumeICS()
+		}()
 		return
 	}
-	log.Info("s1ap: ServiceRequest ICS resume sent",
-		zap.Uint32("mme_ue_id", realMmeUEID),
-		zap.Uint32("enb_ue_id", enbUEID),
-		zap.Uint8("ebi", defaultEBI))
+	sendResumeICS()
+}
+
+func serviceRequestKSI(d *emm.ServiceRequestMACDetails) uint8 {
+	if d == nil {
+		return 0
+	}
+	return d.KSI
+}
+
+func serviceRequestSequenceNumber(d *emm.ServiceRequestMACDetails) uint8 {
+	if d == nil {
+		return 0
+	}
+	return d.SequenceNumber
+}
+
+func serviceRequestOverflow(d *emm.ServiceRequestMACDetails) uint32 {
+	if d == nil {
+		return 0
+	}
+	return d.Overflow
+}
+
+func serviceRequestBearer(d *emm.ServiceRequestMACDetails) uint8 {
+	if d == nil {
+		return 0
+	}
+	return d.Bearer
+}
+
+func serviceRequestDirection(d *emm.ServiceRequestMACDetails) uint8 {
+	if d == nil {
+		return 0
+	}
+	return d.Direction
+}
+
+func serviceRequestMACInputHex(d *emm.ServiceRequestMACDetails) string {
+	if d == nil {
+		return ""
+	}
+	return hex.EncodeToString(d.MessageForMAC)
+}
+
+func serviceRequestComputedMACHex(d *emm.ServiceRequestMACDetails) string {
+	if d == nil {
+		return ""
+	}
+	return hex.EncodeToString(d.ComputedMAC)
+}
+
+func serviceRequestComputedShortMACHex(d *emm.ServiceRequestMACDetails) string {
+	if d == nil {
+		return ""
+	}
+	return hex.EncodeToString(d.ComputedShortMAC)
+}
+
+func serviceRequestExpectedShortMACHex(d *emm.ServiceRequestMACDetails) string {
+	if d == nil {
+		return ""
+	}
+	return hex.EncodeToString(d.ExpectedShortMAC)
 }
 
 // handleServiceRequestReestablished is called from handleInitialContextSetupResponse

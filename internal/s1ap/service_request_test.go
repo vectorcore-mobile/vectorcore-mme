@@ -11,6 +11,7 @@ import (
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -238,6 +239,111 @@ func TestHandleServiceRequest_ValidKnownUE(t *testing.T) {
 	}
 }
 
+func TestHandleServiceRequest_DelaysResumeICSPendingReleaseComplete(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.15:36412"
+	ch := setupSendCapture(srv, addr)
+
+	realUE, mmec, mtmsi := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.S1ReleasePending = true
+	realUE.S1ReleaseENBID = 1
+	realUE.S1ReleaseENBAddr = addr
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 106
+	tempUE.ENBGlobalID = addr
+	tempUE.Unlock()
+
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
+
+	select {
+	case msg := <-ch:
+		t.Fatalf("resume ICS sent before pending release debounce elapsed: %x", msg)
+	case <-time.After(75 * time.Millisecond):
+	}
+
+	select {
+	case <-ch:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("delayed resume ICS was not sent")
+	}
+
+	realUE.Lock()
+	step := realUE.AttachStep
+	enbUEID := realUE.ENBS1APID
+	realUE.Unlock()
+
+	if step != uecontext.AttachStepWaitingICSRespSR {
+		t.Errorf("AttachStep: got %d, want WaitingICSRespSR(%d)", step, uecontext.AttachStepWaitingICSRespSR)
+	}
+	if enbUEID != 106 {
+		t.Errorf("ENBS1APID: got %d, want 106", enbUEID)
+	}
+}
+
+func TestHandleServiceRequest_ThreeDigitMNCGUTILookup(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.nfCfg.MCC = "311"
+	srv.nfCfg.MNC = "435"
+	srv.nfCfg.MMEGI = 1
+	srv.nfCfg.MMEC = 1
+	gutiAlloc, err := uecontext.NewGUTIAllocator("311", "435", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.gutiAlloc = gutiAlloc
+
+	const addr = "10.0.0.17:36412"
+	ch := setupSendCapture(srv, addr)
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	plmn, err := security.EncodePLMN("311", "435")
+	if err != nil {
+		t.Fatal(err)
+	}
+	guti := &emm.GUTI{MMEGI: 1, MMEC: 1, MTMSI: 2}
+	copy(guti.PLMN[:], plmn)
+	if got, want := uecontext.SerialiseGUTI(guti), "13513400010100000002"; got != want {
+		t.Fatalf("GUTI key got %s, want %s", got, want)
+	}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 107
+	tempUE.ENBGlobalID = addr
+	tempUE.Unlock()
+
+	before := srv.ueManager.Count()
+	stmsiRaw, err := hex.DecodeString("004000000002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.handleServiceRequest(tempUE, 1, 2, stmsiRaw, true, nil, buildSRPDU(1))
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no ICS Request PDU sent on Service Request")
+	}
+	if srv.ueManager.Count() != before-1 {
+		t.Fatalf("manager count got %d, want %d", srv.ueManager.Count(), before-1)
+	}
+	realUE.Lock()
+	step := realUE.AttachStep
+	enbUEID := realUE.ENBS1APID
+	realUE.Unlock()
+	if step != uecontext.AttachStepWaitingICSRespSR {
+		t.Fatalf("AttachStep got %d, want WaitingICSRespSR", step)
+	}
+	if enbUEID != 107 {
+		t.Fatalf("ENBS1APID got %d, want 107", enbUEID)
+	}
+}
+
 func TestInitialUEMessageServiceRequestUsesSTMSIIE(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.0.0.16:36412"
@@ -336,6 +442,56 @@ func TestHandleServiceRequestReestablished_MBRSent(t *testing.T) {
 		// MBR was sent
 	case <-time.After(500 * time.Millisecond):
 		t.Error("SendMBR was not called after Service Request re-establishment")
+	}
+}
+
+func TestErrorIndicationDuringServiceRequestResumeRestoresIdle(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.22:36412"
+
+	ue, _, _ := makeRegisteredIdleUE(srv, addr)
+	ue.Lock()
+	ue.SetEMMState(emm.StateServiceRequestInitiated)
+	ue.SetECMState(emm.ECMIdle)
+	ue.AttachStep = uecontext.AttachStepWaitingICSRespSR
+	ue.ENBS1APID = 2
+	ue.ENBGlobalID = addr
+	ue.ENBU_TEID = 0x11111111
+	ue.ENBU_IP = net.ParseIP("192.168.105.34").To4()
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(2)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUserInactivity)},
+	}
+	srv.handleErrorIndication(addr, nil, ieList)
+
+	found, ok := srv.ueManager.GetByMMEID(mmeID)
+	if !ok {
+		t.Fatal("UE removed from manager; expected idle retention")
+	}
+	found.Lock()
+	emmState := found.EMMState
+	ecmState := found.ECMState
+	step := found.AttachStep
+	enbUEID := found.ENBS1APID
+	enbAddr := found.ENBGlobalID
+	enbuTEID := found.ENBU_TEID
+	found.Unlock()
+
+	if emmState != emm.StateRegistered {
+		t.Fatalf("EMMState got %v, want Registered", emmState)
+	}
+	if ecmState != emm.ECMIdle {
+		t.Fatalf("ECMState got %v, want Idle", ecmState)
+	}
+	if step != uecontext.AttachStepNone {
+		t.Fatalf("AttachStep got %d, want None", step)
+	}
+	if enbUEID != 0 || enbAddr != "" || enbuTEID != 0 {
+		t.Fatalf("access context not cleared: enbUEID=%d enbAddr=%q enbuTEID=%#x", enbUEID, enbAddr, enbuTEID)
 	}
 }
 

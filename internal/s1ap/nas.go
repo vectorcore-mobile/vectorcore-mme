@@ -151,6 +151,7 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 			ue.GUTI = newGUTI
 			ue.Unlock()
 			s.ueManager.UpdateGUTI(ue, newGUTI)
+			logAssignedGUTI(log, "s1ap: assigned GUTI", mmeID, imsi, newGUTI)
 			ue.Lock()
 		}
 		pti := ue.PDNRequestPTI
@@ -326,6 +327,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	}
 
 	ue.Lock()
+	imsi := ue.IMSI
 	ue.SGWC_TEID = resp.SGWC_TEID
 	ue.SGWC_IP = resp.SGWC_IP
 	ue.SGWU_TEID = resp.SGWU_TEID
@@ -340,6 +342,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		ue.GUTI = newGUTI
 		ue.Unlock()
 		s.ueManager.UpdateGUTI(ue, newGUTI)
+		logAssignedGUTI(log, "s1ap: assigned GUTI", mmeUEID, imsi, newGUTI)
 		ue.Lock()
 	}
 
@@ -497,6 +500,21 @@ func (s *Server) buildPLMN() [3]byte {
 		plmn[2] = (digit(mnc[1]) << 4) | digit(mnc[0])
 	}
 	return plmn
+}
+
+func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, guti *emm.GUTI) {
+	if guti == nil {
+		return
+	}
+	log.Info(msg,
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.String("guti_plmn_hex", hex.EncodeToString(guti.PLMN[:])),
+		zap.Uint16("mmegi", guti.MMEGI),
+		zap.Uint8("mmec", guti.MMEC),
+		zap.Uint32("mtmsi", guti.MTMSI),
+		zap.String("mtmsi_hex", fmt.Sprintf("0x%08x", guti.MTMSI)),
+		zap.String("full_guti_lookup_key", uecontext.SerialiseGUTI(guti)))
 }
 
 func digit(b byte) byte {

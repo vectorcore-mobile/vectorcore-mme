@@ -236,10 +236,11 @@ func TestHandleUEContextReleaseRequestResolvesMMEIDBeforeCommand(t *testing.T) {
 	ch := setupSendCapture(srv, remoteAddr)
 	ue := allocateTestUE(srv, remoteAddr, 0, true)
 	ue.ENBS1APID = 9
+	wantENBID := ue.ENBS1APID
 
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(0)},
-		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(ue.ENBS1APID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(wantENBID)},
 	}
 	raw := pdu.BuildInitiatingMessage(pdu.ProcUEContextReleaseRequest, aper.CriticalityIgnore, ieList)
 	srv.handleMessage(remoteAddr, raw)
@@ -252,8 +253,8 @@ func TestHandleUEContextReleaseRequestResolvesMMEIDBeforeCommand(t *testing.T) {
 	if mmeID != ue.MMEUES1APID {
 		t.Fatalf("release command MME-UE-S1AP-ID got %d, want %d", mmeID, ue.MMEUES1APID)
 	}
-	if enbID != ue.ENBS1APID {
-		t.Fatalf("release command eNB-UE-S1AP-ID got %d, want %d", enbID, ue.ENBS1APID)
+	if enbID != wantENBID {
+		t.Fatalf("release command eNB-UE-S1AP-ID got %d, want %d", enbID, wantENBID)
 	}
 }
 
@@ -461,6 +462,28 @@ func TestERABToBeSetupItemERABIDUsesExtensibleInteger(t *testing.T) {
 	}
 	if id != 5 {
 		t.Fatalf("E-RAB-ID got %d, want 5", id)
+	}
+}
+
+func TestERABToBeSetupItemWithoutNASPDUDecodesERABIDFive(t *testing.T) {
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0xc1f44821, SGWU_IP: []byte{10, 90, 250, 59}}
+	erabItem := firstERABItemValue(encodeERABList(bearer, nil))
+	if len(erabItem) == 0 {
+		t.Fatal("E-RAB item is empty")
+	}
+	if got, want := erabItem[0], byte(0x05); got != want {
+		t.Fatalf("E-RAB item without NAS first byte got 0x%02x, want 0x%02x", got, want)
+	}
+	id, err := decodeSrsRANERABToBeSetupItemID(erabItem)
+	if err != nil {
+		t.Fatalf("decode E-RAB-ID: %v", err)
+	}
+	if id != 5 {
+		t.Fatalf("E-RAB-ID got %d, want 5", id)
+	}
+	want := "050009210f800a5afa3bc1f44821"
+	if got := hex.EncodeToString(erabItem); got != want {
+		t.Fatalf("E-RAB item without NAS got %s, want %s", got, want)
 	}
 }
 

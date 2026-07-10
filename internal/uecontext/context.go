@@ -20,6 +20,13 @@ type Context struct {
 	ENBS1APID   uint32
 	ENBGlobalID string // serialised GlobalENBID
 
+	// S1 release in progress for the previous access context. Kept separate
+	// from the current ENBS1APID so a fast Service Request can rebind the UE
+	// before the old UE Context Release Complete arrives.
+	S1ReleasePending bool
+	S1ReleaseENBID   uint32
+	S1ReleaseENBAddr string
+
 	// Identity
 	IMSI string
 	IMEI string

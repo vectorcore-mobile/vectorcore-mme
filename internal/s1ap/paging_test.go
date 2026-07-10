@@ -435,6 +435,130 @@ func TestUEContextRelease_GoesIdle(t *testing.T) {
 	}
 }
 
+func TestUEContextReleaseRequest_GoesIdleBeforeComplete(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.10:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.IMSI = "311435300070580"
+	ue.SGWC_TEID = 0xABCD0001
+	ue.SGWU_TEID = 0xABCD0002
+	ue.SGWU_IP = net.ParseIP("10.90.250.59").To4()
+	ue.ENBS1APID = 1
+	ue.ENBU_TEID = 0x00000001
+	ue.ENBU_IP = net.ParseIP("192.168.105.34").To4()
+	ue.DefaultEBI = 5
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(1)},
+	}
+	srv.handleUEContextReleaseRequest(addr, nil, ieList)
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no UE Context Release Command sent")
+	}
+
+	found, ok := srv.ueManager.GetByMMEID(mmeID)
+	if !ok {
+		t.Fatal("UE was removed from manager; expected ECM-IDLE retention")
+	}
+	found.Lock()
+	emmState := found.EMMState
+	ecmState := found.ECMState
+	sgwcTEID := found.SGWC_TEID
+	enbUEID := found.ENBS1APID
+	enbGlobalID := found.ENBGlobalID
+	enbuTEID := found.ENBU_TEID
+	releasePending := found.S1ReleasePending
+	releaseENBID := found.S1ReleaseENBID
+	found.Unlock()
+
+	if emmState != emm.StateRegistered {
+		t.Errorf("EMMState: got %v, want StateRegistered", emmState)
+	}
+	if ecmState != emm.ECMIdle {
+		t.Errorf("ECMState: got %v, want ECMIdle", ecmState)
+	}
+	if sgwcTEID != 0xABCD0001 {
+		t.Errorf("SGWC_TEID should be preserved: got %#x", sgwcTEID)
+	}
+	if enbUEID != 0 {
+		t.Errorf("ENBS1APID should be cleared: got %d", enbUEID)
+	}
+	if enbGlobalID != "" {
+		t.Errorf("ENBGlobalID should be cleared: got %q", enbGlobalID)
+	}
+	if enbuTEID != 0 {
+		t.Errorf("ENBU_TEID should be cleared: got %#x", enbuTEID)
+	}
+	if !releasePending {
+		t.Error("S1ReleasePending should be true until UE Context Release Complete")
+	}
+	if releaseENBID != 1 {
+		t.Errorf("S1ReleaseENBID: got %d, want 1", releaseENBID)
+	}
+	if len(mock.dsrCalls) != 0 {
+		t.Errorf("sendDeleteSession must NOT be called on release request: got %d DSR calls", len(mock.dsrCalls))
+	}
+}
+
+func TestUEContextReleaseComplete_DoesNotClearReboundServiceRequestAccess(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.10:36412"
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMIdle
+	ue.IMSI = "311435300070580"
+	ue.S1ReleasePending = true
+	ue.S1ReleaseENBID = 1
+	ue.S1ReleaseENBAddr = addr
+	ue.ENBS1APID = 2
+	ue.ENBGlobalID = addr
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(1)},
+	}
+	srv.handleUEContextReleaseComplete(addr, nil, ieList)
+
+	found, ok := srv.ueManager.GetByMMEID(mmeID)
+	if !ok {
+		t.Fatal("UE was removed from manager")
+	}
+	found.Lock()
+	enbUEID := found.ENBS1APID
+	enbGlobalID := found.ENBGlobalID
+	releasePending := found.S1ReleasePending
+	found.Unlock()
+
+	if enbUEID != 2 {
+		t.Errorf("new Service Request ENBS1APID was cleared: got %d, want 2", enbUEID)
+	}
+	if enbGlobalID != addr {
+		t.Errorf("new Service Request ENBGlobalID was cleared: got %q, want %q", enbGlobalID, addr)
+	}
+	if releasePending {
+		t.Error("old S1 release should be acknowledged and cleared")
+	}
+}
+
 func TestUEContextRelease_DeregisteredIsRemoved(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)

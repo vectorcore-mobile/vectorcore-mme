@@ -26,6 +26,7 @@ type PDU struct {
 	ProcedureCode uint8
 	Criticality   aper.Criticality
 	Value         []byte // raw OPEN TYPE value (contains encoded procedure body)
+	Raw           []byte // original APER PDU bytes, for diagnostics
 }
 
 // Decode decodes a raw APER-encoded S1AP PDU.
@@ -74,6 +75,7 @@ func Decode(data []byte) (*PDU, error) {
 		ProcedureCode: proc,
 		Criticality:   crit,
 		Value:         value,
+		Raw:           append([]byte(nil), data...),
 	}, nil
 }
 

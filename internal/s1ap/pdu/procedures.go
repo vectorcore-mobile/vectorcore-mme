@@ -121,6 +121,19 @@ const (
 	PDUTypeUnsuccessfulOutcome PDUType = 2
 )
 
+func (t PDUType) String() string {
+	switch t {
+	case PDUTypeInitiatingMessage:
+		return "initiatingMessage"
+	case PDUTypeSuccessfulOutcome:
+		return "successfulOutcome"
+	case PDUTypeUnsuccessfulOutcome:
+		return "unsuccessfulOutcome"
+	default:
+		return "unknown"
+	}
+}
+
 // ProtocolIE represents a single Protocol IE field.
 type ProtocolIE struct {
 	ID          uint16

@@ -23,6 +23,94 @@ import (
 func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
 	var mmeUEID uint32
 	var enbUEID uint32
+	causeGroup := ies.CauseGroupNAS
+	causeValue := ies.CauseNASNormalRelease
+	causePresent := false
+
+	for _, ie := range ieList {
+		switch ie.ID {
+		case pdu.IEMMEUES1APID:
+			id, _ := ies.DecodeMMEUEApID(ie.Value)
+			mmeUEID = id
+		case pdu.IEENBS1APID:
+			id, _ := ies.DecodeENBUEApID(ie.Value)
+			enbUEID = id
+		case pdu.IECause:
+			if group, value, err := ies.DecodeCause(ie.Value); err == nil {
+				causeGroup = group
+				causeValue = value
+				causePresent = true
+			}
+		}
+	}
+
+	s.log.Info("s1ap: UE Context Release Request",
+		zap.String("remote", remoteAddr),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
+		zap.Bool("cause_present", causePresent),
+		zap.String("cause_group_name", ies.CauseGroupName(causeGroup)),
+		zap.Uint8("cause_group", uint8(causeGroup)),
+		zap.Uint8("cause", causeValue),
+		zap.String("cause_name", ies.CauseName(causeGroup, causeValue)))
+
+	if ue, ok := s.findUEByS1APIDs(remoteAddr, mmeUEID, enbUEID); ok {
+		ue.Lock()
+		if mmeUEID == 0 {
+			mmeUEID = ue.MMEUES1APID
+		}
+		if enbUEID == 0 {
+			enbUEID = ue.ENBS1APID
+		}
+		emmState := ue.EMMState
+		currentENB := ue.ENBGlobalID
+		imsi := ue.IMSI
+		if emmState == emm.StateRegistered && (currentENB == "" || currentENB == remoteAddr) {
+			ue.StopAllTimers()
+			ue.SetECMState(emm.ECMIdle)
+			ue.S1ReleasePending = true
+			ue.S1ReleaseENBID = enbUEID
+			ue.S1ReleaseENBAddr = remoteAddr
+			ue.ENBS1APID = 0
+			ue.ENBGlobalID = ""
+			ue.ENBU_TEID = 0
+			ue.ENBU_IP = nil
+			dbState := ue.EMMState.String()
+			dbMmeID := ue.MMEUES1APID
+			ue.Unlock()
+
+			s.log.Info("s1ap: UE going ECM-IDLE (release request)",
+				zap.String("remote", remoteAddr),
+				zap.Uint32("mme_ue_id", dbMmeID),
+				zap.Uint32("enb_ue_id", enbUEID),
+				zap.String("imsi", imsi))
+			if s.store != nil {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					if err := s.store.UpsertUEContext(ctx, buildIdleDBContext(ue, dbMmeID, imsi, dbState)); err != nil {
+						s.log.Warn("s1ap: failed to persist ECM-IDLE context",
+							zap.Uint32("mme_ue_id", dbMmeID), zap.String("imsi", imsi), zap.Error(err))
+					}
+				}()
+			}
+		} else {
+			ue.Unlock()
+		}
+	}
+	if mmeUEID == 0 {
+		s.log.Warn("s1ap: UE Context Release Request missing resolvable MME UE S1AP ID",
+			zap.String("remote", remoteAddr),
+			zap.Uint32("enb_ue_id", enbUEID))
+		return
+	}
+	s.sendUEContextReleaseCommandCause(remoteAddr, mmeUEID, enbUEID, causeGroup, causeValue)
+}
+
+// handleUEContextReleaseComplete handles an eNB confirmation of context release.
+func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
+	var mmeUEID uint32
+	var enbUEID uint32
 
 	for _, ie := range ieList {
 		switch ie.ID {
@@ -35,44 +123,10 @@ func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ie
 		}
 	}
 
-	s.log.Info("s1ap: UE Context Release Request",
+	log := s.log.With(
 		zap.String("remote", remoteAddr),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbUEID))
-
-	if ue, ok := s.findUEByS1APIDs(remoteAddr, mmeUEID, enbUEID); ok {
-		ue.Lock()
-		if mmeUEID == 0 {
-			mmeUEID = ue.MMEUES1APID
-		}
-		if enbUEID == 0 {
-			enbUEID = ue.ENBS1APID
-		}
-		ue.Unlock()
-	}
-	if mmeUEID == 0 {
-		s.log.Warn("s1ap: UE Context Release Request missing resolvable MME UE S1AP ID",
-			zap.String("remote", remoteAddr),
-			zap.Uint32("enb_ue_id", enbUEID))
-		return
-	}
-	s.sendUEContextReleaseCommand(remoteAddr, mmeUEID, enbUEID)
-}
-
-// handleUEContextReleaseComplete handles an eNB confirmation of context release.
-func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
-	var mmeUEID uint32
-
-	for _, ie := range ieList {
-		if ie.ID == pdu.IEMMEUES1APID {
-			id, _ := ies.DecodeMMEUEApID(ie.Value)
-			mmeUEID = id
-		}
-	}
-
-	log := s.log.With(
-		zap.String("remote", remoteAddr),
-		zap.Uint32("mme_ue_id", mmeUEID))
 	log.Info("s1ap: UE Context Release Complete")
 
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
@@ -87,6 +141,20 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 
 	switch emmState {
 	case emm.StateRegistered:
+		if ue.S1ReleasePending &&
+			ue.S1ReleaseENBAddr == remoteAddr &&
+			(enbUEID == 0 || ue.S1ReleaseENBID == 0 || enbUEID == ue.S1ReleaseENBID) {
+			ue.S1ReleasePending = false
+			ue.S1ReleaseENBID = 0
+			ue.S1ReleaseENBAddr = ""
+			if ue.ENBGlobalID != "" && (ue.ENBGlobalID != remoteAddr || (enbUEID != 0 && ue.ENBS1APID != enbUEID)) {
+				ue.Unlock()
+				log.Info("s1ap: stale UE Context Release Complete acknowledged old access context",
+					zap.String("current_enb", ue.ENBGlobalID),
+					zap.Uint32("current_enb_ue_id", ue.ENBS1APID))
+				return
+			}
+		}
 		// If the release arrived from a different eNB than the UE's current eNB, this is
 		// a stale release from the old source after a successful S1 handover. The UE is
 		// already connected to the target — clobbering ENBGlobalID here would break DL NAS
@@ -104,6 +172,9 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		ue.ENBGlobalID = "" // must be cleared: handleDisconnect matches on this field
 		ue.ENBU_TEID = 0
 		ue.ENBU_IP = nil
+		ue.S1ReleasePending = false
+		ue.S1ReleaseENBID = 0
+		ue.S1ReleaseENBAddr = ""
 		dbState := ue.EMMState.String()
 		dbMmeID := ue.MMEUES1APID
 		ue.Unlock()
@@ -439,28 +510,130 @@ func (s *Server) handleInitialContextSetupFailure(remoteAddr string, p *pdu.PDU,
 // handleErrorIndication handles an S1AP Error Indication from an eNB.
 func (s *Server) handleErrorIndication(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
 	fields := []zap.Field{zap.String("remote", remoteAddr)}
+	if p != nil {
+		fields = append(fields,
+			zap.Uint8("procedure_code", p.ProcedureCode),
+			zap.String("triggering_message", p.Type.String()),
+			zap.String("criticality", p.Criticality.String()),
+			zap.String("raw_pdu_hex", hex.EncodeToString(p.Raw)))
+	}
+	var mmeUEID uint32
+	var enbUEID uint32
 	for _, ie := range ieList {
 		switch ie.ID {
 		case pdu.IEMMEUES1APID:
 			if id, err := ies.DecodeMMEUEApID(ie.Value); err == nil {
+				mmeUEID = id
 				fields = append(fields, zap.Uint32("mme_ue_id", id))
 			}
 		case pdu.IEENBS1APID:
 			if id, err := ies.DecodeENBUEApID(ie.Value); err == nil {
+				enbUEID = id
 				fields = append(fields, zap.Uint32("enb_ue_id", id))
 			}
 		case pdu.IECause:
 			if group, cause, err := ies.DecodeCause(ie.Value); err == nil {
 				fields = append(fields,
+					zap.String("cause_raw_hex", hex.EncodeToString(ie.Value)),
+					zap.String("cause_group_name", ies.CauseGroupName(group)),
 					zap.Uint8("cause_group", uint8(group)),
-					zap.Uint8("cause", cause))
+					zap.Uint8("cause", cause),
+					zap.String("cause_name", ies.CauseName(group, cause)))
 			}
 		case pdu.IECriticalityDiagnostics:
-			fields = append(fields, zap.Bool("criticality_diagnostics_present", true))
+			fields = append(fields, decodeCriticalityDiagnosticsFields(ie.Value)...)
 		}
 	}
 	s.log.Warn("s1ap: ErrorIndication received", fields...)
+	s.rollbackServiceRequestOnErrorIndication(remoteAddr, mmeUEID, enbUEID)
 	metrics.S1APMessagesTotal.WithLabelValues("ErrorIndication", "inbound", "ok").Inc()
+}
+
+func (s *Server) rollbackServiceRequestOnErrorIndication(remoteAddr string, mmeUEID, enbUEID uint32) {
+	ue, ok := s.findUEByS1APIDs(remoteAddr, mmeUEID, enbUEID)
+	if !ok && mmeUEID != 0 {
+		ue, ok = s.ueManager.GetByMMEID(mmeUEID)
+	}
+	if !ok {
+		return
+	}
+
+	ue.Lock()
+	if ue.AttachStep != uecontext.AttachStepWaitingICSRespSR {
+		ue.Unlock()
+		return
+	}
+	resolvedMMEID := ue.MMEUES1APID
+	resolvedENBID := ue.ENBS1APID
+	imsi := ue.IMSI
+	ue.SetEMMState(emm.StateRegistered)
+	ue.SetECMState(emm.ECMIdle)
+	ue.AttachStep = uecontext.AttachStepNone
+	ue.ENBS1APID = 0
+	ue.ENBGlobalID = ""
+	ue.ENBU_TEID = 0
+	ue.ENBU_IP = nil
+	ue.S1ReleasePending = false
+	ue.S1ReleaseENBID = 0
+	ue.S1ReleaseENBAddr = ""
+	ue.Unlock()
+
+	s.log.Warn("s1ap: ServiceRequest resume failed; UE restored to ECM-IDLE",
+		zap.String("remote", remoteAddr),
+		zap.Uint32("mme_ue_id", resolvedMMEID),
+		zap.Uint32("enb_ue_id", resolvedENBID),
+		zap.String("imsi", imsi))
+	metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+}
+
+func decodeCriticalityDiagnosticsFields(data []byte) []zap.Field {
+	fields := []zap.Field{
+		zap.Bool("criticality_diagnostics_present", true),
+		zap.String("criticality_diagnostics_hex", hex.EncodeToString(data)),
+	}
+	r := aper.NewBitReader(data)
+	if ext, err := r.ReadBit(); err == nil {
+		fields = append(fields, zap.Uint8("criticality_diagnostics_extension", uint8(ext)))
+	}
+	var present [5]uint64
+	for i := range present {
+		bit, err := r.ReadBit()
+		if err != nil {
+			return fields
+		}
+		present[i] = uint64(bit)
+	}
+	if present[0] == 1 {
+		r.AlignToByte()
+		proc, err := r.ReadOctet()
+		if err != nil {
+			return fields
+		}
+		fields = append(fields, zap.Uint8("diagnostic_procedure_code", proc))
+	}
+	if present[1] == 1 {
+		v, err := r.ReadBits(2)
+		if err != nil {
+			return fields
+		}
+		fields = append(fields,
+			zap.Uint8("diagnostic_triggering_message", uint8(v)),
+			zap.String("diagnostic_triggering_message_name", pdu.PDUType(v).String()))
+	}
+	if present[2] == 1 {
+		crit, err := aper.DecodeCriticality(r)
+		if err != nil {
+			return fields
+		}
+		fields = append(fields, zap.String("diagnostic_procedure_criticality", crit.String()))
+	}
+	if present[3] == 1 {
+		fields = append(fields, zap.Bool("diagnostic_ie_list_present", true))
+	}
+	if present[4] == 1 {
+		fields = append(fields, zap.Bool("diagnostic_ie_extensions_present", true))
+	}
+	return fields
 }
 
 // sendUEContextReleaseCommand sends a UE Context Release Command with NAS/normal-release cause.
@@ -481,8 +654,10 @@ func (s *Server) sendUEContextReleaseCommandCause(enbAddr string, mmeUEID, enbUE
 		zap.String("remote", enbAddr),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbUEID),
+		zap.String("cause_group_name", ies.CauseGroupName(group)),
 		zap.Uint8("cause_group", uint8(group)),
 		zap.Uint8("cause", cause),
+		zap.String("cause_name", ies.CauseName(group, cause)),
 		zap.String("ue_s1ap_ids_hex", hex.EncodeToString(idsValue)))
 	s.sendToAddr(enbAddr, msg)
 	metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "outbound", "command").Inc()
