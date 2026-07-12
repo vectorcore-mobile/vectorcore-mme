@@ -95,6 +95,49 @@ const (
 	MsgUplinkGenericNASTransport   uint8 = 0x69
 )
 
+// IsKnownEMMMessageType reports whether msgType is assigned as an EPS mobility
+// management message type that this package recognizes. It is used only as a
+// sanity guard after successful security processing; unsupported known messages
+// are still dispatched to the EMM state machine for protocol handling/logging.
+func IsKnownEMMMessageType(msgType uint8) bool {
+	switch msgType {
+	case MsgAttachRequest,
+		MsgAttachAccept,
+		MsgAttachComplete,
+		MsgAttachReject,
+		MsgDetachRequest,
+		MsgDetachAccept,
+		MsgTrackingAreaUpdateRequest,
+		MsgTrackingAreaUpdateAccept,
+		MsgTrackingAreaUpdateComplete,
+		MsgTrackingAreaUpdateReject,
+		MsgExtendedServiceRequest,
+		MsgServiceRequest,
+		MsgServiceReject,
+		MsgGUTIReallocationCommand,
+		MsgGUTIReallocationComplete,
+		MsgAuthenticationRequest,
+		MsgAuthenticationResponse,
+		MsgAuthenticationReject,
+		MsgAuthenticationFailure,
+		MsgIdentityRequest,
+		MsgIdentityResponse,
+		MsgSecurityModeCommand,
+		MsgSecurityModeComplete,
+		MsgSecurityModeReject,
+		MsgEMMStatus,
+		MsgEMMInformation,
+		MsgDownlinkNASTransport,
+		MsgUplinkNASTransport,
+		MsgCSServiceNotification,
+		MsgDownlinkGenericNASTransport,
+		MsgUplinkGenericNASTransport:
+		return true
+	default:
+		return false
+	}
+}
+
 // Protocol discriminator values (3GPP TS 24.007 §11.2.3.1.1).
 const (
 	PDGroupCallControl     uint8 = 0x00
@@ -133,6 +176,13 @@ const (
 	CauseNonEPSAuthenticationUnacceptable uint8 = 0x1A
 	CauseCSServiceTemporarilyNotAvailable uint8 = 0x27
 	CauseNoEPSBearerContextActivated      uint8 = 0x28
+	CauseSemanticallyIncorrectMessage     uint8 = 0x5F
+	CauseInvalidMandatoryInformation      uint8 = 0x60
+	CauseMessageTypeNonExistent           uint8 = 0x61
+	CauseMessageTypeNotCompatible         uint8 = 0x62
+	CauseIENonExistent                    uint8 = 0x63
+	CauseConditionalIEError               uint8 = 0x64
+	CauseMessageNotCompatible             uint8 = 0x65
 	CauseProtocolError                    uint8 = 0x6F
 )
 
@@ -184,6 +234,20 @@ func CauseName(cause uint8) string {
 		return "CS service temporarily not available"
 	case CauseNoEPSBearerContextActivated:
 		return "No EPS bearer context activated"
+	case CauseSemanticallyIncorrectMessage:
+		return "Semantically incorrect message"
+	case CauseInvalidMandatoryInformation:
+		return "Invalid mandatory information"
+	case CauseMessageTypeNonExistent:
+		return "Message type non-existent or not implemented"
+	case CauseMessageTypeNotCompatible:
+		return "Message type not compatible with protocol state"
+	case CauseIENonExistent:
+		return "Information element non-existent or not implemented"
+	case CauseConditionalIEError:
+		return "Conditional IE error"
+	case CauseMessageNotCompatible:
+		return "Message not compatible with protocol state"
 	case CauseProtocolError:
 		return "Protocol error, unspecified"
 	default:

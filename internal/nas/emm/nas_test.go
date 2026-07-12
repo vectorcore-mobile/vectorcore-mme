@@ -19,6 +19,32 @@ func TestEncodeIdentityRequestIMSI(t *testing.T) {
 	}
 }
 
+func TestEncodeAttachAcceptIncludesEPSNetworkFeatureSupport(t *testing.T) {
+	tai := emm.TAI{PLMN: [3]byte{0x13, 0x51, 0x34}, TAC: 1}
+	esm := []byte{0x52, 0x01, 0xd1, 0x21}
+	features := &emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true}
+	got := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
+		AttachResult:             emm.AttachTypeCombinedEPSAndIMSI,
+		TAIList:                  []emm.TAI{tai},
+		ESMContainer:             esm,
+		EPSNetworkFeatureSupport: features,
+	})
+	wantSuffix := []byte{0x64, 0x01, 0x01}
+	if !bytes.HasSuffix(got, wantSuffix) {
+		t.Fatalf("Attach Accept got %x, want EPS Network Feature Support suffix %x", got, wantSuffix)
+	}
+}
+
+func TestEncodeEPSNetworkFeatureSupportIMSVoiceOverPS(t *testing.T) {
+	got := emm.EncodeEPSNetworkFeatureSupport(emm.EPSNetworkFeatureSupport{
+		IMSVoiceOverPSSessionInS1Mode: true,
+	})
+	want := []byte{0x64, 0x01, 0x01}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("EPS Network Feature Support got %x, want %x", got, want)
+	}
+}
+
 func TestDecodeIdentityResponseIMSI(t *testing.T) {
 	const imsi = "001010123456789"
 	mobileID := emm.EPSMobileIdentityIMSI(imsi)
@@ -131,6 +157,96 @@ func TestSecurityModeCommandWithHashMME(t *testing.T) {
 	want := mustHex(t, "075d220002f0704f084caba3d8e98b6958")
 	if !bytes.Equal(smc, want) {
 		t.Fatalf("SMC with HashMME: got %x, want %x", smc, want)
+	}
+}
+
+func TestReplayedUESecurityCapabilityFromUENetworkCapability(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "eps only srsue",
+			in:   "f070",
+			want: "f070",
+		},
+		{
+			name: "real ue extra eps capability octet is not gea",
+			in:   "f0f0e0e01d",
+			want: "f0f0e060",
+		},
+		{
+			name: "real ue uea uia",
+			in:   "f070c04019",
+			want: "f070c040",
+		},
+		{
+			name: "real ue fifth eps capability octet is not gea",
+			in:   "f0f0c04009",
+			want: "f0f0c040",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := emm.ReplayedUESecurityCapabilityFromUENetworkCapability(mustHex(t, tt.in))
+			want := mustHex(t, tt.want)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("replayed UE security cap: got %x, want %x", got, want)
+			}
+		})
+	}
+}
+
+func TestSecurityModeCommandUsesReplayedUESecurityCapability(t *testing.T) {
+	hashMME := mustHex(t, "8f5b0baf1fa722e9")
+	ueNetCap := mustHex(t, "f0f0e0e01d")
+	replayed := emm.ReplayedUESecurityCapabilityFromUENetworkCapability(ueNetCap)
+
+	smc := emm.EncodeSecurityModeCommandWithHashMME(2, 2, replayed, hashMME)
+	want := mustHex(t, "075d220004f0f0e0604f088f5b0baf1fa722e9")
+	if !bytes.Equal(smc, want) {
+		t.Fatalf("SMC with replayed UE security cap: got %x, want %x", smc, want)
+	}
+}
+
+func TestReplayedUESecurityCapabilityUsesMSNetworkCapabilityGEA(t *testing.T) {
+	ueNetCap := mustHex(t, "f0f0c04009")
+	msNetCap := mustHex(t, "65a07e")
+	got := emm.ReplayedUESecurityCapability(ueNetCap, msNetCap)
+	want := mustHex(t, "f0f0c04010")
+	if !bytes.Equal(got, want) {
+		t.Fatalf("replayed UE security cap with MS network cap: got %x, want %x", got, want)
+	}
+}
+
+func TestSecurityModeCommandUsesMSNetworkCapabilityGEA(t *testing.T) {
+	hashMME := mustHex(t, "0bb2947672b4062e")
+	ueNetCap := mustHex(t, "f0f0c04009")
+	msNetCap := mustHex(t, "65a07e")
+	replayed := emm.ReplayedUESecurityCapability(ueNetCap, msNetCap)
+
+	smc := emm.EncodeSecurityModeCommandWithHashMME(2, 2, replayed, hashMME)
+	want := mustHex(t, "075d220005f0f0c040104f080bb2947672b4062e")
+	if !bytes.Equal(smc, want) {
+		t.Fatalf("SMC with five-byte replayed UE security cap: got %x, want %x", smc, want)
+	}
+}
+
+func TestDecodeAttachRequestCapturesMSNetworkCapability(t *testing.T) {
+	plainAttach := mustHex(t, "0741620bf61351347fa601c100980605f0f0c0400900200236d011271a8080211001010010810600000000830600000000000d000010005213513400015c0803310365a07e901103571882200a60140462918100127e00400800021f00040240045d0103e0c1")
+	req, err := emm.DecodeAttachRequest(plainAttach[2:])
+	if err != nil {
+		t.Fatalf("DecodeAttachRequest: %v", err)
+	}
+	wantUE := mustHex(t, "f0f0c04009")
+	if !bytes.Equal(req.UENetworkCapability, wantUE) {
+		t.Fatalf("UE network capability: got %x, want %x", req.UENetworkCapability, wantUE)
+	}
+	wantMS := mustHex(t, "65a07e")
+	if !bytes.Equal(req.MSNetworkCapability, wantMS) {
+		t.Fatalf("MS network capability: got %x, want %x", req.MSNetworkCapability, wantMS)
 	}
 }
 

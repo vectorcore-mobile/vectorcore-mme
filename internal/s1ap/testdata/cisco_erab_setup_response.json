@@ -1,0 +1,23 @@
+{
+  "source": "/tmp/cisco-mme.log",
+  "timestamp": "14:35:42:214",
+  "procedure_code": 5,
+  "message_type": "successfulOutcome",
+  "items": [
+    {
+      "ebi": 6,
+      "enb_s1u_ipv4": "192.168.105.247",
+      "enb_s1u_teid": 611767581
+    },
+    {
+      "ebi": 7,
+      "enb_s1u_ipv4": "192.168.105.247",
+      "enb_s1u_teid": 2830759375
+    },
+    {
+      "ebi": 8,
+      "enb_s1u_ipv4": "192.168.105.247",
+      "enb_s1u_teid": 649025221
+    }
+  ]
+}

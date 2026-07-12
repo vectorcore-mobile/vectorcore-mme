@@ -61,6 +61,7 @@ Key fields:
 | `database.*` | Database connection settings. For SQLite, `database.database` is the DB file path. |
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 | `operator.name.encoding` | Network name encoding: `gsm7` (default) or `ucs2` |
+| `operator.nitz.timezone` | IANA timezone used for EMM Information NITZ fields, preferred over static offsets |
 
 ### EMM Information Operator Names
 
@@ -79,15 +80,25 @@ operator:
     add_country_initials: false
   nitz:
     enabled: true
-    timezone_offset_minutes: 60
+    timezone: "America/Chicago"
+    timezone_offset_minutes: -300
     daylight_saving: 1
+    include_local_time_zone: true
+    include_universal_time_and_local_time_zone: true
+    include_daylight_saving_time: true
   emm_information:
     enabled: true
     send_after_attach: true
     send_after_tau: true
+  tau:
+    # Same-MME TAU does not reallocate GUTI by default. Enable only for a
+    # deliberate privacy policy or interoperability test.
+    reallocate_guti: false
 ```
 
 `encoding: gsm7` uses the GSM 7-bit default alphabet and septet packing required by the NAS network-name IE. Characters outside the implemented GSM 7-bit default alphabet are encoded as `?`; use `ucs2` when the operator name needs non-GSM characters. Empty names are omitted, and EMM Information is not sent when the feature is disabled or no EMM Information IEs are configured.
+
+When `operator.nitz.timezone` is set, the MME derives the local time-zone offset and daylight-saving indicator from that IANA zone for the timestamp being sent. The static `timezone_offset_minutes` and `daylight_saving` fields are fallback values for deployments that do not configure a timezone. Each optional NITZ IE can be enabled independently for interoperability testing. If a UE returns NAS `EMM Status` after EMM Information, the MME decodes and logs the EMM cause without detaching the UE.
 
 ## Run
 
@@ -135,7 +146,7 @@ http://<host>:8085/openapi.json
 | `GET /api/v1/oam/health` | Health, uptime, eNB/UE counts, and S6a status |
 | `GET /api/v1/oam/dns-cache` | View in-memory gateway DNS cache entries |
 | `POST /api/v1/oam/dns-cache/flush` | Flush gateway DNS cache entries to force fresh lookups |
-| `GET /api/v1/ue` | List attached UEs |
+| `GET /api/v1/ue` | List registered UEs with EMM/ECM/S1 connection state |
 | `GET /api/v1/ue/{imsi}` | UE detail |
 | `POST /api/v1/ue/{imsi}/page` | Trigger S1AP paging for a UE |
 | `GET /api/v1/enodeb` | List connected eNBs |
@@ -145,11 +156,46 @@ http://<host>:8085/openapi.json
 | `DELETE /api/v1/mme/recovery/ues/disconnected` | Clear disconnected/stale recovery records after live-memory safety checks |
 | `GET /metrics` | Prometheus metrics |
 
+UE API entries include `emm_state`, `ecm_state`, `registration_status`, `connection_status`, and `s1_connected`. A UE can be `registration_status=registered` with `connection_status=idle` after radio loss or inactivity release; that state retains the EPS session and is not an explicit detach.
+
+### NAS Feature Advertisement
+
+IMS voice-over-PS support is disabled by default. Enable it only when IMS service and the `ims` APN are available:
+
+```yaml
+nas:
+  eps_network_feature_support:
+    ims_voice_over_ps: true
+```
+
+When enabled, Attach Accept and TAU Accept include EPS Network Feature Support IE `64 01 01`, advertising IMS voice-over-PS session support in S1 mode. When disabled, the optional IE is omitted.
+
 ### Gateway DNS Cache
 
 S-GW and P-GW DNS selections are cached when `gateway_selection.dns.cache.enabled` is true. The cache stores successful selections and negative lookup results until their TTL expires.
 
 Use `GET /api/v1/oam/dns-cache` to inspect cached query names, services, selected targets, addresses, expiry times, and errors. Use `POST /api/v1/oam/dns-cache/flush` after DNS changes to force the next S-GW/P-GW selection to query DNS again.
+
+## S1AP APER Codec Notes
+
+VectorCore currently uses a hand-written APER codec for the implemented S1AP subset. S1AP message builders should construct typed IE values through shared helpers in `internal/s1ap/ies` and `internal/s1ap/pdu`; do not manually splice nested ASN.1 CHOICE or SEQUENCE byte strings.
+
+The UE S1AP ID helpers follow TS 36.413 constraints:
+
+- `MME-UE-S1AP-ID ::= INTEGER (0..4294967295)`
+- `ENB-UE-S1AP-ID ::= INTEGER (0..16777215)`
+- `UE-S1AP-IDs` is a CHOICE; the `uE-S1AP-ID-pair` arm is packed immediately after the CHOICE selector with no byte alignment between the selector and the selected SEQUENCE.
+
+Large constrained whole numbers use the APER constrained length determinant followed by byte alignment and the minimal non-negative-binary-integer value octets. The decoder is length-safe and accepts the Ericsson-observed padded eNB UE ID open-type form `00 00 00 01` for interop, while the encoder emits the canonical APER form.
+
+`InitialContextSetupRequest` encodes `UESecurityCapabilities` as the TS 36.413 S1AP structure, not by copying NAS capability octets directly. The NAS EEA/EIA bitmaps from the Attach Request are mapped into the high bits of the 16-bit S1AP `encryptionAlgorithms` and `integrityProtectionAlgorithms` BIT STRINGs with the S1AP spare bit clear.
+
+Run S1AP codec tests with:
+
+```bash
+go test ./internal/asn1/aper ./internal/s1ap/ies ./internal/s1ap
+go test -fuzz=FuzzDecodeUEIDHelpers ./internal/s1ap/ies
+```
 
 ## MME State Model
 
@@ -176,11 +222,29 @@ The recovery DB stores:
 - MME and S-GW S11 TEIDs/IP, P-GW info when known
 - restart epoch and timestamps
 
+`REALLOCATED GUTI` is identity-management state. It is not a handover or S10 transaction counter.
+
+Same-MME TAU does not reallocate GUTI by default. In that mode, TAU completes when the TAU Accept is successfully sent; the MME must not wait for TAU Complete because no new GUTI was assigned.
+
+During TAU with GUTI reallocation, such as inter-MME TAU or an explicitly enabled same-MME privacy policy, the old GUTI remains the primary in-memory identity until a valid TAU Complete is received. The newly allocated GUTI is stored as pending and both old and pending GUTIs resolve to the same UE during the T3450 window. TAU Complete commits the pending GUTI and removes the old alias; retransmitted TAU Requests using the old GUTI continue the same UE context instead of forcing a fresh attach.
+
 ### Restart Behavior
 
 On startup, the MME generates a new restart epoch and marks older recovery records as `STALE_AFTER_RESTART`. It does not load database rows as active UE contexts.
 
 When the S1-MME SCTP association closes, eNodeBs release UE-associated S1AP context tied to that MME. After an MME restart, UEs must return through normal LTE procedures such as Attach, TAU, Service Request, or Detach. The MME may use the recovery DB to map old GUTI to IMSI, correlate previous APN/session data, and clean stale SGW sessions, but it always creates new live in-memory S1/NAS context.
+
+### EPS Detach
+
+ECM-IDLE is not EPS detach. A UE released for radio inactivity remains `EMM-REGISTERED` and can later resume by Service Request.
+
+For UE-originated EPS detach, including detach from ECM-IDLE, the UE may send NAS `DETACH REQUEST` (`0x45`) inside S1AP `InitialUEMessage` because there is no active UE-associated S1 signalling context. The MME resolves the existing UE by S-TMSI/GUTI, verifies NAS security with the stored EPS security context, decodes the Detach Type, and starts S11 Delete Session.
+
+Switch-off detach suppresses NAS Detach Accept. Non-switch-off detach sends Detach Accept protected with the active NAS security context. After successful core-side teardown the active UE/session/bearer state is removed from memory and recovery records are marked detached/inactive.
+
+Do not remove an `EMM-REGISTERED` UE merely because its S1/RRC context was released or because RF connectivity disappeared. Explicit detach and implicit detach are separate procedures.
+
+The live UE API exposes this distinction. `s1_connected=false` with `EMM-REGISTERED` / `ECM-IDLE` means the UE is registered but not currently on a UE-associated S1 connection. `last_release_cause` records the most recent S1 release reason, for example `radio-connection-with-ue-lost`.
 
 ### Recovery API
 

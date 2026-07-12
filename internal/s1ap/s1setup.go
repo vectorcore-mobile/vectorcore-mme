@@ -278,17 +278,26 @@ func decodeSupportedTAItemFields(r *aper.BitReader) (SupportedTA, error) {
 
 // sendToAddr sends raw bytes to the given remote address.
 // In Phase 1, we use a goroutine-safe send map indexed by remoteAddr.
-func (s *Server) sendToAddr(remoteAddr string, data []byte) {
+func (s *Server) sendToAddr(remoteAddr string, data []byte) error {
+	if remoteAddr == "" {
+		err := fmt.Errorf("s1ap: sendToAddr: empty remote")
+		s.log.Warn("s1ap: sendToAddr: no send channel for", zap.String("remote", remoteAddr), zap.Error(err))
+		return err
+	}
 	v, ok := s.sends.Load(remoteAddr)
 	if !ok {
-		s.log.Warn("s1ap: sendToAddr: no send channel for", zap.String("remote", remoteAddr))
-		return
+		err := fmt.Errorf("s1ap: sendToAddr: no send channel for %q", remoteAddr)
+		s.log.Warn("s1ap: sendToAddr: no send channel for", zap.String("remote", remoteAddr), zap.Error(err))
+		return err
 	}
 	ch := v.(chan<- []byte)
 	select {
 	case ch <- data:
+		return nil
 	default:
-		s.log.Warn("s1ap: sendToAddr: send buffer full", zap.String("remote", remoteAddr))
+		err := fmt.Errorf("s1ap: sendToAddr: send buffer full for %q", remoteAddr)
+		s.log.Warn("s1ap: sendToAddr: send buffer full", zap.String("remote", remoteAddr), zap.Error(err))
+		return err
 	}
 }
 
@@ -302,7 +311,13 @@ func (s *Server) SendDownlinkNAS(mmeUEID uint32, nasPDU []byte) error {
 	ue.Lock()
 	enbAddr := ue.ENBGlobalID
 	enbS1APID := ue.ENBS1APID
+	bindingGeneration := ue.S1BindingGeneration
+	bindingState := ue.S1BindingState
 	ue.Unlock()
+	if enbAddr == "" {
+		return fmt.Errorf("s1ap: UE %d has no active S1 binding remote=%q enb_ue_id=%d state=%s generation=%d",
+			mmeUEID, enbAddr, enbS1APID, bindingState.String(), bindingGeneration)
+	}
 
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
@@ -310,8 +325,7 @@ func (s *Server) SendDownlinkNAS(mmeUEID uint32, nasPDU []byte) error {
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcDownlinkNASTransport, aper.CriticalityIgnore, ieList)
-	s.sendToAddr(enbAddr, msg)
-	return nil
+	return s.sendToAddr(enbAddr, msg)
 }
 
 // SendInitialContextSetup sends an Initial Context Setup Request to the eNB.
@@ -326,10 +340,16 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 	ue.Lock()
 	enbAddr := ue.ENBGlobalID
 	enbS1APID := ue.ENBS1APID
+	bindingGeneration := ue.S1BindingGeneration
+	bindingState := ue.S1BindingState
 	kasme := ue.KASME
 	ulNASCount := uint32(ue.ULNASCount)
 	ueCap := append([]byte(nil), ue.UENetworkCapability...)
 	ue.Unlock()
+	if enbAddr == "" {
+		return fmt.Errorf("s1ap: UE %d has no active S1 binding remote=%q enb_ue_id=%d state=%s generation=%d",
+			mmeUEID, enbAddr, enbS1APID, bindingState.String(), bindingGeneration)
+	}
 
 	// Derive KeNB per TS 33.401 §A.3: KDF(KASME, FC=0x11, UL_NAS_COUNT as 4-byte BE).
 	kenb, err := security.DeriveKeNB(kasme, ulNASCount)
@@ -354,6 +374,8 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 		eiaByte = ueCap[1]
 	}
 	secCapValue := ies.EncodeUESecurityCapabilities(eeaByte, eiaByte)
+	encAlgBits := uint16(eeaByte<<1) << 8
+	intAlgBits := uint16(eiaByte<<1) << 8
 
 	var erabValue []byte
 	var ieList []pdu.ProtocolIE
@@ -390,6 +412,10 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 		zap.String("ue_ambr_hex", hex.EncodeToString(findS1APIEValue(ieList, pdu.IEUEAggregateMaxBitrate))),
 		zap.Uint64("ue_ambr_downlink", 100000000),
 		zap.Uint64("ue_ambr_uplink", 100000000),
+		zap.String("nas_ue_security_capability", hex.EncodeToString(ueCap)),
+		zap.String("derived_s1ap_encryption_algorithms_bits", fmt.Sprintf("%016b", encAlgBits)),
+		zap.String("derived_s1ap_integrity_algorithms_bits", fmt.Sprintf("%016b", intAlgBits)),
+		zap.String("encoded_ue_security_capabilities_hex", hex.EncodeToString(secCapValue)),
 		zap.String("ics_hex", hex.EncodeToString(msg)),
 	}
 	if bearer != nil {
@@ -406,8 +432,7 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 		)
 	}
 	s.log.Debug("s1ap: Initial Context Setup Request encoded", logFields...)
-	s.sendToAddr(enbAddr, msg)
-	return nil
+	return s.sendToAddr(enbAddr, msg)
 }
 
 func describeS1APIEList(ieList []pdu.ProtocolIE) []string {

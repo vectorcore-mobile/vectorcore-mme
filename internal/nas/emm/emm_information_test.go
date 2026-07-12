@@ -1,6 +1,7 @@
 package emm
 
 import (
+	"encoding/hex"
 	"testing"
 	"time"
 )
@@ -196,6 +197,94 @@ func TestEncodeUniversalTimeAndLocalTimeZone(t *testing.T) {
 	}
 }
 
+func TestEncodeUniversalTimeAndLocalTimeZoneChicagoSummer(t *testing.T) {
+	ts := time.Date(2026, 7, 11, 16, 3, 22, 0, time.UTC)
+	b := EncodeUniversalTimeAndLocalTimeZone(ts, -300)
+	want := []byte{0x47, 0x62, 0x70, 0x11, 0x61, 0x30, 0x22, 0x0a}
+	if string(b) != string(want) {
+		t.Fatalf("Chicago summer UTLTZ got %x, want %x", b, want)
+	}
+	if got := EncodeLocalTimeZone(-300); string(got) != string([]byte{0x46, 0x0a}) {
+		t.Fatalf("Chicago summer local TZ got %x, want 460a", got)
+	}
+	if got := EncodeDaylightSavingTime(1); string(got) != string([]byte{0x49, 0x01, 0x01}) {
+		t.Fatalf("Chicago summer DST got %x, want 490101", got)
+	}
+}
+
+func TestCapturedEMMInformationNITZFieldMismatch(t *testing.T) {
+	raw, err := hex.DecodeString("070061430887d6e65b9c669701450483d6e61546404762701161302240490101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 3 || raw[1] != 0x00 || raw[2] != MsgEMMInformation {
+		t.Fatalf("malformed fixture should contain extra zero before EMM Information: %x", raw)
+	}
+	body := raw[3:]
+	full := body[:10]
+	short := body[10:16]
+	localTZ := body[16:18]
+	utltz := body[18:26]
+	dst := body[26:29]
+	if got, want := full, []byte{0x43, 0x08, 0x87, 0xd6, 0xe6, 0x5b, 0x9c, 0x66, 0x97, 0x01}; string(got) != string(want) {
+		t.Fatalf("full name IE got %x, want %x", got, want)
+	}
+	if got, want := short, []byte{0x45, 0x04, 0x83, 0xd6, 0xe6, 0x15}; string(got) != string(want) {
+		t.Fatalf("short name IE got %x, want %x", got, want)
+	}
+	if got, want := localTZ, []byte{0x46, 0x40}; string(got) != string(want) {
+		t.Fatalf("local TZ IE got %x, want %x", got, want)
+	}
+	if got, want := utltz, []byte{0x47, 0x62, 0x70, 0x11, 0x61, 0x30, 0x22, 0x40}; string(got) != string(want) {
+		t.Fatalf("UTLTZ IE got %x, want %x", got, want)
+	}
+	if got, want := dst, []byte{0x49, 0x01, 0x01}; string(got) != string(want) {
+		t.Fatalf("DST IE got %x, want %x", got, want)
+	}
+	if minutes := decodeTZOffsetMinutes(localTZ[1]); minutes != 60 {
+		t.Fatalf("captured local TZ decodes to %+d minutes, want +60", minutes)
+	}
+	if minutes := decodeTZOffsetMinutes(utltz[7]); minutes != 60 {
+		t.Fatalf("captured UTLTZ timezone decodes to %+d minutes, want +60", minutes)
+	}
+}
+
+func TestMalformedEMMInformationExtraZeroFixture(t *testing.T) {
+	raw, err := hex.DecodeString("070061430887d6e65b9c669701450483d6e615460a476270116151550a490101")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) < 3 {
+		t.Fatalf("fixture too short: %x", raw)
+	}
+	if raw[0] != 0x07 || raw[1] != 0x00 || raw[2] != MsgEMMInformation {
+		t.Fatalf("fixture does not show malformed 07 00 61 header: %x", raw[:3])
+	}
+	msgType, _, err := ParsePlainNASMessage(raw)
+	if err != nil {
+		t.Fatalf("ParsePlainNASMessage: %v", err)
+	}
+	if msgType != 0x00 {
+		t.Fatalf("malformed fixture message type got 0x%02x, want 0x00", msgType)
+	}
+}
+
+func TestEncodeEMMInformationHeaderIsTwoOctets(t *testing.T) {
+	pdu := EncodeEMMInformation("VectorCore", true, "", false, "gsm7", false, false, 0, 0)
+	if len(pdu) < 2 {
+		t.Fatalf("EMM Information too short: %x", pdu)
+	}
+	if got, want := pdu[0], byte(PDEPSMobilityMgmt|(SecurityHeaderPlain<<4)); got != want {
+		t.Fatalf("byte 0 got 0x%02x, want 0x%02x", got, want)
+	}
+	if got, want := pdu[1], MsgEMMInformation; got != want {
+		t.Fatalf("message type got 0x%02x, want 0x%02x; payload=%x", got, want, pdu)
+	}
+	if len(pdu) > 2 && pdu[2] == 0x00 {
+		t.Fatalf("unexpected extra zero octet after EMM Information header: %x", pdu[:4])
+	}
+}
+
 // ── EncodeEMMInformation tests ────────────────────────────────────────────────
 
 func TestEncodeEMMInformation_AllEnabled(t *testing.T) {
@@ -207,11 +296,11 @@ func TestEncodeEMMInformation_AllEnabled(t *testing.T) {
 	if pdu[0] != (PDEPSMobilityMgmt | (SecurityHeaderPlain << 4)) {
 		t.Errorf("byte 0: got 0x%02X", pdu[0])
 	}
-	if pdu[2] != MsgEMMInformation {
-		t.Errorf("MsgType: got 0x%02X, want 0x%02X", pdu[2], MsgEMMInformation)
+	if pdu[1] != MsgEMMInformation {
+		t.Errorf("MsgType: got 0x%02X, want 0x%02X", pdu[1], MsgEMMInformation)
 	}
 	// Verify IEI sequence: 0x43 (full), 0x45 (short), 0x46 (LTZ), 0x47 (UTLTZ), 0x49 (DST)
-	body := pdu[3:]
+	body := pdu[2:]
 	for _, wantIEI := range []byte{0x43, 0x45, 0x46, 0x47, 0x49} {
 		found := false
 		for _, b := range body {
@@ -238,10 +327,10 @@ func TestEncodeEMMInformation_OnlyFullName(t *testing.T) {
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU")
 	}
-	if pdu[2] != MsgEMMInformation {
-		t.Errorf("MsgType: got 0x%02X", pdu[2])
+	if pdu[1] != MsgEMMInformation {
+		t.Errorf("MsgType: got 0x%02X", pdu[1])
 	}
-	body := pdu[3:]
+	body := pdu[2:]
 	if body[0] != 0x43 {
 		t.Errorf("first IE should be Full Network Name (0x43), got 0x%02X", body[0])
 	}
@@ -258,7 +347,7 @@ func TestEncodeEMMInformation_OnlyShortName(t *testing.T) {
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU")
 	}
-	body := pdu[3:]
+	body := pdu[2:]
 	if body[0] != 0x45 {
 		t.Errorf("first IE should be Short Network Name (0x45), got 0x%02X", body[0])
 	}
@@ -275,9 +364,20 @@ func TestEncodeEMMInformation_NITZNoDST(t *testing.T) {
 	if pdu == nil {
 		t.Fatal("expected non-nil PDU (nitz enabled)")
 	}
-	for _, b := range pdu[3:] {
+	for _, b := range pdu[2:] {
 		if b == 0x49 {
 			t.Error("DST IE 0x49 should not be present when dst=0")
 		}
 	}
+}
+
+func decodeTZOffsetMinutes(b byte) int {
+	negative := b&0x08 != 0
+	mag := b &^ 0x08
+	units := int(mag&0x07)*10 + int((mag>>4)&0x0f)
+	minutes := units * 15
+	if negative {
+		return -minutes
+	}
+	return minutes
 }

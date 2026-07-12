@@ -81,6 +81,36 @@ s6a:
 	if cfg.Operator.Name.Encoding != "gsm7" {
 		t.Fatalf("operator.name.encoding = %q, want gsm7", cfg.Operator.Name.Encoding)
 	}
+	if cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS {
+		t.Fatal("nas.eps_network_feature_support.ims_voice_over_ps default got true, want false")
+	}
+}
+
+func TestLoadNASIMSVoiceOverPS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+nas:
+  eps_network_feature_support:
+    ims_voice_over_ps: true
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if !cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS {
+		t.Fatal("ims_voice_over_ps got false, want true")
+	}
 }
 
 func TestLoadOperatorNameEncodingInvalid(t *testing.T) {
@@ -103,5 +133,29 @@ operator:
 	}
 	if _, err := config.Load(path); err == nil {
 		t.Fatal("Load() expected invalid operator.name.encoding error")
+	}
+}
+
+func TestLoadOperatorNITZTimezoneInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+operator:
+  nitz:
+    enabled: true
+    timezone: "Not/AZone"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load() expected invalid operator.nitz.timezone error")
 	}
 }

@@ -30,6 +30,7 @@ type AttachRequest struct {
 	IMSI                string // set if IdentityType == IMSI
 	GUTI                *GUTI  // set if IdentityType == GUTI
 	UENetworkCapability []byte
+	MSNetworkCapability []byte
 	ESMContainer        []byte // contains NAS ESM message (PDN Connectivity Request)
 	OldTAI              *TAI
 	TAI                 *TAI // last visited TAI
@@ -39,6 +40,14 @@ type AttachRequest struct {
 // AttachComplete holds the decoded Attach Complete body.
 type AttachComplete struct {
 	ESMContainer []byte
+}
+
+type AttachAcceptParams struct {
+	AttachResult             uint8
+	TAIList                  []TAI
+	GUTI                     *GUTI
+	ESMContainer             []byte
+	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
 }
 
 // DecodeAttachRequest decodes a NAS Attach Request message body (after the 2-byte header).
@@ -102,6 +111,8 @@ func DecodeAttachRequest(data []byte) (*AttachRequest, error) {
 	ar.ESMContainer = data[offset : offset+esmLen]
 	offset += esmLen
 
+	optionalStart := offset
+
 	// Optional IEs (parse what we need, skip the rest)
 	for offset < len(data) {
 		iei := data[offset]
@@ -117,6 +128,17 @@ func DecodeAttachRequest(data []byte) (*AttachRequest, error) {
 					ar.LastVisitedTAI = &tai
 				}
 				offset += 5
+			}
+		case 0x31: // MS network capability
+			ieLen := int(data[offset])
+			offset++
+			if offset+ieLen <= len(data) {
+				ar.MSNetworkCapability = append([]byte(nil), data[offset:offset+ieLen]...)
+				offset += ieLen
+			}
+		case 0x5c: // DRX parameter, fixed 2-octet value
+			if offset+2 <= len(data) {
+				offset += 2
 			}
 		default:
 			// Type-1 IEs: IEI in high nibble (0xC0-0xF0), value in low nibble, no length byte.
@@ -136,8 +158,25 @@ func DecodeAttachRequest(data []byte) (*AttachRequest, error) {
 			offset += ieLen
 		}
 	}
+	if len(ar.MSNetworkCapability) == 0 {
+		ar.MSNetworkCapability = findMSNetworkCapability(data[optionalStart:])
+	}
 
 	return ar, nil
+}
+
+func findMSNetworkCapability(optional []byte) []byte {
+	for i := 0; i+2 <= len(optional); i++ {
+		if optional[i] != 0x31 {
+			continue
+		}
+		ieLen := int(optional[i+1])
+		if ieLen < 3 || ieLen > 9 || i+2+ieLen > len(optional) {
+			continue
+		}
+		return append([]byte(nil), optional[i+2:i+2+ieLen]...)
+	}
+	return nil
 }
 
 // DecodeAttachComplete decodes a NAS Attach Complete message body (after the
@@ -161,6 +200,15 @@ func EncodeAttachAccept(
 	guti *GUTI,
 	esmContainer []byte,
 ) []byte {
+	return EncodeAttachAcceptWithParams(AttachAcceptParams{
+		AttachResult: attachResult,
+		TAIList:      taiList,
+		GUTI:         guti,
+		ESMContainer: esmContainer,
+	})
+}
+
+func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 	b := make([]byte, 0, 64)
 
 	// Header: PD=EMM, security header=plain, message type=Attach Accept
@@ -168,28 +216,32 @@ func EncodeAttachAccept(
 	b = append(b, MsgAttachAccept)
 
 	// EPS attach result (bits 2:0)
-	b = append(b, attachResult&0x07)
+	b = append(b, params.AttachResult&0x07)
 
 	// T3412 timer value (periodic TAU timer) — 54 minutes default (0x23 = binary 00100011 = 3*6 hours = 18 hours? Let's use 0xA8 = 5 min * 1 = 5 min unit)
 	// Timer value: unit=minutes (bits 7:5 = 010), value (bits 4:0 = 00001) → 1 minute
 	b = append(b, 0x21) // binary 0010 0001 = 1 minute
 
 	// TAI list (mandatory) - we encode as partial TAI list type 0x00
-	taiBytes := encodeTAIList(taiList)
+	taiBytes := encodeTAIList(params.TAIList)
 	b = append(b, byte(len(taiBytes)))
 	b = append(b, taiBytes...)
 
 	// ESM message container (mandatory)
 	esmLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(esmLen, uint16(len(esmContainer)))
+	binary.BigEndian.PutUint16(esmLen, uint16(len(params.ESMContainer)))
 	b = append(b, esmLen...)
-	b = append(b, esmContainer...)
+	b = append(b, params.ESMContainer...)
 
 	// GUTI (optional, IEI 0x50)
-	if guti != nil {
+	if params.GUTI != nil {
 		b = append(b, 0x50)
-		gutiBytes := guti.Encode()
+		gutiBytes := params.GUTI.Encode()
 		b = append(b, gutiBytes...)
+	}
+
+	if params.EPSNetworkFeatureSupport != nil {
+		b = append(b, EncodeEPSNetworkFeatureSupport(*params.EPSNetworkFeatureSupport)...)
 	}
 
 	return b
@@ -255,7 +307,7 @@ func decodeIMSI(data []byte) string {
 // decodeGUTI extracts a GUTI from the mobile identity IE.
 func decodeGUTI(data []byte) (*GUTI, error) {
 	// Byte 0: identity type bits should be 0x06
-	if len(data) < 10 {
+	if len(data) < 11 {
 		return nil, fmt.Errorf("emm: GUTI IE too short: %d", len(data))
 	}
 	g := &GUTI{}

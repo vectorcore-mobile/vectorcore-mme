@@ -115,7 +115,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		h.log.Warn("s6a: ULA failure",
 			zap.Uint32("result_code", errCode),
 			zap.Uint32("mme_ue_id", mmeUEID))
-		h.nas.HandleULAResultWithAPNConfig(mmeUEID, "", nil,
+		h.nas.HandleULAResultWithSubscriberProfile(mmeUEID, "", nil,
 			fmt.Errorf("s6a: ULA result code %d", errCode))
 		return
 	}
@@ -123,29 +123,41 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	// Decode MSISDN (BCD-encoded OctetString)
 	msisdn := decodeMSISDN([]byte(ula.SubscriptionData.MSISDN))
 
-	// Extract default APN from the first APN configuration
-	var apnCfg *gateway.APNConfiguration
-	if len(ula.SubscriptionData.APNConfigurationProfile.APNConfiguration) > 0 {
-		selected := ula.SubscriptionData.APNConfigurationProfile.APNConfiguration[0]
-		apnCfg = &gateway.APNConfiguration{
+	profile := &gateway.SubscriberProfile{
+		DefaultContextID: ula.SubscriptionData.APNConfigurationProfile.ContextIdentifier,
+		APNs:             make(map[string]gateway.APNConfiguration),
+	}
+	for _, selected := range ula.SubscriptionData.APNConfigurationProfile.APNConfiguration {
+		cfg := gateway.APNConfiguration{
+			ContextIdentifier:   selected.ContextIdentifier,
 			ServiceSelection:    selected.ServiceSelection,
 			MIPHomeAgentHost:    string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
 			PDNGWAllocationType: &selected.PDNGWAllocationType,
 		}
 		if len(selected.MIP6AgentInfo.MIPHomeAgentAddress) > 0 {
-			apnCfg.MIPHomeAgentAddress = []byte(selected.MIP6AgentInfo.MIPHomeAgentAddress[0])
+			cfg.MIPHomeAgentAddress = []byte(selected.MIP6AgentInfo.MIPHomeAgentAddress[0])
+		}
+		if cfg.ServiceSelection != "" {
+			profile.APNs[cfg.ServiceSelection] = cfg
 		}
 	}
+	apnCfg := profile.DefaultAPNConfiguration()
 	apn := ""
 	if apnCfg != nil {
 		apn = apnCfg.ServiceSelection
+	}
+	apns := make([]string, 0, len(profile.APNs))
+	for apnName := range profile.APNs {
+		apns = append(apns, apnName)
 	}
 
 	h.log.Info("s6a: ULA received",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("msisdn", msisdn),
-		zap.String("apn", apn))
-	h.nas.HandleULAResultWithAPNConfig(mmeUEID, msisdn, apnCfg, nil)
+		zap.Uint32("default_context_id", profile.DefaultContextID),
+		zap.String("apn", apn),
+		zap.Strings("subscribed_apns", apns))
+	h.nas.HandleULAResultWithSubscriberProfile(mmeUEID, msisdn, profile, nil)
 }
 
 // decodeMSISDN decodes an S6a MSISDN AVP value. TS 29.272 defines MSISDN as

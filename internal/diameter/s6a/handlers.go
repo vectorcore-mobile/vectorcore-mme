@@ -36,7 +36,7 @@ const (
 // S6a calls these methods asynchronously when Diameter answers arrive.
 type ResultHandler interface {
 	HandleAIAResult(mmeUEID uint32, rand, xres, autn, kasme []byte, err error)
-	HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apnConfig *gateway.APNConfiguration, err error)
+	HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn string, profile *gateway.SubscriberProfile, err error)
 }
 
 // Handlers is the S6a Diameter client.
@@ -137,6 +137,9 @@ func (h *Handlers) buildMux() *sm.StateMachine {
 	mux.HandleIdx(
 		diam.CommandIndex{AppID: appIDS6a, Code: diam.InsertSubscriberData, Request: true},
 		diam.HandlerFunc(h.handleIDR))
+	mux.HandleIdx(
+		diam.CommandIndex{AppID: appIDS6a, Code: diam.PurgeUE, Request: false},
+		diam.HandlerFunc(h.handlePUA))
 	mux.HandleFunc("DPR", diam.HandlerFunc(h.handleDPR))
 	mux.HandleFunc("ALL", diam.HandlerFunc(func(c diam.Conn, m *diam.Message) {
 		h.log.Debug("s6a: unhandled message",

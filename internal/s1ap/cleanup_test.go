@@ -270,7 +270,7 @@ func TestHandleDisconnect_ZeroUEs(t *testing.T) {
 	}
 }
 
-func TestHandleDisconnect_EvictsRegisteredUEs(t *testing.T) {
+func TestHandleDisconnect_PreservesRegisteredUEs(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)
 
@@ -287,20 +287,26 @@ func TestHandleDisconnect_EvictsRegisteredUEs(t *testing.T) {
 
 	srv.handleDisconnect(addr)
 
-	if len(mock.dsrCalls) != 2 {
-		t.Errorf("expected 2 DSR calls, got %d", len(mock.dsrCalls))
+	if len(mock.dsrCalls) != 0 {
+		t.Errorf("expected 0 DSR calls for S1-only disconnect, got %d", len(mock.dsrCalls))
 	}
-	if srv.ueManager.Count() != 0 {
-		t.Errorf("expected 0 UEs after disconnect, got %d", srv.ueManager.Count())
+	if srv.ueManager.Count() != 2 {
+		t.Errorf("expected 2 UEs preserved after disconnect, got %d", srv.ueManager.Count())
 	}
-	// Verify the TEIDs that were sent
-	teids := map[uint32]bool{0x1111: false, 0x2222: false}
-	for _, call := range mock.dsrCalls {
-		teids[call.SGWC_TEID] = true
-	}
-	for teid, seen := range teids {
-		if !seen {
-			t.Errorf("DSR for TEID %#x was not sent", teid)
+	for _, ue := range srv.ueManager.List() {
+		ue.Lock()
+		ecmState := ue.ECMState
+		enb := ue.ENBGlobalID
+		teid := ue.SGWC_TEID
+		ue.Unlock()
+		if ecmState != emm.ECMIdle {
+			t.Errorf("UE ECM state after disconnect: got %s, want ECM-IDLE", ecmState)
+		}
+		if enb != "" {
+			t.Errorf("UE ENBGlobalID after disconnect: got %q, want empty", enb)
+		}
+		if teid == 0 {
+			t.Error("S11 session TEID cleared on S1-only disconnect")
 		}
 	}
 }
@@ -333,7 +339,7 @@ func TestHandleDisconnect_Idempotent(t *testing.T) {
 	registerTestENB(srv, addr)
 	allocateTestUE(srv, addr, 0xAAAA, true)
 
-	// First disconnect — evicts the UE and removes eNB from map
+	// First disconnect — preserves the UE and removes eNB from map.
 	srv.handleDisconnect(addr)
 	firstDSRs := len(mock.dsrCalls)
 
@@ -343,9 +349,12 @@ func TestHandleDisconnect_Idempotent(t *testing.T) {
 	if len(mock.dsrCalls) != firstDSRs {
 		t.Errorf("second disconnect sent extra DSRs: before=%d, after=%d", firstDSRs, len(mock.dsrCalls))
 	}
+	if srv.ueManager.Count() != 1 {
+		t.Errorf("expected UE to remain after idempotent disconnect, got %d", srv.ueManager.Count())
+	}
 }
 
-func TestHandleDisconnect_OnlyEvictsMatchingENB(t *testing.T) {
+func TestHandleDisconnect_OnlyPreservesMatchingENBAccess(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)
 
@@ -363,19 +372,22 @@ func TestHandleDisconnect_OnlyEvictsMatchingENB(t *testing.T) {
 	// Disconnect only eNB 1
 	srv.handleDisconnect(addr1)
 
-	if len(mock.dsrCalls) != 2 {
-		t.Errorf("expected 2 DSR calls for eNB1 UEs, got %d", len(mock.dsrCalls))
+	if len(mock.dsrCalls) != 0 {
+		t.Errorf("expected 0 DSR calls for S1-only disconnect, got %d", len(mock.dsrCalls))
 	}
-	if srv.ueManager.Count() != 2 {
-		t.Errorf("expected 2 UEs remaining (eNB2 UEs), got %d", srv.ueManager.Count())
+	if srv.ueManager.Count() != 4 {
+		t.Errorf("expected all 4 UEs preserved, got %d", srv.ueManager.Count())
 	}
-	// The remaining UEs belong to addr2
 	for _, ue := range srv.ueManager.List() {
 		ue.Lock()
 		enbID := ue.ENBGlobalID
+		ecmState := ue.ECMState
 		ue.Unlock()
-		if enbID != addr2 {
-			t.Errorf("remaining UE has wrong ENBGlobalID: %q (want %q)", enbID, addr2)
+		if enbID != "" && enbID != addr2 {
+			t.Errorf("remaining UE has wrong ENBGlobalID: %q (want empty or %q)", enbID, addr2)
+		}
+		if enbID == "" && ecmState != emm.ECMIdle {
+			t.Errorf("UE released from addr1 not ECM-IDLE: %s", ecmState)
 		}
 	}
 }

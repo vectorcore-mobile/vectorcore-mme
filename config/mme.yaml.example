@@ -84,6 +84,12 @@ security:
   integrity_algorithms: ["EIA2", "EIA1", "EIA0"]
   ciphering_algorithms: ["EEA2", "EEA1", "EEA0"]
 
+nas:
+  eps_network_feature_support:
+    # Advertise IMS voice-over-PS session support in Attach Accept and TAU Accept.
+    # Keep false unless IMS service and the ims APN are available.
+    ims_voice_over_ps: false
+
 # operator:
 #   name:
 #     full: "Example Network"
@@ -94,9 +100,17 @@ security:
 #     add_country_initials: false
 #   nitz:
 #     enabled: true
-#     timezone_offset_minutes: 60
-#     daylight_saving: 1
+#     timezone: "America/Chicago"  # preferred IANA zone; overrides static fields below
+#     timezone_offset_minutes: -300 # fallback when timezone is unset
+#     daylight_saving: 1           # fallback when timezone is unset: 0=none, 1=+1h, 2=+2h
+#     include_local_time_zone: true
+#     include_universal_time_and_local_time_zone: true
+#     include_daylight_saving_time: true
 #   emm_information:
 #     enabled: true
 #     send_after_attach: true
 #     send_after_tau: true
+#   tau:
+#     # Same-MME TAU normally does not need GUTI reallocation. Leave disabled
+#     # unless a deployment explicitly wants privacy-driven TAU reallocation.
+#     reallocate_guti: false

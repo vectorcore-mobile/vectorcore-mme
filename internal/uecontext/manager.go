@@ -56,6 +56,13 @@ func (m *Manager) GetByMMEID(id uint32) (*Context, bool) {
 	return v.(*Context), true
 }
 
+// Range calls fn for each live UE context until fn returns false.
+func (m *Manager) Range(fn func(*Context) bool) {
+	m.byMMEID.Range(func(_, v any) bool {
+		return fn(v.(*Context))
+	})
+}
+
 // GetByIMSI looks up a context by IMSI.
 func (m *Manager) GetByIMSI(imsi string) (*Context, bool) {
 	v, ok := m.byIMSI.Load(imsi)
@@ -80,12 +87,20 @@ func (m *Manager) Remove(ctx *Context) {
 	ctx.mu.Lock()
 	imsi := ctx.IMSI
 	guti := ctx.GUTI
+	pendingOldGUTI := ctx.PendingOldGUTI
+	pendingGUTI := ctx.PendingGUTI
 	ctx.mu.Unlock()
 	if imsi != "" {
-		m.byIMSI.Delete(imsi)
+		m.deleteIMSIIfOwned(imsi, ctx)
 	}
 	if guti != nil {
-		m.byGUTI.Delete(SerialiseGUTI(guti))
+		m.deleteGUTIIfOwned(SerialiseGUTI(guti), ctx)
+	}
+	if pendingOldGUTI != nil {
+		m.deleteGUTIIfOwned(SerialiseGUTI(pendingOldGUTI), ctx)
+	}
+	if pendingGUTI != nil {
+		m.deleteGUTIIfOwned(SerialiseGUTI(pendingGUTI), ctx)
 	}
 	ctx.StopAllTimers()
 }
@@ -98,7 +113,7 @@ func (m *Manager) UpdateIMSI(ctx *Context, imsi string) {
 	ctx.IMSI = imsi
 	ctx.mu.Unlock()
 	if old != "" {
-		m.byIMSI.Delete(old)
+		m.deleteIMSIIfOwned(old, ctx)
 	}
 	if imsi != "" {
 		m.byIMSI.Store(imsi, ctx)
@@ -114,10 +129,44 @@ func (m *Manager) UpdateGUTI(ctx *Context, guti *emm.GUTI) {
 	ctx.GUTI = guti
 	ctx.mu.Unlock()
 	if old != nil {
-		m.byGUTI.Delete(SerialiseGUTI(old))
+		m.deleteGUTIIfOwned(SerialiseGUTI(old), ctx)
 	}
 	if guti != nil {
 		m.byGUTI.Store(SerialiseGUTI(guti), ctx)
+	}
+}
+
+// AddGUTIAlias indexes an additional GUTI for a context without changing ctx.GUTI.
+func (m *Manager) AddGUTIAlias(ctx *Context, guti *emm.GUTI) {
+	if guti != nil {
+		m.byGUTI.Store(SerialiseGUTI(guti), ctx)
+	}
+}
+
+// RemoveGUTIAlias removes an additional GUTI index if it is still owned by ctx.
+func (m *Manager) RemoveGUTIAlias(ctx *Context, guti *emm.GUTI) {
+	if guti != nil {
+		m.deleteGUTIIfOwned(SerialiseGUTI(guti), ctx)
+	}
+}
+
+func (m *Manager) GUTIAliasPresent(ctx *Context, guti *emm.GUTI) bool {
+	if guti == nil {
+		return false
+	}
+	v, ok := m.byGUTI.Load(SerialiseGUTI(guti))
+	return ok && v == ctx
+}
+
+func (m *Manager) deleteIMSIIfOwned(imsi string, ctx *Context) {
+	if v, ok := m.byIMSI.Load(imsi); ok && v == ctx {
+		m.byIMSI.Delete(imsi)
+	}
+}
+
+func (m *Manager) deleteGUTIIfOwned(guti string, ctx *Context) {
+	if v, ok := m.byGUTI.Load(guti); ok && v == ctx {
+		m.byGUTI.Delete(guti)
 	}
 }
 

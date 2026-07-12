@@ -34,10 +34,40 @@ const (
 )
 
 type APNConfiguration struct {
+	ContextIdentifier   uint32
 	ServiceSelection    string
 	MIPHomeAgentAddress net.IP
 	MIPHomeAgentHost    string
 	PDNGWAllocationType *int32
+}
+
+type SubscriberProfile struct {
+	DefaultContextID uint32
+	APNs             map[string]APNConfiguration
+}
+
+func (p *SubscriberProfile) DefaultAPNConfiguration() *APNConfiguration {
+	if p == nil {
+		return nil
+	}
+	for _, cfg := range p.APNs {
+		if p.DefaultContextID != 0 && cfg.ContextIdentifier != p.DefaultContextID {
+			continue
+		}
+		if strings.TrimSpace(cfg.ServiceSelection) == "" {
+			continue
+		}
+		c := cfg
+		return &c
+	}
+	for _, cfg := range p.APNs {
+		if strings.TrimSpace(cfg.ServiceSelection) == "" {
+			continue
+		}
+		c := cfg
+		return &c
+	}
+	return nil
 }
 
 type Selection struct {

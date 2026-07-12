@@ -38,6 +38,12 @@ type S11Client interface {
 	SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error
 }
 
+type S11BearerResponder interface {
+	SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer) error
+	SendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer) error
+	SendDeleteBearerResponse(peer string, teid uint32, seq uint32, cause uint8, ebis []uint8) error
+}
+
 // BearerInfo carries the default EPS bearer parameters needed for the ICS Request E-RAB list.
 type BearerInfo struct {
 	EBI       uint8
@@ -58,6 +64,15 @@ type NoopS11Client struct{}
 func (NoopS11Client) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
 func (NoopS11Client) SendMBR(_ uint32, _ *gtpv2.ModifyBearerRequest) error  { return nil }
 func (NoopS11Client) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
+func (NoopS11Client) SendCreateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.CreateBearerBearer) error {
+	return nil
+}
+func (NoopS11Client) SendUpdateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.UpdateBearerBearer) error {
+	return nil
+}
+func (NoopS11Client) SendDeleteBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []uint8) error {
+	return nil
+}
 
 // S10Client is the interface the S1AP layer uses for S10 inter-MME context transfer.
 // Implemented by s10.Server; NoopS10Client used when S10 is disabled.
@@ -85,6 +100,7 @@ type Server struct {
 	nfCfg        config.NFConfig
 	secCfg       config.SecurityConfig
 	s10Cfg       config.S10Config
+	nasCfg       config.NASConfig
 	operCfg      config.OperatorConfig
 	store        repository.Repository
 	ueManager    *uecontext.Manager
@@ -109,6 +125,7 @@ func NewServer(
 	nfCfg config.NFConfig,
 	secCfg config.SecurityConfig,
 	s10Cfg config.S10Config,
+	nasCfg config.NASConfig,
 	operCfg config.OperatorConfig,
 	store repository.Repository,
 	ueManager *uecontext.Manager,
@@ -129,6 +146,7 @@ func NewServer(
 		nfCfg:        nfCfg,
 		secCfg:       secCfg,
 		s10Cfg:       s10Cfg,
+		nasCfg:       nasCfg,
 		operCfg:      operCfg,
 		store:        store,
 		ueManager:    ueManager,
@@ -238,6 +256,8 @@ func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU) {
 	switch p.ProcedureCode {
 	case pdu.ProcInitialContextSetup:
 		s.handleInitialContextSetupResponse(remoteAddr, p, ies)
+	case pdu.ProcERABSetup:
+		s.handleERABSetupResponse(remoteAddr, p, ies)
 	case pdu.ProcUEContextRelease:
 		s.handleUEContextReleaseComplete(remoteAddr, p, ies)
 	case pdu.ProcHandoverResourceAllocation:
@@ -286,27 +306,44 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 	s.enbTracker.Remove(remoteAddr)
 	metrics.S1APConnectedENBs.Dec()
 
-	// Evict all UE contexts attached to this eNB and release their S11 sessions.
 	evicted := 0
+	preserved := 0
 	for _, ue := range s.ueManager.List() {
 		ue.Lock()
 		if ue.ENBGlobalID != remoteAddr {
 			ue.Unlock()
 			continue
 		}
-		// EMM-REGISTERED + ECM-IDLE UEs have released S1 without detaching.
-		// They survive eNB disconnects per TS 23.401 §4.3.14.2 and must remain
-		// pageable. Their ENBGlobalID is normally "" after release; this check is
-		// a belt-and-suspenders guard for any race where the clear is still in flight.
-		if ue.ECMState == emm.ECMIdle && ue.EMMState == emm.StateRegistered {
+		emmState := ue.EMMState
+		preserveEPS := emmState == emm.StateRegistered ||
+			emmState == emm.StateTrackingAreaUpdating ||
+			emmState == emm.StateServiceRequestInitiated
+		if preserveEPS {
+			mmeID := ue.MMEUES1APID
+			enbUEID := ue.ENBS1APID
+			imsi := ue.IMSI
+			apn := ue.APN
+			ue.SetECMState(emm.ECMIdle)
+			ue.ENBS1APID = 0
+			ue.ENBGlobalID = ""
+			ue.S1BindingState = uecontext.S1BindingReleased
+			ue.ENBU_TEID = 0
+			ue.ENBU_IP = nil
 			ue.Unlock()
+			s.log.Info("s1ap: preserving UE EPS context on eNB disconnect",
+				zap.String("imsi", imsi),
+				zap.Uint32("mme_ue_id", mmeID),
+				zap.Uint32("old_enb_ue_id", enbUEID),
+				zap.String("apn", apn),
+				zap.String("remote", remoteAddr),
+				zap.String("emm_state", emmState.String()),
+				zap.String("ecm_state", emm.ECMIdle.String()),
+				zap.String("delete_reason", "s1_only_disconnect"),
+				zap.Bool("s11_delete_required", false))
+			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
+			preserved++
 			continue
 		}
-		// Count as attached when StateRegistered (normal case) or StateTrackingAreaUpdating
-		// with an active bearer. The latter covers: (a) regular attached UEs mid-TAU, and
-		// (b) inter-MME TAU UEs that were Inc'd in finishInterMMETAU before TAU Complete.
-		wasAttached := ue.EMMState == emm.StateRegistered ||
-			(ue.EMMState == emm.StateTrackingAreaUpdating && ue.SGWC_TEID != 0)
 		mmeID := ue.MMEUES1APID
 		imsi := ue.IMSI
 		apn := ue.APN
@@ -322,15 +359,13 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 		s.sendDeleteSession(ue) // idempotent: no-op if SGWC_TEID == 0
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
 		s.ueManager.Remove(ue)
-		if wasAttached {
-			metrics.AttachedUEs.Dec()
-		}
 		evicted++
 	}
 
 	s.log.Info("s1ap: eNB disconnected",
 		zap.String("remote", remoteAddr),
 		zap.String("global_enb_id", enb.GlobalENBID.Serialise()),
+		zap.Int("preserved_ues", preserved),
 		zap.Int("evicted_ues", evicted))
 }
 

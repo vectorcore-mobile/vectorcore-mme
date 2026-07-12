@@ -59,8 +59,10 @@ const (
 	IETargetID                         uint16 = 4
 	IEENBS1APID                        uint16 = 8
 	IEERABToBeSetupListBearerSUReq     uint16 = 16
+	IEERABToBeSetupItemBearerSUReq     uint16 = 17
 	IEERABSetupListBearerSURes         uint16 = 28
 	IEERABFailedToSetupListBearerSURes uint16 = 29
+	IEERABSetupItemBearerSURes         uint16 = 39
 	IEERABToBeModifiedListBearerModReq uint16 = 30
 	IEERABFailedToModifyList           uint16 = 32
 	IEERABToBeReleasedList             uint16 = 33

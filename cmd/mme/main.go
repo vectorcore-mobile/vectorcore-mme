@@ -57,6 +57,8 @@ func main() {
 		zap.String("version", buildinfo.Version),
 		zap.String("origin_host", cfg.NF.OriginHost),
 		zap.String("origin_realm", cfg.NF.OriginRealm))
+	log.Info("nas feature configuration",
+		zap.Bool("ims_voice_over_ps", cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS))
 
 	db, err := openDB(cfg.Database)
 	if err != nil {
@@ -115,7 +117,7 @@ func main() {
 
 	// S1AP server (accepts eNB SCTP connections)
 	gatewaySelector := gateway.NewSelector(*cfg, log)
-	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 

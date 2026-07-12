@@ -42,3 +42,32 @@ func (h *Handlers) SendPUR(imsi string) error {
 	h.log.Info("s6a: PUR sent", zap.String("imsi", imsi))
 	return nil
 }
+
+func (h *Handlers) handlePUA(_ diam.Conn, m *diam.Message) {
+	var pua struct {
+		SessionID          datatype.UTF8String `avp:"Session-Id"`
+		ResultCode         uint32              `avp:"Result-Code"`
+		ExperimentalResult struct {
+			ExperimentalResultCode uint32 `avp:"Experimental-Result-Code"`
+		} `avp:"Experimental-Result"`
+	}
+	if err := m.Unmarshal(&pua); err != nil {
+		h.log.Warn("s6a: PUA decode failed", zap.Error(err))
+		metrics.S6aRequestsTotal.WithLabelValues("PUA", "decode_error").Inc()
+		return
+	}
+
+	resultCode := pua.ResultCode
+	if resultCode == 0 && pua.ExperimentalResult.ExperimentalResultCode != 0 {
+		resultCode = pua.ExperimentalResult.ExperimentalResultCode
+	}
+	status := "ok"
+	if resultCode != 0 && resultCode != diam.Success {
+		status = "error"
+	}
+	metrics.S6aRequestsTotal.WithLabelValues("PUA", status).Inc()
+	h.log.Info("s6a: PUA received",
+		zap.String("session_id", string(pua.SessionID)),
+		zap.Uint32("result_code", resultCode),
+		zap.String("status", status))
+}

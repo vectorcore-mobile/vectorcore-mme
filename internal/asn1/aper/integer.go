@@ -43,8 +43,10 @@ func EncodeConstrainedWholeNumber(w *BitWriter, v, lb, ub int64) error {
 		if val > 0 {
 			byteLen = (bits.Len64(val) + 7) / 8
 		}
+		maxByteLen := (n + 7) / 8
+		lenBits := bitsNeeded(int64(maxByteLen))
+		w.WriteBits(uint64(byteLen-1), lenBits)
 		w.AlignToByte()
-		w.WriteOctet(byte(byteLen - 1))
 		w.WriteBits(val, byteLen*8)
 	}
 	return nil
@@ -68,16 +70,17 @@ func DecodeConstrainedWholeNumber(r *BitReader, lb, ub int64) (int64, error) {
 		r.AlignToByte()
 		val, err = r.ReadBits(16)
 	} else {
-		r.AlignToByte()
-		lenMinusOne, e := r.ReadOctet()
+		maxByteLen := (n + 7) / 8
+		lenBits := bitsNeeded(int64(maxByteLen))
+		lenMinusOne, e := r.ReadBits(lenBits)
 		if e != nil {
 			return 0, e
 		}
 		byteLen := int(lenMinusOne) + 1
-		maxByteLen := (n + 7) / 8
 		if byteLen > maxByteLen {
 			return 0, fmt.Errorf("aper: constrained integer length %d exceeds maximum %d", byteLen, maxByteLen)
 		}
+		r.AlignToByte()
 		val, err = r.ReadBits(byteLen * 8)
 	}
 	if err != nil {

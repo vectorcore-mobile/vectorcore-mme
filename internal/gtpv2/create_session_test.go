@@ -163,3 +163,32 @@ func TestCreateSessionRequestIncludesAPNRestrictionWithoutPCO(t *testing.T) {
 		t.Fatalf("APN Restriction got %x, want 00", apnRestriction.Value)
 	}
 }
+
+func TestDecodeCreateSessionResponsePreservesPGWPCO(t *testing.T) {
+	pco := []byte{
+		0x80, 0x00,
+		0x0d, 0x04, 0x01, 0x01, 0x01, 0x01,
+		0x00, 0x0d, 0x04, 0x01, 0x00, 0x00, 0x01,
+	}
+	msg := &Message{
+		Type: MsgCreateSessionResponse,
+		IEs: []IE{
+			{Type: IETypeCause, Value: []byte{CauseRequestAccepted, 0x00}},
+			EncodeFTEID(IFTypeS11S4SGW, 0x01020304, net.ParseIP("10.0.0.2"), 0),
+			EncodePAA(net.IP{100, 64, 0, 10}),
+			EncodePCO(pco),
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				EncodeEBI(5, 0),
+				EncodeFTEID(IFTypeS1USGW, 0x10203040, net.ParseIP("10.0.0.3"), 0),
+			}),
+		},
+	}
+
+	resp, err := DecodeCreateSessionResponse(msg)
+	if err != nil {
+		t.Fatalf("DecodeCreateSessionResponse: %v", err)
+	}
+	if !bytes.Equal(resp.PCO, pco) {
+		t.Fatalf("PCO got %x, want %x", resp.PCO, pco)
+	}
+}

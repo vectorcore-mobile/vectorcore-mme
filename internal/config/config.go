@@ -19,7 +19,16 @@ type Config struct {
 	Logging          LoggingConfig          `yaml:"logging"`
 	API              APIConfig              `yaml:"api"`
 	Security         SecurityConfig         `yaml:"security"`
+	NAS              NASConfig              `yaml:"nas"`
 	Operator         OperatorConfig         `yaml:"operator"`
+}
+
+type NASConfig struct {
+	EPSNetworkFeatureSupport EPSNetworkFeatureSupportConfig `yaml:"eps_network_feature_support"`
+}
+
+type EPSNetworkFeatureSupportConfig struct {
+	IMSVoiceOverPS bool `yaml:"ims_voice_over_ps"`
 }
 
 // OperatorConfig holds network identity and NITZ settings pushed to UEs via EMM Information.
@@ -33,15 +42,24 @@ type OperatorConfig struct {
 		AddCountryInitials bool   `yaml:"add_country_initials"`
 	} `yaml:"name"`
 	NITZ struct {
-		Enabled               bool  `yaml:"enabled"`
-		TimezoneOffsetMinutes int   `yaml:"timezone_offset_minutes"`
-		DaylightSaving        uint8 `yaml:"daylight_saving"` // 0=none, 1=+1h, 2=+2h
+		Enabled                              bool   `yaml:"enabled"`
+		Timezone                             string `yaml:"timezone"`
+		TimezoneOffsetMinutes                int    `yaml:"timezone_offset_minutes"`
+		DaylightSaving                       uint8  `yaml:"daylight_saving"` // 0=none, 1=+1h, 2=+2h
+		IncludeLocalTimeZone                 bool   `yaml:"include_local_time_zone"`
+		IncludeUniversalTimeAndLocalTimeZone bool   `yaml:"include_universal_time_and_local_time_zone"`
+		IncludeDaylightSavingTime            bool   `yaml:"include_daylight_saving_time"`
 	} `yaml:"nitz"`
 	EMMInformation struct {
 		Enabled         bool `yaml:"enabled"`
 		SendAfterAttach bool `yaml:"send_after_attach"`
 		SendAfterTAU    bool `yaml:"send_after_tau"`
 	} `yaml:"emm_information"`
+	TAU struct {
+		// ReallocateGUTI controls same-MME GUTI reallocation in TAU Accept.
+		// The default false avoids forcing TAU Complete for ordinary same-MME TAU.
+		ReallocateGUTI bool `yaml:"reallocate_guti"`
+	} `yaml:"tau"`
 }
 
 // S10Config holds the GTPv2-C S10 interface configuration (MME ↔ MME context transfer).
@@ -258,6 +276,20 @@ func Load(path string) (*Config, error) {
 	case "gsm7", "ucs2":
 	default:
 		return nil, fmt.Errorf("config: operator.name.encoding must be \"gsm7\" or \"ucs2\", got %q", cfg.Operator.Name.Encoding)
+	}
+	if cfg.Operator.NITZ.Enabled {
+		if !cfg.Operator.NITZ.IncludeLocalTimeZone &&
+			!cfg.Operator.NITZ.IncludeUniversalTimeAndLocalTimeZone &&
+			!cfg.Operator.NITZ.IncludeDaylightSavingTime {
+			cfg.Operator.NITZ.IncludeLocalTimeZone = true
+			cfg.Operator.NITZ.IncludeUniversalTimeAndLocalTimeZone = true
+			cfg.Operator.NITZ.IncludeDaylightSavingTime = true
+		}
+		if cfg.Operator.NITZ.Timezone != "" {
+			if _, err := time.LoadLocation(cfg.Operator.NITZ.Timezone); err != nil {
+				return nil, fmt.Errorf("config: operator.nitz.timezone %q: %w", cfg.Operator.NITZ.Timezone, err)
+			}
+		}
 	}
 
 	return cfg, nil

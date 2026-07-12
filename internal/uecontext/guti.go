@@ -1,6 +1,7 @@
 package uecontext
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"fmt"
 	"sync/atomic"
@@ -37,6 +38,42 @@ func (a *GUTIAllocator) Allocate() *emm.GUTI {
 	mtmsi := a.next.Add(1)
 	if mtmsi == 0 {
 		// Wrapped to zero — skip it
+		mtmsi = a.next.Add(1)
+	}
+	return &emm.GUTI{
+		PLMN:  a.plmn,
+		MMEGI: a.mmegi,
+		MMEC:  a.mmec,
+		MTMSI: mtmsi,
+	}
+}
+
+// AllocateUnique returns a GUTI whose full key is not reported as reserved.
+// It uses cryptographic randomness first so M-TMSI allocation does not restart
+// at the same low values after an MME process restart.
+func (a *GUTIAllocator) AllocateUnique(reserved func(*emm.GUTI) bool) (*emm.GUTI, error) {
+	for i := 0; i < 1024; i++ {
+		g := a.allocateRandom()
+		if g.MTMSI != 0 && (reserved == nil || !reserved(g)) {
+			return g, nil
+		}
+	}
+	for i := 0; i < 1024; i++ {
+		g := a.Allocate()
+		if g.MTMSI != 0 && (reserved == nil || !reserved(g)) {
+			return g, nil
+		}
+	}
+	return nil, fmt.Errorf("uecontext: exhausted GUTI allocation collision retries")
+}
+
+func (a *GUTIAllocator) allocateRandom() *emm.GUTI {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return a.Allocate()
+	}
+	mtmsi := binary.BigEndian.Uint32(b[:])
+	if mtmsi == 0 {
 		mtmsi = a.next.Add(1)
 	}
 	return &emm.GUTI{

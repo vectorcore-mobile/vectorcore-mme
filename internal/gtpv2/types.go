@@ -13,6 +13,12 @@ const (
 	MsgModifyBearerResponse  uint8 = 35
 	MsgDeleteSessionRequest  uint8 = 36
 	MsgDeleteSessionResponse uint8 = 37
+	MsgCreateBearerRequest   uint8 = 95
+	MsgCreateBearerResponse  uint8 = 96
+	MsgUpdateBearerRequest   uint8 = 97
+	MsgUpdateBearerResponse  uint8 = 98
+	MsgDeleteBearerRequest   uint8 = 99
+	MsgDeleteBearerResponse  uint8 = 100
 	MsgContextRequest        uint8 = 130
 	MsgContextResponse       uint8 = 131
 	MsgContextAcknowledge    uint8 = 132
@@ -35,6 +41,7 @@ const (
 	IETypeBearerQoS          uint8 = 80
 	IETypeRATType            uint8 = 82
 	IETypeServingNetwork     uint8 = 83
+	IETypeTFT                uint8 = 84
 	IETypeFTEID              uint8 = 87
 	IETypeBearerContext      uint8 = 93
 	IETypeChargingChars      uint8 = 95

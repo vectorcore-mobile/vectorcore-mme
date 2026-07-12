@@ -260,6 +260,7 @@ func TestHandleUEContextReleaseRequestResolvesMMEIDBeforeCommand(t *testing.T) {
 
 func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.T) {
 	srv := newTAUTestServer()
+	srv.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS = true
 	const remoteAddr = "192.0.2.10:36412"
 	ch := setupSendCapture(srv, remoteAddr)
 	ue := allocateTestUE(srv, remoteAddr, 0, false)
@@ -279,6 +280,7 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 	ue.APN = "internet"
 	ue.Unlock()
 
+	pgwPCO := []byte{0x80, 0x00, 0x0d, 0x04, 0x01, 0x01, 0x01, 0x01}
 	srv.HandleCSRResult(ue.MMEUES1APID, &gtpv2.CreateSessionResponse{
 		Cause:     gtpv2.CauseRequestAccepted,
 		SGWC_TEID: 0x100,
@@ -287,6 +289,7 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 		SGWU_IP:   net.ParseIP("10.0.0.3"),
 		UEIPv4:    net.ParseIP("10.45.0.10"),
 		EBI:       5,
+		PCO:       pgwPCO,
 	}, nil)
 
 	msg := readCapturedPDU(t, ch)
@@ -339,6 +342,22 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 	}
 	if got, want := net.IP(paa[2:6]).String(), "10.45.0.10"; got != want {
 		t.Fatalf("PAA IPv4: got %s, want %s", got, want)
+	}
+	pcoIE := paa[6:]
+	if len(pcoIE) < 2 {
+		t.Fatalf("PCO IE missing after PAA: esm=%x", esmContainer)
+	}
+	if got, want := pcoIE[0], byte(0x27); got != want {
+		t.Fatalf("PCO IEI: got %#x, want %#x", got, want)
+	}
+	if got, want := int(pcoIE[1]), len(pgwPCO); got != want {
+		t.Fatalf("PCO length: got %d, want %d", got, want)
+	}
+	if got := pcoIE[2:]; !bytes.Equal(got, pgwPCO) {
+		t.Fatalf("PCO value got %x, want %x", got, pgwPCO)
+	}
+	if !bytes.Contains(nasPDU[6:], []byte{0x64, 0x01, 0x01}) {
+		t.Fatalf("Attach Accept missing EPS Network Feature Support IMS VoPS IE: %x", nasPDU[6:])
 	}
 	ue.Lock()
 	dlCount := uint32(ue.DLNASCount)
@@ -410,8 +429,8 @@ func TestSendInitialContextSetupEncodesRel16IEs(t *testing.T) {
 		}
 		seenAMBR = true
 		want := []byte{
-			0x00, 0x5f, 0x5e, 0x10, 0x00,
-			0x17, 0xd7, 0x84, 0x00,
+			0x18, 0x05, 0xf5, 0xe1, 0x00,
+			0x60, 0x05, 0xf5, 0xe1, 0x00,
 		}
 		if !bytes.Equal(ie.Value, want) {
 			t.Fatalf("UEAggregateMaximumBitrate got %x, want %x", ie.Value, want)
@@ -444,6 +463,38 @@ func TestSendInitialContextSetupEncodesRel16IEs(t *testing.T) {
 	}
 	if !seenSecurityCapabilities {
 		t.Fatal("UESecurityCapabilities IE missing")
+	}
+}
+
+func TestSendInitialContextSetupMapsRealUESecurityCapabilities(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.10:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 268208
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0, 0xe0, 0xe0, 0x1d}
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0xf09d607c, SGWU_IP: []byte{10, 90, 250, 59}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+
+	var got []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEUESecurityCapabilities {
+			got = ie.Value
+			break
+		}
+	}
+	want := []byte{0x1c, 0x00, 0x0e, 0x00, 0x00}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("UESecurityCapabilities got %x, want Open5GS-style S1AP encoding %x", got, want)
 	}
 }
 
@@ -591,36 +642,11 @@ func decodeUES1APIDsFromReleaseCommand(t *testing.T, msg *pdu.PDU) (uint32, uint
 		if ie.ID != pdu.IEUES1APIDs {
 			continue
 		}
-		r := aper.NewBitReader(ie.Value)
-		ext, err := r.ReadBit()
+		mmeID, enbID, err := ies.DecodeUES1APIDPair(ie.Value)
 		if err != nil {
-			t.Fatalf("UE-S1AP-IDs choice extension: %v", err)
+			t.Fatalf("DecodeUES1APIDPair: %v", err)
 		}
-		choice, err := r.ReadBit()
-		if err != nil {
-			t.Fatalf("UE-S1AP-IDs choice index: %v", err)
-		}
-		if ext != 0 || choice != 0 {
-			t.Fatalf("UE-S1AP-IDs expected root pair choice, got ext=%d choice=%d", ext, choice)
-		}
-		r.AlignToByte()
-		seqExt, err := r.ReadBit()
-		if err != nil {
-			t.Fatalf("UE-S1AP-IDs pair sequence extension: %v", err)
-		}
-		if seqExt != 0 {
-			t.Fatal("UE-S1AP-IDs pair has unexpected extension bit")
-		}
-		r.AlignToByte()
-		mmeID, err := aper.DecodeConstrainedWholeNumber(r, 0, 4294967295)
-		if err != nil {
-			t.Fatalf("decode MME-UE-S1AP-ID: %v", err)
-		}
-		enbID, err := aper.DecodeConstrainedWholeNumber(r, 0, 16777215)
-		if err != nil {
-			t.Fatalf("decode eNB-UE-S1AP-ID: %v", err)
-		}
-		return uint32(mmeID), uint32(enbID)
+		return mmeID, enbID
 	}
 	t.Fatal("missing UE-S1AP-IDs IE")
 	return 0, 0

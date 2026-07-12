@@ -73,6 +73,7 @@ type CreateSessionResponse struct {
 	SGWU_IP   net.IP
 	UEIPv4    net.IP
 	EBI       uint8
+	PCO       []byte
 }
 
 // DecodeCreateSessionResponse decodes a CSRsp message. Returns an error if the
@@ -109,6 +110,12 @@ func DecodeCreateSessionResponse(m *Message) (*CreateSessionResponse, error) {
 	paaIE := FindIE(m.IEs, IETypePAA, 0)
 	if paaIE != nil {
 		resp.UEIPv4, _ = DecodePAA(paaIE)
+	}
+
+	// Protocol Configuration Options returned by the P-GW are copied into the
+	// NAS Activate Default EPS Bearer Context Request PCO IE.
+	if pcoIE := FindIE(m.IEs, IETypePCO, 0); pcoIE != nil {
+		resp.PCO = append([]byte(nil), pcoIE.Value...)
 	}
 
 	// Bearer Context (instance 0) contains SGW S1-U F-TEID and EBI

@@ -12,6 +12,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/api"
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -219,6 +220,52 @@ func TestGetUEByIMSI_IncludesTunnelFields(t *testing.T) {
 	}
 	if got := entry["default_ebi"]; got != float64(5) {
 		t.Errorf("default_ebi: got %v, want 5", got)
+	}
+}
+
+func TestListUEsDistinguishesRegisteredIdleRadioLoss(t *testing.T) {
+	mgr := uecontext.NewManager()
+	ue := mgr.Allocate()
+	ue.Lock()
+	ue.IMSI = "204950000000003"
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMIdle
+	ue.ENBGlobalID = ""
+	ue.LastReleaseCause = "radio-connection-with-ue-lost"
+	ue.SubscriberAPNs = []string{"ims", "internet"}
+	ue.Unlock()
+	mgr.Register(ue)
+
+	h := newTestAPIServer(mgr)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ue", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		UEs []map[string]interface{} `json:"ues"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	entry := resp.UEs[0]
+	if got := entry["registration_status"]; got != "registered" {
+		t.Fatalf("registration_status got %v, want registered", got)
+	}
+	if got := entry["connection_status"]; got != "idle" {
+		t.Fatalf("connection_status got %v, want idle", got)
+	}
+	if got := entry["s1_connected"]; got != false {
+		t.Fatalf("s1_connected got %v, want false", got)
+	}
+	if got := entry["last_release_cause"]; got != "radio-connection-with-ue-lost" {
+		t.Fatalf("last_release_cause got %v", got)
+	}
+	apns, ok := entry["apns"].([]interface{})
+	if !ok || len(apns) != 2 || apns[0] != "ims" || apns[1] != "internet" {
+		t.Fatalf("apns got %#v, want [ims internet]", entry["apns"])
 	}
 }
 

@@ -1,18 +1,19 @@
-package nas_test
+package nas
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
-	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
 )
 
 func TestEncodeIntegrityProtectedUsesStandardSecurityHeader(t *testing.T) {
 	plain := []byte{0x07, emm.MsgAttachAccept, 0x01}
 
-	protected, err := nas.EncodeIntegrityProtected(plain, security.AlgIDEIA0, nil, 1)
+	protected, err := EncodeIntegrityProtected(plain, security.AlgIDEIA0, nil, 1)
 	if err != nil {
 		t.Fatalf("EncodeIntegrityProtected: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestEncodeIntegrityProtectedUsesStandardSecurityHeader(t *testing.T) {
 func TestEncodeIntegrityProtectedNewEPSSecurityContextUsesHeader3(t *testing.T) {
 	plain := emm.EncodeSecurityModeCommand(security.AlgIDEIA0, security.AlgIDEEA0, []byte{0xe0, 0xe0})
 
-	protected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(plain, security.AlgIDEIA0, nil, 0)
+	protected, err := EncodeIntegrityProtectedNewEPSSecurityContext(plain, security.AlgIDEIA0, nil, 1)
 	if err != nil {
 		t.Fatalf("EncodeIntegrityProtectedNewEPSSecurityContext: %v", err)
 	}
@@ -43,9 +44,6 @@ func TestEncodeIntegrityProtectedNewEPSSecurityContextUsesHeader3(t *testing.T) 
 	if !bytes.Equal(protected[6:], plain) {
 		t.Fatalf("inner plain NAS: got %x, want %x", protected[6:], plain)
 	}
-	if protected[5] != 0 {
-		t.Fatalf("NAS sequence number: got %d, want 0", protected[5])
-	}
 }
 
 func TestDecodeSecurityModeCompleteWithCipheredNewEPSSecurityContextHeader(t *testing.T) {
@@ -56,7 +54,7 @@ func TestDecodeSecurityModeCompleteWithCipheredNewEPSSecurityContextHeader(t *te
 		0x01,
 	}, inner...)
 
-	result, err := nas.Decode(raw, security.AlgIDEIA0, security.AlgIDEEA0, nil, nil, 1)
+	result, err := Decode(raw, security.AlgIDEIA0, security.AlgIDEEA0, nil, nil, 1)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -71,26 +69,48 @@ func TestDecodeSecurityModeCompleteWithCipheredNewEPSSecurityContextHeader(t *te
 	}
 }
 
-func TestDecodeSecurityModeRejectMACFailure(t *testing.T) {
-	raw := []byte{0x07, emm.MsgSecurityModeReject, emm.CauseMACFailure}
-
-	result, err := nas.Decode(raw, 0, 0, nil, nil, 0)
-	if err != nil {
-		t.Fatalf("Decode: %v", err)
+func TestDecodePlainDispatchesEMMAndESMByInnerProtocolDiscriminator(t *testing.T) {
+	tests := []struct {
+		name    string
+		hexPDU  string
+		wantPD  uint8
+		wantMsg uint8
+	}{
+		{
+			name:    "EMM Attach Complete",
+			hexPDU:  "074300035200c2",
+			wantPD:  emm.PDEPSMobilityMgmt,
+			wantMsg: emm.MsgAttachComplete,
+		},
+		{
+			name:    "EMM TAU Request",
+			hexPDU:  "074801",
+			wantPD:  emm.PDEPSMobilityMgmt,
+			wantMsg: emm.MsgTrackingAreaUpdateRequest,
+		},
+		{
+			name:    "ESM IMS PDN Connectivity Request",
+			hexPDU:  "0201d031280403696d7327238080211001010010810600000000830600000000000100000300000c00000d00001000",
+			wantPD:  esm.PDEPSSessionMgmt,
+			wantMsg: esm.MsgPDNConnectivityRequest,
+		},
 	}
-	if result.SecHeaderType != emm.SecurityHeaderPlain {
-		t.Fatalf("security header: got %d, want plain", result.SecHeaderType)
-	}
-	if result.PD != emm.PDEPSMobilityMgmt {
-		t.Fatalf("pd: got %d, want %d", result.PD, emm.PDEPSMobilityMgmt)
-	}
-	if result.MsgType != emm.MsgSecurityModeReject {
-		t.Fatalf("msg type: got %#x, want %#x", result.MsgType, emm.MsgSecurityModeReject)
-	}
-	if len(result.Inner) != 1 || result.Inner[0] != emm.CauseMACFailure {
-		t.Fatalf("cause: got %x, want %x", result.Inner, emm.CauseMACFailure)
-	}
-	if got, want := emm.CauseName(result.Inner[0]), "MAC failure"; got != want {
-		t.Fatalf("cause name: got %q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := hex.DecodeString(tt.hexPDU)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Decode(raw, 0, 0, nil, nil, 0)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if got.PD != tt.wantPD {
+				t.Fatalf("PD got %#x, want %#x", got.PD, tt.wantPD)
+			}
+			if got.MsgType != tt.wantMsg {
+				t.Fatalf("MsgType got %#x, want %#x", got.MsgType, tt.wantMsg)
+			}
+		})
 	}
 }

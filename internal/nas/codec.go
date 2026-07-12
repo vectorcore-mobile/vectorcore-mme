@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
 )
 
@@ -16,11 +17,49 @@ type DecodeResult struct {
 	PD            uint8
 	MsgType       uint8
 	Inner         []byte // plaintext payload after header (and decryption if applicable)
+	Plain         []byte // complete plain NAS message after security processing
+	MAC           []byte
+	Sequence      uint8
+	Count         uint32
+}
+
+func decodePlainNASHeader(secHdrType uint8, plain []byte) (*DecodeResult, error) {
+	if len(plain) < 1 {
+		return nil, fmt.Errorf("nas: plain message too short")
+	}
+	pd := plain[0] & 0x0f
+	result := &DecodeResult{
+		SecHeaderType: secHdrType,
+		PD:            pd,
+		Plain:         append([]byte(nil), plain...),
+	}
+	switch pd {
+	case emm.PDEPSMobilityMgmt:
+		if len(plain) < 2 {
+			return nil, fmt.Errorf("nas: EMM message too short")
+		}
+		result.MsgType = plain[1]
+		result.Inner = plain[2:]
+	case esm.PDEPSSessionMgmt:
+		if len(plain) < 3 {
+			return nil, fmt.Errorf("nas: ESM message too short")
+		}
+		result.MsgType = plain[2]
+		result.Inner = plain[3:]
+	default:
+		result.Inner = plain[1:]
+	}
+	return result, nil
 }
 
 // Decode decodes a raw NAS PDU. If the message is integrity-protected, it verifies
 // the MAC before returning. If ciphered, it decrypts. On error, the MAC failure
 // is returned and the caller must reject the message.
+//
+// For security-protected messages, ulCount must be the full NAS COUNT selected
+// by the owning UE context. The codec deliberately does not reconstruct COUNT
+// from the sequence byte; callers need UE-specific replay/window state to do
+// that correctly across overflow and S1 rebinding.
 func Decode(
 	raw []byte,
 	intAlgID, encAlgID uint8,
@@ -39,15 +78,8 @@ func Decode(
 	switch secHdrType {
 	case emm.SecurityHeaderPlain:
 		// Plain NAS — no security context yet (e.g., Attach Request before keys)
-		if len(raw) < 2 {
-			return nil, fmt.Errorf("nas: plain message too short")
-		}
-		return &DecodeResult{
-			SecHeaderType: secHdrType,
-			PD:            pd,
-			MsgType:       raw[1],
-			Inner:         raw[2:],
-		}, nil
+		_ = pd
+		return decodePlainNASHeader(secHdrType, raw)
 
 	case emm.SecurityHeaderIntegrityProtected:
 		// Integrity protected, not ciphered
@@ -58,23 +90,22 @@ func Decode(
 		seq := raw[5]
 		inner := raw[6:]
 
-		// Verify MAC over the message (including security header byte)
-		// The NAS COUNT is reconstructed from the sequence number and overflow counter
-		count := (ulCount & 0xFFFFFF00) | uint32(seq)
+		// Verify MAC with the full NAS COUNT selected by the caller.
+		count := ulCount
 		msgForMAC := append([]byte{raw[0]}, raw[1:]...)
 		if err := security.VerifyNASMAC(intAlgID, knasInt, count, 0, 0, msgForMAC[5:], mac); err != nil {
 			return nil, fmt.Errorf("nas: MAC verification failed: %w", err)
 		}
 
-		if len(inner) < 2 {
-			return nil, fmt.Errorf("nas: inner message too short")
+		_ = pd
+		result, err := decodePlainNASHeader(secHdrType, inner)
+		if err != nil {
+			return nil, err
 		}
-		return &DecodeResult{
-			SecHeaderType: secHdrType,
-			PD:            pd,
-			MsgType:       inner[1],
-			Inner:         inner[2:],
-		}, nil
+		result.MAC = append([]byte(nil), mac...)
+		result.Sequence = seq
+		result.Count = count
+		return result, nil
 
 	case emm.SecurityHeaderIntegrityAndCipher:
 		// Integrity protected and ciphered
@@ -85,7 +116,7 @@ func Decode(
 		seq := raw[5]
 		encrypted := raw[6:]
 
-		count := (ulCount & 0xFFFFFF00) | uint32(seq)
+		count := ulCount
 
 		// Verify integrity first (over the unencrypted security header + MAC + SEQ + ciphertext)
 		msgForMAC := append([]byte{raw[0]}, raw[1:]...)
@@ -98,15 +129,15 @@ func Decode(
 		if err != nil {
 			return nil, fmt.Errorf("nas: decryption failed: %w", err)
 		}
-		if len(plaintext) < 2 {
-			return nil, fmt.Errorf("nas: decrypted message too short")
+		_ = pd
+		result, err := decodePlainNASHeader(secHdrType, plaintext)
+		if err != nil {
+			return nil, err
 		}
-		return &DecodeResult{
-			SecHeaderType: secHdrType,
-			PD:            pd,
-			MsgType:       plaintext[1],
-			Inner:         plaintext[2:],
-		}, nil
+		result.MAC = append([]byte(nil), mac...)
+		result.Sequence = seq
+		result.Count = count
+		return result, nil
 
 	case emm.SecurityHeaderNewEPSSecurityCtx:
 		// Integrity-protected with new EPS security context.
@@ -117,8 +148,7 @@ func Decode(
 		mac := raw[1:5]
 		seq := raw[5]
 		inner := raw[6:]
-		// Reconstruct COUNT from SQN byte (caller passes ulCount with correct base for SQN=0)
-		count := (ulCount & 0xFFFFFF00) | uint32(seq)
+		count := ulCount
 		// MAC input is [SN byte || inner NAS] per TS 33.401 §B.2
 		msgForMAC := make([]byte, 1+len(inner))
 		msgForMAC[0] = seq
@@ -126,15 +156,15 @@ func Decode(
 		if err := security.VerifyNASMAC(intAlgID, knasInt, count, 0, 0, msgForMAC, mac); err != nil {
 			return nil, fmt.Errorf("nas: SMC Complete MAC verification failed: %w", err)
 		}
-		if len(inner) < 2 {
-			return nil, fmt.Errorf("nas: inner too short")
+		_ = pd
+		result, err := decodePlainNASHeader(secHdrType, inner)
+		if err != nil {
+			return nil, err
 		}
-		return &DecodeResult{
-			SecHeaderType: secHdrType,
-			PD:            pd,
-			MsgType:       inner[1],
-			Inner:         inner[2:],
-		}, nil
+		result.MAC = append([]byte(nil), mac...)
+		result.Sequence = seq
+		result.Count = count
+		return result, nil
 
 	case emm.SecurityHeaderCipherNewEPSSecCtx:
 		// Integrity-protected and ciphered with new EPS security context
@@ -145,7 +175,7 @@ func Decode(
 		mac := raw[1:5]
 		seq := raw[5]
 		encrypted := raw[6:]
-		count := (ulCount & 0xFFFFFF00) | uint32(seq)
+		count := ulCount
 		msgForMAC := make([]byte, 1+len(encrypted))
 		msgForMAC[0] = seq
 		copy(msgForMAC[1:], encrypted)
@@ -156,15 +186,15 @@ func Decode(
 		if err != nil {
 			return nil, fmt.Errorf("nas: SMC Complete decryption failed: %w", err)
 		}
-		if len(plaintext) < 2 {
-			return nil, fmt.Errorf("nas: inner too short")
+		_ = pd
+		result, err := decodePlainNASHeader(secHdrType, plaintext)
+		if err != nil {
+			return nil, err
 		}
-		return &DecodeResult{
-			SecHeaderType: secHdrType,
-			PD:            pd,
-			MsgType:       plaintext[1],
-			Inner:         plaintext[2:],
-		}, nil
+		result.MAC = append([]byte(nil), mac...)
+		result.Sequence = seq
+		result.Count = count
+		return result, nil
 
 	default:
 		return nil, fmt.Errorf("nas: unsupported security header type %d", secHdrType)

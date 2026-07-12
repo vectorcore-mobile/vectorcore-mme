@@ -114,6 +114,8 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.Lock()
 	ue.ENBS1APID = enbUEID
 	ue.ENBGlobalID = remoteAddr
+	ue.S1BindingGeneration++
+	ue.S1BindingState = uecontext.S1BindingActive
 	if tai != nil {
 		plmnBytes, _ := ies.EncodePLMN(tai.MCC, tai.MNC)
 		emmTAI := emm.TAI{TAC: tai.TAC}
@@ -157,6 +159,11 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			s.handleServiceRequest(ue, mmec, mtmsi, stmsiRaw, stmsiPresent, tai, nasPDU)
 			return
 		}
+		if secHdr == emm.SecurityHeaderIntegrityProtected ||
+			secHdr == emm.SecurityHeaderIntegrityAndCipher {
+			s.handleInitialUEDetach(ue, mmec, mtmsi, stmsiRaw, stmsiPresent, tai, nasPDU)
+			return
+		}
 		log.Warn("s1ap: InitialUE: NAS decode error", zap.Error(err))
 		s.ueManager.Remove(ue)
 		return
@@ -165,6 +172,10 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	// Plain TAU Request (EIA0 / no security context)
 	if result.MsgType == emm.MsgTrackingAreaUpdateRequest {
 		s.handleIdleTAUMessage(ue, tai, nasPDU)
+		return
+	}
+	if result.MsgType == emm.MsgDetachRequest {
+		s.handleInitialUEDetach(ue, mmec, mtmsi, stmsiRaw, stmsiPresent, tai, nasPDU)
 		return
 	}
 
@@ -183,9 +194,19 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	}
 
 	// Store UE network capability for SMC
+	plainAttachRequestNAS := append([]byte{emm.PDEPSMobilityMgmt, result.MsgType}, result.Inner...)
+	var hashMMEInput []byte
+	if len(nasPDU) > 0 {
+		rawSecHdr, _, _ := emm.DecodeSecurityHeader(nasPDU)
+		if rawSecHdr == emm.SecurityHeaderPlain {
+			hashMMEInput = plainAttachRequestNAS
+		}
+	}
 	ue.Lock()
 	ue.UENetworkCapability = ar.UENetworkCapability
-	ue.InitialAttachRequestNAS = append([]byte(nil), nasPDU...)
+	ue.MSNetworkCapability = ar.MSNetworkCapability
+	ue.AttachType = ar.AttachType
+	ue.InitialAttachRequestNAS = hashMMEInput
 	ue.Unlock()
 
 	// Decode ESM container to get PTI
@@ -207,17 +228,34 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			zap.String("pco_from_ue_hex", hex.EncodeToString(pco)))
 	}
 
-	// Resolve IMSI — either directly from Attach Request or via GUTI lookup
+	// Resolve IMSI only when it is explicitly present. A GUTI match is a
+	// candidate lookup, not proof that this radio endpoint owns that context.
 	imsi := ar.IMSI
 	if imsi == "" && ar.GUTI != nil {
-		// Attempt GUTI resolution from local DB
 		gutiStr := uecontext.SerialiseGUTI(ar.GUTI)
+		var candidateIMSI, candidateEMM, candidateECM string
+		var candidateID uint32
 		existing, ok := s.ueManager.GetByGUTI(gutiStr)
 		if ok {
 			existing.Lock()
-			imsi = existing.IMSI
+			candidateIMSI = existing.IMSI
+			candidateID = existing.MMEUES1APID
+			candidateEMM = existing.EMMState.String()
+			candidateECM = existing.ECMState.String()
 			existing.Unlock()
 		}
+		ue.Lock()
+		ue.CandidateGUTI = gutiStr
+		ue.CandidateIMSI = candidateIMSI
+		ue.Unlock()
+		log.Info("s1ap: Attach Request GUTI candidate requires identity confirmation",
+			zap.String("presented_guti", gutiStr),
+			zap.String("candidate_lookup_result", map[bool]string{true: "hit", false: "miss"}[ok]),
+			zap.Uint32("candidate_mme_ue_id", candidateID),
+			zap.String("candidate_imsi", candidateIMSI),
+			zap.String("candidate_emm_state", candidateEMM),
+			zap.String("candidate_ecm_state", candidateECM),
+			zap.Bool("destructive_action_deferred", true))
 	}
 
 	if imsi == "" {
@@ -230,18 +268,18 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	log = log.With(zap.String("imsi", imsi))
 	log.Info("s1ap: Attach Request", zap.Uint8("attach_type", ar.AttachType))
 
-	// Evict stale context with the same IMSI before registering this one.
-	if stale, ok := s.ueManager.GetByIMSI(imsi); ok && stale.MMEUES1APID != ue.MMEUES1APID {
-		s.log.Warn("s1ap: evicting stale UE context for IMSI", zap.String("imsi", imsi))
-		s.sendDeleteSession(stale)
-		s.ueManager.Remove(stale)
-	}
-	// UpdateIMSI acquires ctx.mu internally; caller must NOT hold ctx.mu.
-	s.ueManager.UpdateIMSI(ue, imsi)
 	ue.Lock()
+	ue.IMSI = imsi
 	ue.SetEMMState(emm.StateRegisteredInitiated)
 	ue.AttachStep = uecontext.AttachStepWaitingAIA
 	ue.Unlock()
+	if existing, ok := s.ueManager.GetByIMSI(imsi); ok && existing.MMEUES1APID != ue.MMEUES1APID {
+		s.log.Info("s1ap: duplicate IMSI attach pending authentication",
+			zap.String("imsi", imsi),
+			zap.Uint32("new_mme_ue_id", mmeUEID),
+			zap.Bool("destructive_action_deferred", true),
+			zap.String("eviction_reason", "deferred-until-authentication"))
+	}
 
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "request").Inc()
 	metrics.S1APMessagesTotal.WithLabelValues("InitialUEMessage", "inbound", "ok").Inc()
@@ -342,6 +380,8 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 	// Decode with appropriate security
 	var result *nas.DecodeResult
 	var err error
+	countUsed := ulCountVal
+	commitULCount := false
 
 	switch {
 	case attachStep == uecontext.AttachStepWaitingAuthResp:
@@ -349,50 +389,91 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
 	case attachStep == uecontext.AttachStepWaitingSMCCplt:
 		// SMC Complete arrives integrity-protected and ciphered with the new EPS security context.
-		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal)
+		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
+		if err == nil {
+			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
+			commitULCount = err == nil
+		}
 	case attachStep == uecontext.AttachStepWaitingAttachCplt:
 		// Attach Complete arrives integrity-protected (and possibly ciphered)
-		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal)
+		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
 		if err == nil {
-			ue.Lock()
-			ue.ULNASCount++
-			ue.Unlock()
+			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
+			commitULCount = err == nil
 		}
 	case attachStep == uecontext.AttachStepWaitingTAUComplete:
 		// TAU Complete arrives integrity-protected (and possibly ciphered)
-		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal)
+		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
 		if err == nil {
-			ue.Lock()
-			ue.ULNASCount++
-			ue.Unlock()
+			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
+			commitULCount = err == nil
 		}
 	case emmState == emm.StateRegistered:
 		// Normal uplink: integrity + possibly ciphered
-		ue.Lock()
-		newCount := ue.IncrementULCount()
-		ue.Unlock()
-		result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, newCount)
+		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
+		if err == nil {
+			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
+			commitULCount = err == nil
+		}
 	default:
 		// Plain or early messages
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
 	}
 
 	if err != nil {
+		secHdr, _, _ := emm.DecodeSecurityHeader(raw)
+		if secHdr == emm.SecurityHeaderIntegrityProtected ||
+			secHdr == emm.SecurityHeaderIntegrityAndCipher ||
+			secHdr == emm.SecurityHeaderNewEPSSecurityCtx ||
+			secHdr == emm.SecurityHeaderCipherNewEPSSecCtx {
+			s.logProtectedNASFailure(log, raw, intAlg, encAlg, knasInt, knasEnc, ulCountVal, err)
+		}
 		return fmt.Errorf("processNAS: decode: %w", err)
 	}
-
 	log.Debug("s1ap: processNAS",
 		zap.String("direction", "uplink"),
 		zap.Uint8("sec_hdr", result.SecHeaderType),
 		zap.Uint8("pd", result.PD),
 		zap.Uint8("msg_type", result.MsgType),
+		zap.Uint32("ul_count_before", ulCountVal),
+		zap.Uint32("ul_count_used", countUsed),
+		zap.Uint8("sequence_number", result.Sequence),
+		zap.String("plain_nas_hex", hex.EncodeToString(result.Plain)),
+		zap.Uint8("inner_pd", result.PD),
+		zap.Uint8("inner_message_type", result.MsgType),
 		zap.String("nas_hex", hex.EncodeToString(raw)))
 
 	switch result.PD {
 	case emm.PDEPSMobilityMgmt:
+		if !emm.IsKnownEMMMessageType(result.MsgType) {
+			log.Warn("s1ap: processNAS: unknown EMM message after security processing",
+				zap.Uint8("msg_type", result.MsgType),
+				zap.Uint32("ul_count_before", ulCountVal),
+				zap.Uint32("ul_count_used", countUsed),
+				zap.String("plain_nas_hex", hex.EncodeToString(result.Plain)),
+				zap.Bool("ul_count_committed", false))
+			return fmt.Errorf("processNAS: unknown EMM message type %#x", result.MsgType)
+		}
+		if commitULCount {
+			ue.Lock()
+			ue.ULNASCount = security.NASCount(countUsed)
+			ue.Unlock()
+		}
 		return s.processEMM(ue, result, attachStep)
+	case esm.PDEPSSessionMgmt:
+		if commitULCount {
+			ue.Lock()
+			ue.ULNASCount = security.NASCount(countUsed)
+			ue.Unlock()
+		}
+		return s.processESM(ue, result, log)
 	default:
-		log.Warn("s1ap: processNAS: unexpected PD", zap.Uint8("pd", result.PD))
+		log.Warn("s1ap: processNAS: unexpected PD",
+			zap.Uint8("pd", result.PD),
+			zap.Uint32("ul_count_before", ulCountVal),
+			zap.Uint32("ul_count_used", countUsed),
+			zap.String("plain_nas_hex", hex.EncodeToString(result.Plain)),
+			zap.Bool("ul_count_committed", commitULCount))
 	}
 	return nil
 }
@@ -444,6 +525,9 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	case emm.MsgIdentityResponse:
 		return s.processIdentityResponse(ue, result.Inner, log)
 
+	case emm.MsgEMMStatus:
+		return s.processEMMStatus(ue, result, log)
+
 	case emm.MsgTrackingAreaUpdateRequest:
 		return s.processTrackingAreaUpdate(ue, result.Inner, log)
 
@@ -458,6 +542,32 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	return nil
 }
 
+func (s *Server) processEMMStatus(ue *uecontext.Context, result *nas.DecodeResult, log *zap.Logger) error {
+	status, err := emm.DecodeEMMStatus(result.Inner)
+	if err != nil {
+		return fmt.Errorf("processEMMStatus: decode: %w", err)
+	}
+	ue.Lock()
+	imsi := ue.IMSI
+	mmeUEID := ue.MMEUES1APID
+	lastDownlink := ue.LastDownlinkNASMessage
+	ue.Unlock()
+
+	log.Warn("s1ap: EMM Status received",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.Uint8("security_header_type", result.SecHeaderType),
+		zap.Uint32("uplink_nas_count", result.Count),
+		zap.Uint8("sequence_number", result.Sequence),
+		zap.String("received_mac", hex.EncodeToString(result.MAC)),
+		zap.String("deciphered_plain_nas", hex.EncodeToString(result.Plain)),
+		zap.Uint8("message_type", result.MsgType),
+		zap.Uint8("emm_cause", status.Cause),
+		zap.String("emm_cause_name", emm.CauseName(status.Cause)),
+		zap.String("triggering_last_downlink_message", lastDownlink))
+	return nil
+}
+
 // processAuthResponse verifies the Authentication Response from the UE.
 func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *zap.Logger) error {
 	ar, err := emm.DecodeAuthenticationResponse(body)
@@ -469,6 +579,7 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	xres := ue.XRES
 	kasme := ue.KASME
 	ueCap := ue.UENetworkCapability
+	msCap := ue.MSNetworkCapability
 	initialAttachRequestNAS := append([]byte(nil), ue.InitialAttachRequestNAS...)
 	mmeUEID := ue.MMEUES1APID
 	enbAddr := ue.ENBGlobalID
@@ -482,6 +593,7 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 		s.ueManager.Remove(ue)
 		return nil
 	}
+	s.confirmAuthenticatedIdentityOwnership(ue, log)
 
 	// Select algorithms based on UE capability and network preference
 	cap, capErr := emm.DecodeUENetworkCapability(ueCap)
@@ -515,9 +627,10 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	if len(initialAttachRequestNAS) > 0 {
 		hashMME = security.HashMME(initialAttachRequestNAS)
 	}
+	replayedUECap := emm.ReplayedUESecurityCapability(ueCap, msCap)
 
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
-	smcPlain := emm.EncodeSecurityModeCommandWithHashMME(intAlg, encAlg, ueCap, hashMME)
+	smcPlain := emm.EncodeSecurityModeCommandWithHashMME(intAlg, encAlg, replayedUECap, hashMME)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
 	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
@@ -569,18 +682,20 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 		zap.Uint8("selected_int_alg", intAlg),
 		zap.Uint8("selected_enc_alg", encAlg),
 		zap.Int("kasme_len", len(kasme)),
-		zap.String("kasme_hex", hex.EncodeToString(kasme)),
+		zap.String("kasme_sha256_prefix", keyFingerprint(kasme)),
 		zap.String("nas_int_kdf_s_hex", hex.EncodeToString(intS)),
 		zap.String("nas_enc_kdf_s_hex", hex.EncodeToString(encS)),
-		zap.String("nas_int_kdf_out_hex", hex.EncodeToString(intOut)),
-		zap.String("nas_int_kdf_first16_hex", hex.EncodeToString(intFirst16)),
-		zap.String("nas_int_kdf_last16_hex", hex.EncodeToString(intLast16)),
-		zap.String("nas_enc_kdf_out_hex", hex.EncodeToString(encOut)),
-		zap.String("nas_enc_kdf_first16_hex", hex.EncodeToString(encFirst16)),
-		zap.String("nas_enc_kdf_last16_hex", hex.EncodeToString(encLast16)),
-		zap.String("knas_int_hex", hex.EncodeToString(knasInt)),
-		zap.String("knas_enc_hex", hex.EncodeToString(knasEnc)),
+		zap.String("nas_int_kdf_out_sha256_prefix", keyFingerprint(intOut)),
+		zap.String("nas_int_kdf_first16_sha256_prefix", keyFingerprint(intFirst16)),
+		zap.String("nas_int_kdf_last16_sha256_prefix", keyFingerprint(intLast16)),
+		zap.String("nas_enc_kdf_out_sha256_prefix", keyFingerprint(encOut)),
+		zap.String("nas_enc_kdf_first16_sha256_prefix", keyFingerprint(encFirst16)),
+		zap.String("nas_enc_kdf_last16_sha256_prefix", keyFingerprint(encLast16)),
+		zap.String("knas_int_sha256_prefix", keyFingerprint(knasInt)),
+		zap.String("knas_enc_sha256_prefix", keyFingerprint(knasEnc)),
 		zap.String("ue_security_capability_hex", hex.EncodeToString(ueCap)),
+		zap.String("ms_network_capability_hex", hex.EncodeToString(msCap)),
+		zap.String("replayed_ue_security_capability_hex", hex.EncodeToString(replayedUECap)),
 		zap.String("initial_nas_attach_request_hex", hex.EncodeToString(initialAttachRequestNAS)),
 		zap.String("hash_mme_input_hex", hex.EncodeToString(initialAttachRequestNAS)),
 		zap.String("hash_mme_hex", hex.EncodeToString(hashMME)),
@@ -722,25 +837,108 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	return nil
 }
 
+func (s *Server) confirmAuthenticatedIdentityOwnership(ue *uecontext.Context, log *zap.Logger) {
+	ue.Lock()
+	imsi := ue.IMSI
+	mmeUEID := ue.MMEUES1APID
+	candidateGUTI := ue.CandidateGUTI
+	candidateIMSI := ue.CandidateIMSI
+	ue.CandidateGUTI = ""
+	ue.CandidateIMSI = ""
+	ue.Unlock()
+	if imsi == "" {
+		return
+	}
+
+	if existing, ok := s.ueManager.GetByIMSI(imsi); ok && existing.MMEUES1APID != mmeUEID {
+		existing.Lock()
+		oldMMEID := existing.MMEUES1APID
+		oldGUTI := ""
+		if existing.GUTI != nil {
+			oldGUTI = uecontext.SerialiseGUTI(existing.GUTI)
+		}
+		existingEMM := existing.EMMState.String()
+		existingECM := existing.ECMState.String()
+		existing.Unlock()
+
+		log.Warn("s1ap: evicting UE context after authenticated IMSI ownership",
+			zap.String("imsi", imsi),
+			zap.Uint32("old_mme_ue_id", oldMMEID),
+			zap.Uint32("new_mme_ue_id", mmeUEID),
+			zap.String("old_guti", oldGUTI),
+			zap.String("candidate_guti", candidateGUTI),
+			zap.String("candidate_imsi", candidateIMSI),
+			zap.String("candidate_emm_state", existingEMM),
+			zap.String("candidate_ecm_state", existingECM),
+			zap.String("eviction_reason", "authenticated-imsi-reattach"),
+			zap.Bool("ownership_confirmed", true),
+			zap.Bool("context_replacement_authorized", true),
+			zap.Bool("s11_delete_required", true))
+		s.sendDeleteSession(existing)
+		s.ueManager.Remove(existing)
+	}
+
+	s.ueManager.UpdateIMSI(ue, imsi)
+}
+
 // processDetach handles a NAS Detach Request from the UE.
 func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logger) error {
+	dr, err := emm.DecodeDetachRequest(body)
+	if err != nil {
+		return fmt.Errorf("processDetach: decode detach request: %w", err)
+	}
+
 	ue.Lock()
 	mmeUEID := ue.MMEUES1APID
 	enbAddr := ue.ENBGlobalID
 	enbUEID := ue.ENBS1APID
 	imsi := ue.IMSI
+	intAlg := ue.IntAlg
+	encAlg := ue.EncAlg
+	knasInt := append([]byte(nil), ue.KNASint...)
+	knasEnc := append([]byte(nil), ue.KNASenc...)
+	dlCount := uint32(ue.DLNASCount)
 	ue.SetEMMState(emm.StateDeregisteredInitiated)
 	ue.Unlock()
 
 	log.Info("s1ap: Detach Request from UE",
-		zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.Uint8("detach_type", dr.DetachType),
+		zap.String("detach_type_name", emm.DetachTypeName(dr.DetachType)),
+		zap.Bool("switch_off", dr.SwitchOff),
+		zap.Uint8("ksi", dr.NASKeySetIdentifier),
+		zap.String("eps_mobile_identity_hex", hex.EncodeToString(dr.EPSMobileIdentity)))
 
-	// Send Detach Accept
-	detachAccept := emm.EncodeDetachAccept()
-	s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, detachAccept)
+	if !dr.SwitchOff {
+		detachAccept := emm.EncodeDetachAccept()
+		var protected []byte
+		var encErr error
+		if encAlg != security.AlgIDEEA0 {
+			protected, encErr = nas.EncodeIntegrityAndCiphered(detachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
+		} else {
+			protected, encErr = nas.EncodeIntegrityProtected(detachAccept, intAlg, knasInt, dlCount)
+		}
+		if encErr != nil {
+			return fmt.Errorf("processDetach: encode detach accept: %w", encErr)
+		}
+		s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, protected)
+		ue.Lock()
+		ue.DLNASCount.Increment()
+		ue.Unlock()
+		log.Info("s1ap: Detach Accept sent",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("dl_nas_count", dlCount),
+			zap.Uint8("security_header_type", protected[0]>>4))
+	} else {
+		log.Info("s1ap: Detach Accept suppressed for switch-off detach",
+			zap.Uint32("mme_ue_id", mmeUEID))
+	}
 
 	// Purge UE at HSS
-	go s.s6a.SendPUR(imsi)
+	if imsi != "" && s.s6a != nil {
+		go s.s6a.SendPUR(imsi)
+	}
 
 	// Release S-GW bearer (SGWC_TEID cleared inside to prevent double-send)
 	s.sendDeleteSession(ue)
@@ -770,18 +968,39 @@ func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log
 		return nil
 	}
 
-	// Evict stale context with the same IMSI before registering this one.
-	if stale, ok := s.ueManager.GetByIMSI(idResp.IMSI); ok && stale.MMEUES1APID != ue.MMEUES1APID {
-		s.log.Warn("s1ap: evicting stale UE context for IMSI", zap.String("imsi", idResp.IMSI))
-		s.sendDeleteSession(stale)
-		s.ueManager.Remove(stale)
-	}
-	// UpdateIMSI acquires ctx.mu internally; caller must NOT hold ctx.mu.
-	s.ueManager.UpdateIMSI(ue, idResp.IMSI)
 	ue.Lock()
+	candidateGUTI := ue.CandidateGUTI
+	candidateIMSI := ue.CandidateIMSI
+	ue.Unlock()
+	if candidateGUTI != "" {
+		if candidateIMSI != "" && candidateIMSI != idResp.IMSI {
+			log.Warn("s1ap: GUTI collision detected",
+				zap.String("presented_guti", candidateGUTI),
+				zap.String("candidate_imsi", candidateIMSI),
+				zap.String("confirmed_imsi", idResp.IMSI),
+				zap.Bool("candidate_context_preserved", true),
+				zap.Bool("destructive_action_deferred", true))
+		} else {
+			log.Info("s1ap: GUTI candidate identity resolved",
+				zap.String("presented_guti", candidateGUTI),
+				zap.String("candidate_imsi", candidateIMSI),
+				zap.String("confirmed_imsi", idResp.IMSI),
+				zap.Bool("identity_match", candidateIMSI == idResp.IMSI))
+		}
+	}
+
+	ue.Lock()
+	ue.IMSI = idResp.IMSI
 	ue.AttachStep = uecontext.AttachStepWaitingAIA
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
+	if existing, ok := s.ueManager.GetByIMSI(idResp.IMSI); ok && existing.MMEUES1APID != ue.MMEUES1APID {
+		s.log.Info("s1ap: duplicate IMSI identity pending authentication",
+			zap.String("imsi", idResp.IMSI),
+			zap.Uint32("new_mme_ue_id", mmeUEID),
+			zap.Bool("destructive_action_deferred", true),
+			zap.String("eviction_reason", "deferred-until-authentication"))
+	}
 
 	log.Info("s1ap: Identity Response: IMSI obtained", zap.String("imsi", idResp.IMSI))
 

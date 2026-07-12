@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	"go.uber.org/zap"
@@ -89,11 +90,26 @@ func (s *Server) HandleULAResult(mmeUEID uint32, msisdn, apn string, ulaErr erro
 }
 
 func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apnConfig *gateway.APNConfiguration, ulaErr error) {
+	var profile *gateway.SubscriberProfile
+	if apnConfig != nil && apnConfig.ServiceSelection != "" {
+		profile = &gateway.SubscriberProfile{
+			DefaultContextID: apnConfig.ContextIdentifier,
+			APNs: map[string]gateway.APNConfiguration{
+				apnConfig.ServiceSelection: *apnConfig,
+			},
+		}
+	}
+	s.HandleULAResultWithSubscriberProfile(mmeUEID, msisdn, profile, ulaErr)
+}
+
+func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn string, profile *gateway.SubscriberProfile, ulaErr error) {
 	log := s.log.With(zap.Uint32("mme_ue_id", mmeUEID))
+	apnConfig := profile.DefaultAPNConfiguration()
 	apn := ""
 	if apnConfig != nil {
 		apn = apnConfig.ServiceSelection
 	}
+	subscribedAPNs := subscriberAPNNames(profile)
 
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
@@ -107,6 +123,8 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		if ulaErr == nil {
 			ue.MSISDN = msisdn
 			ue.APN = apn
+			ue.SubscriberAPNs = subscribedAPNs
+			ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 		}
 		s10Addr := ue.S10OldMMEAddr
 		s10TEID := ue.S10OldMMETEID
@@ -138,6 +156,8 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 
 	ue.MSISDN = msisdn
 	ue.APN = apn
+	ue.SubscriberAPNs = subscribedAPNs
+	ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID
@@ -148,7 +168,16 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 	if isNoop {
 		// No S-GW: build Attach Accept with PDN Connectivity Reject (Phase 1 backward compat).
 		if s.gutiAlloc != nil && ue.GUTI == nil {
-			newGUTI := s.gutiAlloc.Allocate()
+			newGUTI, err := s.allocateAttachGUTI(log)
+			if err != nil {
+				enbAddr := ue.ENBGlobalID
+				enbUEID := ue.ENBS1APID
+				ue.Unlock()
+				rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
+				s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+				s.ueManager.Remove(ue)
+				return
+			}
 			ue.GUTI = newGUTI
 			ue.Unlock()
 			s.ueManager.UpdateGUTI(ue, newGUTI)
@@ -158,6 +187,7 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		pti := ue.PDNRequestPTI
 		tai := ue.TAI
 		guti := ue.GUTI
+		attachType := ue.AttachType
 		intAlg := ue.IntAlg
 		encAlg := ue.EncAlg
 		knasInt := make([]byte, len(ue.KNASint))
@@ -173,7 +203,15 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 		if tai != nil {
 			taiList = []emm.TAI{*tai}
 		}
-		attachAccept := emm.EncodeAttachAccept(1, taiList, guti, esmReject)
+		attachResult := attachAcceptResultForRequest(attachType)
+		featureSupport := s.epsNetworkFeatureSupport()
+		attachAccept := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
+			AttachResult:             attachResult,
+			TAIList:                  taiList,
+			GUTI:                     guti,
+			ESMContainer:             esmReject,
+			EPSNetworkFeatureSupport: featureSupport,
+		})
 
 		var protected []byte
 		var err error
@@ -283,6 +321,8 @@ func (s *Server) HandleULAResultWithAPNConfig(mmeUEID uint32, msisdn string, apn
 	metrics.S11MessagesTotal.WithLabelValues("csr", "initiated").Inc()
 	log.Info("s1ap: CSR sent to S-GW",
 		zap.String("imsi", imsi),
+		zap.String("default_apn", apn),
+		zap.Strings("subscribed_apns", subscribedAPNs),
 		zap.Uint32("local_teid", localTEID),
 		zap.String("serving_network_hex", hex.EncodeToString(plmn[:])),
 		zap.String("uli_plmn_hex", hex.EncodeToString(uliPLMN[:])),
@@ -298,6 +338,14 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
 		log.Warn("s1ap: HandleCSRResult: UE not found")
+		return
+	}
+
+	ue.Lock()
+	hasPendingPDN := ue.PendingPDN != nil
+	ue.Unlock()
+	if hasPendingPDN {
+		s.handlePendingPDNCSRResult(ue, resp, err, log)
 		return
 	}
 
@@ -335,11 +383,18 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	ue.SGWU_IP = resp.SGWU_IP
 	ue.UEIPv4 = resp.UEIPv4
 	ue.DefaultEBI = resp.EBI
+	ue.PGWPCO = append(ue.PGWPCO[:0], resp.PCO...)
 	if ue.DefaultEBI == 0 {
 		ue.DefaultEBI = 5 // fallback
 	}
 	if s.gutiAlloc != nil && ue.GUTI == nil {
-		newGUTI := s.gutiAlloc.Allocate()
+		newGUTI, err := s.allocateAttachGUTI(log)
+		if err != nil {
+			ue.Unlock()
+			s.sendDeleteSession(ue)
+			s.ueManager.Remove(ue)
+			return
+		}
 		ue.GUTI = newGUTI
 		ue.Unlock()
 		s.ueManager.UpdateGUTI(ue, newGUTI)
@@ -350,6 +405,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	pti := ue.PDNRequestPTI
 	tai := ue.TAI
 	guti := ue.GUTI
+	attachType := ue.AttachType
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
 	knasInt := make([]byte, len(ue.KNASint))
@@ -364,17 +420,44 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	ebi := ue.DefaultEBI
 	sgwuTEID := ue.SGWU_TEID
 	sgwuIP := ue.SGWU_IP
+	pgwPCO := append([]byte(nil), ue.PGWPCO...)
+	if ue.PDNs == nil {
+		ue.PDNs = make(map[string]*uecontext.PDNContext)
+	}
+	ue.PDNs[apn] = &uecontext.PDNContext{
+		APN:                    apn,
+		ProcedureTransactionID: pti,
+		PDNType:                gtpv2.PDNTypeIPv4,
+		DefaultEBI:             ebi,
+		LocalS11TEID:           ue.LocalS11TEID,
+		SGWAddress:             ue.SGWAddress,
+		SGWC_TEID:              ue.SGWC_TEID,
+		SGWC_IP:                append(net.IP(nil), ue.SGWC_IP...),
+		SGWU_TEID:              ue.SGWU_TEID,
+		SGWU_IP:                append(net.IP(nil), ue.SGWU_IP...),
+		UEIPv4:                 append(net.IP(nil), ue.UEIPv4...),
+		UEPCO:                  append([]byte(nil), ue.PCO...),
+		PGWPCO:                 append([]byte(nil), ue.PGWPCO...),
+		State:                  "activating",
+	}
 	ue.Unlock()
 
 	// Build ESM Activate Default EPS Bearer Context Request
-	esmAccept := esm.EncodePDNConnectivityAccept(pti, apn, ebi, ueIPv4)
+	esmAccept := esm.EncodePDNConnectivityAcceptWithPCO(pti, apn, ebi, ueIPv4, pgwPCO)
 
 	var taiList []emm.TAI
 	if tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
-	attachResult := emm.AttachTypeEPSOnly
-	attachAccept := emm.EncodeAttachAccept(attachResult, taiList, guti, esmAccept)
+	attachResult := attachAcceptResultForRequest(attachType)
+	featureSupport := s.epsNetworkFeatureSupport()
+	attachAccept := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
+		AttachResult:             attachResult,
+		TAIList:                  taiList,
+		GUTI:                     guti,
+		ESMContainer:             esmAccept,
+		EPSNetworkFeatureSupport: featureSupport,
+	})
 
 	var protected []byte
 	var encErr error
@@ -407,6 +490,10 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		zap.Uint8("attach_result", attachResult),
 		zap.String("apn", apn),
 		zap.String("paa_ipv4", ueIPv4.String()),
+		zap.String("pgw_pco_hex", hex.EncodeToString(pgwPCO)),
+		zap.Bool("ims_voice_over_ps_configured", s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS),
+		zap.Bool("ims_voice_over_ps_advertised", featureSupport != nil && featureSupport.IMSVoiceOverPSSessionInS1Mode),
+		zap.String("eps_network_feature_support_hex", hex.EncodeToString(encodeFeatureSupportForLog(featureSupport))),
 		zap.Uint8("int_alg", intAlg),
 		zap.Uint8("enc_alg", encAlg),
 		zap.Uint32("dl_nas_count", dlCount),
@@ -443,6 +530,28 @@ func (s *Server) HandleMBRResult(mmeUEID uint32, err error) {
 		s.log.Warn("s1ap: MBRsp error (data path may degrade)",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		return
+	}
+	if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
+		ue.Lock()
+		for _, pdn := range ue.PDNs {
+			if pdn.State == "modify-bearer-pending" {
+				pdn.ModifyBearerAccepted = true
+				if pdn.NASAccepted && pdn.ERABEstablished {
+					pdn.State = "active"
+				} else {
+					pdn.State = "access-established"
+				}
+				s.log.Info("s1ap: PDN Modify Bearer accepted",
+					zap.Uint32("mme_ue_id", mmeUEID),
+					zap.String("apn", pdn.APN),
+					zap.Uint8("ebi", pdn.DefaultEBI),
+					zap.Bool("nas_accepted", pdn.NASAccepted),
+					zap.Bool("erab_established", pdn.ERABEstablished))
+				ue.Unlock()
+				return
+			}
+		}
+		ue.Unlock()
 	}
 	s.log.Info("s1ap: MBR accepted, data path established", zap.Uint32("mme_ue_id", mmeUEID))
 }
@@ -548,6 +657,87 @@ func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, g
 		zap.Uint32("mtmsi", guti.MTMSI),
 		zap.String("mtmsi_hex", fmt.Sprintf("0x%08x", guti.MTMSI)),
 		zap.String("full_guti_lookup_key", uecontext.SerialiseGUTI(guti)))
+}
+
+func attachAcceptResultForRequest(attachType uint8) uint8 {
+	if attachType == emm.AttachTypeCombinedEPSAndIMSI {
+		return emm.AttachTypeCombinedEPSAndIMSI
+	}
+	return emm.AttachTypeEPSOnly
+}
+
+func (s *Server) epsNetworkFeatureSupport() *emm.EPSNetworkFeatureSupport {
+	if !s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS {
+		return nil
+	}
+	return &emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true}
+}
+
+func encodeFeatureSupportForLog(support *emm.EPSNetworkFeatureSupport) []byte {
+	if support == nil {
+		return nil
+	}
+	return emm.EncodeEPSNetworkFeatureSupport(*support)
+}
+
+func subscriberAPNNames(profile *gateway.SubscriberProfile) []string {
+	if profile == nil || len(profile.APNs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(profile.APNs))
+	for name := range profile.APNs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func cloneSubscriberAPNConfigs(profile *gateway.SubscriberProfile) map[string]uecontext.SubscriberAPNConfig {
+	if profile == nil || len(profile.APNs) == 0 {
+		return nil
+	}
+	out := make(map[string]uecontext.SubscriberAPNConfig, len(profile.APNs))
+	for name, cfg := range profile.APNs {
+		out[name] = uecontext.SubscriberAPNConfig{
+			ContextIdentifier:   cfg.ContextIdentifier,
+			ServiceSelection:    cfg.ServiceSelection,
+			MIPHomeAgentAddress: append(net.IP(nil), cfg.MIPHomeAgentAddress...),
+			MIPHomeAgentHost:    cfg.MIPHomeAgentHost,
+			PDNGWAllocationType: cloneInt32Ptr(cfg.PDNGWAllocationType),
+		}
+	}
+	return out
+}
+
+func cloneInt32Ptr(v *int32) *int32 {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
+}
+
+func (s *Server) allocateAttachGUTI(log *zap.Logger) (*emm.GUTI, error) {
+	if s.gutiAlloc == nil {
+		return nil, fmt.Errorf("s1ap: GUTI allocator unavailable")
+	}
+	guti, err := s.gutiAlloc.AllocateUnique(func(g *emm.GUTI) bool {
+		_, ok := s.ueManager.GetByGUTI(uecontext.SerialiseGUTI(g))
+		return ok
+	})
+	if err != nil {
+		log.Warn("s1ap: GUTI allocation failed",
+			zap.Error(err),
+			zap.String("allocation_source", "random-unique"))
+		return nil, err
+	}
+	log.Debug("s1ap: GUTI allocated",
+		zap.String("allocated_guti", uecontext.SerialiseGUTI(guti)),
+		zap.Uint32("mtmsi", guti.MTMSI),
+		zap.String("mtmsi_hex", fmt.Sprintf("0x%08x", guti.MTMSI)),
+		zap.String("allocation_source", "random-unique"),
+		zap.String("collision_checks", "active-guti-index"))
+	return guti, nil
 }
 
 func digit(b byte) byte {

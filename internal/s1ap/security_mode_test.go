@@ -125,6 +125,104 @@ func TestProcessAuthResponseSecurityModeCommandIncludesHashMME(t *testing.T) {
 	}
 }
 
+func TestProcessAuthResponseSecurityModeCommandNormalizesRealUECapability(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.secCfg = config.SecurityConfig{
+		IntegrityAlgorithms: []string{"EIA2"},
+		CipheringAlgorithms: []string{"EEA2"},
+	}
+	const remoteAddr = "192.0.2.10:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 1
+
+	xres := []byte{0x66, 0xb2, 0x6d, 0x2c, 0xac, 0x1a, 0xe7, 0x8d}
+	kasme := mustHexForS1AP(t, "410d87ad18eb7135366d55a4c12d593360a92e33644c6eba01fb9adeb1fb3542")
+	initialAttach := mustHexForS1AP(t, "0741620bf61351347fa601c100da0805f0f0e0e01d00320201d031272c8080211001010010810600000000830600000000000100000300000c00000d000007000008000009000012005213513400015c4108310375607e901103575892200b6014205230200002c00480400800021f00040260045d0103e0c1")
+	wantHash := mustHexForS1AP(t, "8f5b0baf1fa722e9")
+	ue.Lock()
+	ue.XRES = append([]byte(nil), xres...)
+	ue.KASME = append([]byte(nil), kasme...)
+	ue.UENetworkCapability = mustHexForS1AP(t, "f0f0e0e01d")
+	ue.InitialAttachRequestNAS = append([]byte(nil), initialAttach...)
+	ue.Unlock()
+
+	body := append([]byte{byte(len(xres))}, xres...)
+	if err := srv.processAuthResponse(ue, body, srv.log.With(zap.String("test", "smc-real-ue-cap"))); err != nil {
+		t.Fatalf("processAuthResponse: %v", err)
+	}
+
+	msg := readCapturedPDU(t, ch)
+	nasPDU := decodeNASPDUFromPDU(t, msg)
+	wantPlain := append([]byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x04, 0xf0, 0xf0, 0xe0, 0x60, 0x4f, 0x08}, wantHash...)
+	if !bytes.Equal(nasPDU[6:], wantPlain) {
+		t.Fatalf("plain SMC: got %x, want %x", nasPDU[6:], wantPlain)
+	}
+}
+
+func TestProcessAuthResponseProtectedAttachFiveByteReplayNoHashMME(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.secCfg = config.SecurityConfig{
+		IntegrityAlgorithms: []string{"EIA2"},
+		CipheringAlgorithms: []string{"EEA2"},
+	}
+	const remoteAddr = "192.0.2.10:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 1
+
+	xres := []byte{0x31, 0x13, 0xfc, 0x4e, 0x6a, 0xf5, 0x32, 0x48}
+	kasme := mustHexForS1AP(t, "dace988497fb805cb9fc3c4e0b89e3949c97ec9404207cfa8b566122ed2e3249")
+	ue.Lock()
+	ue.XRES = append([]byte(nil), xres...)
+	ue.KASME = append([]byte(nil), kasme...)
+	ue.UENetworkCapability = mustHexForS1AP(t, "f0f0c04009")
+	ue.MSNetworkCapability = mustHexForS1AP(t, "65a07e")
+	ue.InitialAttachRequestNAS = nil
+	ue.Unlock()
+
+	body := append([]byte{byte(len(xres))}, xres...)
+	if err := srv.processAuthResponse(ue, body, srv.log.With(zap.String("test", "smc-five-byte-no-hash"))); err != nil {
+		t.Fatalf("processAuthResponse: %v", err)
+	}
+
+	msg := readCapturedPDU(t, ch)
+	nasPDU := decodeNASPDUFromPDU(t, msg)
+	wantPlain := []byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x05, 0xf0, 0xf0, 0xc0, 0x40, 0x10}
+	if !bytes.Equal(nasPDU[6:], wantPlain) {
+		t.Fatalf("plain SMC: got %x, want %x", nasPDU[6:], wantPlain)
+	}
+}
+
+func TestInitialUEProtectedAttachSuppressesHashMME(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.11:36412"
+	setupSendCapture(srv, remoteAddr)
+
+	protectedAttach := mustHexForS1AP(t, "17f6f440a64f0741620bf61351347fa601c100da0805f0f0e0e01d00320201d031272c8080211001010010810600000000830600000000000100000300000c00000d000007000008000009000012005213513400015c4108310375607e901103575892200b6014205230200002c00480400800021f00040260045d0103e0c1")
+	taiValue, err := ies.EncodeTAI(ies.TAI{MCC: "001", MNC: "01", TAC: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEENBS1APID, Criticality: 0, Value: ies.EncodeENBUEApID(268200)},
+		{ID: pdu.IENAS_PDU, Criticality: 0, Value: ies.EncodeNASPDU(protectedAttach)},
+		{ID: pdu.IETAI, Criticality: 0, Value: taiValue},
+	}
+	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, 0, ieList))
+
+	list := srv.ueManager.List()
+	if len(list) != 1 {
+		t.Fatalf("UE contexts got %d, want 1", len(list))
+	}
+	list[0].Lock()
+	stored := append([]byte(nil), list[0].InitialAttachRequestNAS...)
+	list[0].Unlock()
+	if len(stored) != 0 {
+		t.Fatalf("protected Initial UE Attach should not prepare HASH MME input: got %x", stored[:minLen(len(stored), 8)])
+	}
+}
+
 func decodeNASPDUFromPDU(t *testing.T, msg *pdu.PDU) []byte {
 	t.Helper()
 	container, err := pdu.DecodeProcedureIEContainer(msg.Value)
@@ -150,6 +248,13 @@ func mustHexForS1AP(t *testing.T, s string) []byte {
 	b, err := hex.DecodeString(s)
 	if err != nil {
 		t.Fatalf("hex decode %q: %v", s, err)
+	}
+	return b
+}
+
+func minLen(a, b int) int {
+	if a < b {
+		return a
 	}
 	return b
 }

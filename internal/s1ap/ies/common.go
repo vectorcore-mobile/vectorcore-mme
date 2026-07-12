@@ -22,9 +22,14 @@ func EncodeMMEUEApID(id uint32) []byte {
 
 // DecodeMMEUEApID decodes a MME-UE-S1AP-ID.
 func DecodeMMEUEApID(data []byte) (uint32, error) {
-	r := aper.NewBitReader(data)
-	v, err := aper.DecodeConstrainedWholeNumber(r, 0, 4294967295)
-	return uint32(v), err
+	v, err := decodeExactConstrainedWholeNumber(data, 0, 4294967295)
+	if err == nil {
+		return uint32(v), nil
+	}
+	if len(data) == 4 {
+		return binary.BigEndian.Uint32(data), nil
+	}
+	return 0, err
 }
 
 // EncodeENBUEApID encodes an ENB-UE-S1AP-ID (0..16777215).
@@ -36,9 +41,90 @@ func EncodeENBUEApID(id uint32) []byte {
 
 // DecodeENBUEApID decodes an ENB-UE-S1AP-ID.
 func DecodeENBUEApID(data []byte) (uint32, error) {
+	v, err := decodeExactConstrainedWholeNumber(data, 0, 16777215)
+	if err == nil {
+		return uint32(v), nil
+	}
+	// Some Ericsson S1AP stacks have been observed to send the open type as
+	// a zero-padded 32-bit integer. Accept it at the IE boundary, but keep the
+	// canonical APER encoder above.
+	if len(data) == 4 && data[0] == 0 {
+		id := binary.BigEndian.Uint32(data)
+		if id <= 16777215 {
+			return id, nil
+		}
+	}
+	if len(data) == 3 {
+		id := uint32(data[0])<<16 | uint32(data[1])<<8 | uint32(data[2])
+		return id, nil
+	}
+	return 0, err
+}
+
+// EncodeUES1APIDPair encodes UE-S1AP-IDs as the root uE-S1AP-ID-pair CHOICE.
+func EncodeUES1APIDPair(mmeUEID, enbUEID uint32) []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0) // CHOICE: no extension
+	w.WriteBit(0) // CHOICE index: uE-S1AP-ID-pair
+	w.WriteBit(0) // UE-S1AP-ID-pair SEQUENCE: no extension additions
+	w.WriteBit(0) // iE-Extensions absent
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(mmeUEID), 0, 4294967295)
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(enbUEID), 0, 16777215)
+	return w.Bytes()
+}
+
+// DecodeUES1APIDPair decodes UE-S1AP-IDs when the pair CHOICE arm is present.
+func DecodeUES1APIDPair(data []byte) (mmeUEID uint32, enbUEID uint32, err error) {
 	r := aper.NewBitReader(data)
-	v, err := aper.DecodeConstrainedWholeNumber(r, 0, 16777215)
-	return uint32(v), err
+	choiceExt, err := r.ReadBit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-IDs choice extension: %w", err)
+	}
+	choice, err := r.ReadBit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-IDs choice index: %w", err)
+	}
+	if choiceExt != 0 || choice != 0 {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-IDs: unsupported choice ext=%d index=%d", choiceExt, choice)
+	}
+	seqExt, err := r.ReadBit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-ID-pair sequence extension: %w", err)
+	}
+	if seqExt != 0 {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-ID-pair: unsupported sequence extension")
+	}
+	ieExtPresent, err := r.ReadBit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-ID-pair optional bitmap: %w", err)
+	}
+	if ieExtPresent != 0 {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-ID-pair: unsupported iE-Extensions")
+	}
+	mmeID, err := aper.DecodeConstrainedWholeNumber(r, 0, 4294967295)
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode MME-UE-S1AP-ID: %w", err)
+	}
+	enbID, err := aper.DecodeConstrainedWholeNumber(r, 0, 16777215)
+	if err != nil {
+		return 0, 0, fmt.Errorf("decode eNB-UE-S1AP-ID: %w", err)
+	}
+	if r.Remaining() != 0 {
+		return 0, 0, fmt.Errorf("decode UE-S1AP-ID-pair: %d trailing bits", r.Remaining())
+	}
+	return uint32(mmeID), uint32(enbID), nil
+}
+
+func decodeExactConstrainedWholeNumber(data []byte, lb, ub int64) (int64, error) {
+	r := aper.NewBitReader(data)
+	v, err := aper.DecodeConstrainedWholeNumber(r, lb, ub)
+	if err != nil {
+		return 0, err
+	}
+	if r.Remaining() != 0 {
+		return 0, fmt.Errorf("aper: constrained integer has %d trailing bits", r.Remaining())
+	}
+	return v, nil
 }
 
 // ── PLMN Identity ─────────────────────────────────────────────────────────────
@@ -485,10 +571,10 @@ func encodeBitRate(w *aper.BitWriter, bitrate uint64) {
 	if bitrate > maxBitRate {
 		bitrate = maxBitRate
 	}
-	// BitRate ::= INTEGER (0..10000000000) spans 34 bits. Inside the
-	// UEAggregateMaximumBitrate SEQUENCE, the constrained integer bits are
-	// packed directly after the SEQUENCE preamble bits.
-	w.WriteBits(bitrate, 34)
+	// BitRate ::= INTEGER (0..10000000000). This is a large constrained
+	// whole number in APER, so it carries the constrained integer length
+	// determinant before the non-negative-binary-integer value octets.
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(bitrate), 0, maxBitRate)
 }
 
 // EncodeUESecurityCapabilities encodes the UE Security Capabilities IE.
@@ -513,12 +599,11 @@ func encodeExtensibleFixed16AlgorithmBitString(w *aper.BitWriter, algsByte uint8
 	// BIT STRING (SIZE(16,...)). For the root SIZE(16) case APER emits the
 	// extension bit, no length determinant, and then the 16 value bits.
 	//
-	// srsRAN/Open5GS store these fixed bitstrings as two octets where the
-	// second octet is the low-order/spare byte and the first octet carries
-	// EEA/EIA0..7. Their APER packer writes the high stored octet first.
+	// Open5GS maps the NAS EEA/EIA bitmap into the high octet shifted left
+	// by one bit, leaving the S1AP spare bit clear.
 	w.WriteBit(0) // fixed-size root, no extension
-	w.WriteBits(0, 8)
-	w.WriteBits(uint64(algsByte), 8)
+	shifted := uint16(algsByte) << 1
+	w.WriteBits(uint64(shifted)<<8, 16)
 }
 
 // EncodeNASPDU encodes a NAS PDU IE value (OCTET STRING).

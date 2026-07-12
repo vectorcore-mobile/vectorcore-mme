@@ -4,7 +4,7 @@ import "fmt"
 
 // EncodeSecurityModeCommand encodes a NAS Security Mode Command.
 // intAlgID and encAlgID are the selected EIA/EEA algorithm IDs (0..7).
-// ueSecCap is the UE network capability IE echoed back.
+// ueSecCap is the replayed UE security capability IE value.
 func EncodeSecurityModeCommand(intAlgID, encAlgID uint8, ueSecCap []byte) []byte {
 	return EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID, ueSecCap, nil)
 }
@@ -34,6 +34,48 @@ func EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID uint8, ueSecCap, ha
 	}
 
 	return b
+}
+
+// ReplayedUESecurityCapabilityFromUENetworkCapability maps the Attach/TAU UE
+// network capability IE value into the Security Mode Command replayed UE
+// security capability IE value (TS 24.301 9.9.3.36).
+func ReplayedUESecurityCapabilityFromUENetworkCapability(ueNetCap []byte) []byte {
+	return ReplayedUESecurityCapability(ueNetCap, nil)
+}
+
+// ReplayedUESecurityCapability maps UE network capability and MS network
+// capability into the Security Mode Command replayed UE security capability IE.
+func ReplayedUESecurityCapability(ueNetCap, msNetCap []byte) []byte {
+	if len(ueNetCap) <= 2 {
+		return append([]byte(nil), ueNetCap...)
+	}
+
+	out := []byte{ueNetCap[0], ueNetCap[1]}
+
+	var uea, uia byte
+	if len(ueNetCap) >= 3 {
+		uea = ueNetCap[2]
+	}
+	if len(ueNetCap) >= 4 {
+		uia = ueNetCap[3] & 0x7f
+	}
+	if uea != 0 || uia != 0 {
+		out = append(out, uea, uia)
+	}
+	if gea := replayedGEAFromMSNetworkCapability(msNetCap); len(out) >= 4 && gea != 0 {
+		out = append(out, gea)
+	}
+
+	return out
+}
+
+func replayedGEAFromMSNetworkCapability(msNetCap []byte) byte {
+	if len(msNetCap) < 2 {
+		return 0
+	}
+	gea1 := (msNetCap[0] >> 7) & 0x01
+	gea2to7 := (msNetCap[1] >> 1) & 0x3f
+	return gea1<<6 | gea2to7
 }
 
 // SecurityModeComplete holds the decoded NAS Security Mode Complete.

@@ -248,8 +248,8 @@ func (s *Server) finishInterMMETAU(ue *uecontext.Context, log *zap.Logger, s10Ad
 	ue.S10OldMMETEID = 0
 	ue.Unlock()
 
-	// Send TAU Accept.
-	if err := s.sendTAUAccept(ue, log); err != nil {
+	// Send TAU Accept with a new local GUTI after inter-MME context import.
+	if err := s.sendTAUAcceptWithGUTIReallocation(ue, log, "inter_mme_tau"); err != nil {
 		log.Warn("s10: sendTAUAccept failed after context import", zap.Error(err))
 	}
 

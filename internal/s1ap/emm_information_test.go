@@ -95,11 +95,21 @@ func TestSendEMMInformation_Sent(t *testing.T) {
 	if got, want := gotNAS[0], byte(emm.PDEPSMobilityMgmt|(emm.SecurityHeaderIntegrityProtected<<4)); got != want {
 		t.Fatalf("security header byte got 0x%02x, want 0x%02x", got, want)
 	}
-	if got, want := gotNAS[5], byte(startDLCount+1); got != want {
+	if got, want := gotNAS[5], byte(startDLCount); got != want {
 		t.Fatalf("NAS sequence got %d, want %d", got, want)
 	}
+	ue.Lock()
+	if got, want := uint32(ue.DLNASCount), startDLCount+1; got != want {
+		ue.Unlock()
+		t.Fatalf("DL NAS count after send got %d, want %d", got, want)
+	}
+	if got, want := ue.LastDownlinkNASMessage, "EMM Information"; got != want {
+		ue.Unlock()
+		t.Fatalf("last downlink got %q, want %q", got, want)
+	}
+	ue.Unlock()
 	plain := gotNAS[6:]
-	if len(plain) < 3 || plain[2] != emm.MsgEMMInformation {
+	if len(plain) < 2 || plain[0] != 0x07 || plain[1] != emm.MsgEMMInformation {
 		t.Fatalf("plain NAS is not EMM Information: %x", plain)
 	}
 	wantPlain := emm.EncodeEMMInformation("Test Net", true, "TN", true, "gsm7", false, false, 0, 0)

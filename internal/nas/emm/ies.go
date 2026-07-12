@@ -41,6 +41,21 @@ type TAI struct {
 	TAC  uint16
 }
 
+// EPSNetworkFeatureSupport represents TS 24.301 §9.9.3.12A.
+type EPSNetworkFeatureSupport struct {
+	IMSVoiceOverPSSessionInS1Mode bool
+}
+
+// EncodeEPSNetworkFeatureSupport encodes IEI 0x64. The first feature octet uses
+// bit 1 for IMS voice over PS session in S1 mode; spare bits remain zero.
+func EncodeEPSNetworkFeatureSupport(s EPSNetworkFeatureSupport) []byte {
+	value := byte(0)
+	if s.IMSVoiceOverPSSessionInS1Mode {
+		value |= 0x01
+	}
+	return []byte{0x64, 0x01, value}
+}
+
 // Encode returns the 5-byte TAI encoding.
 func (t *TAI) Encode() []byte {
 	b := make([]byte, 5)

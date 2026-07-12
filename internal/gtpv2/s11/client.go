@@ -22,6 +22,9 @@ type ResultHandler interface {
 	HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionResponse, err error)
 	HandleMBRResult(mmeUEID uint32, err error)
 	HandleDSRResult(mmeUEID uint32, err error)
+	HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerRequest)
+	HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerRequest)
+	HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerRequest)
 }
 
 // pending is stored in the correlation maps.
@@ -153,6 +156,21 @@ func (c *Client) SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error 
 	return nil
 }
 
+func (c *Client) SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer) error {
+	buf := gtpv2.EncodeCreateBearerResponse(teid, seq, cause, bearers)
+	return c.sendResponse(buf, peer)
+}
+
+func (c *Client) SendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer) error {
+	buf := gtpv2.EncodeUpdateBearerResponse(teid, seq, cause, bearers)
+	return c.sendResponse(buf, peer)
+}
+
+func (c *Client) SendDeleteBearerResponse(peer string, teid uint32, seq uint32, cause uint8, ebis []uint8) error {
+	buf := gtpv2.EncodeDeleteBearerResponse(teid, seq, cause, ebis)
+	return c.sendResponse(buf, peer)
+}
+
 func (c *Client) send(buf []byte, remote string) error {
 	if remote == "" {
 		return fmt.Errorf("s11: missing selected SGW address")
@@ -160,6 +178,15 @@ func (c *Client) send(buf []byte, remote string) error {
 	sgwAddr, err := net.ResolveUDPAddr("udp", remote)
 	if err != nil {
 		return fmt.Errorf("s11: resolve selected SGW address %q: %w", remote, err)
+	}
+	_, err = c.conn.WriteToUDP(buf, sgwAddr)
+	return err
+}
+
+func (c *Client) sendResponse(buf []byte, remote string) error {
+	sgwAddr, err := net.ResolveUDPAddr("udp", remote)
+	if err != nil {
+		return fmt.Errorf("s11: resolve response peer %q: %w", remote, err)
 	}
 	_, err = c.conn.WriteToUDP(buf, sgwAddr)
 	return err
@@ -259,6 +286,102 @@ func (c *Client) dispatch(pkt []byte, remote *net.UDPAddr) {
 			c.handler.HandleMBRResult(p.mmeUEID,
 				fmt.Errorf("s11: MBRsp cause %d", cause))
 		}
+
+	case gtpv2.MsgCreateBearerRequest:
+		req, decErr := gtpv2.DecodeCreateBearerRequest(msg)
+		if decErr != nil {
+			c.log.Warn("s11: Create Bearer Request decode error",
+				zap.String("remote", remote.String()),
+				zap.Uint32("seq", msg.SeqNum),
+				zap.Uint32("teid", msg.TEID),
+				zap.String("raw_hex", hex.EncodeToString(pkt)),
+				zap.Error(decErr))
+			resp := gtpv2.EncodeCreateBearerResponse(msg.TEID, msg.SeqNum, gtpv2.CauseInvalidMsgFormat, nil)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			return
+		}
+		fields := []zap.Field{
+			zap.String("remote", remote.String()),
+			zap.Uint32("seq", req.SeqNum),
+			zap.Uint32("teid", req.TEID),
+			zap.Uint8("linked_ebi", req.LinkedEBI),
+			zap.Int("bearer_count", len(req.Bearers)),
+		}
+		for i, b := range req.Bearers {
+			fields = append(fields,
+				zap.Uint8(fmt.Sprintf("bearer_%d_ebi", i), b.EBI),
+				zap.Uint8(fmt.Sprintf("bearer_%d_qci", i), b.QCI),
+				zap.Uint32(fmt.Sprintf("bearer_%d_sgw_s1u_teid", i), b.SGWS1UTEID),
+				zap.String(fmt.Sprintf("bearer_%d_tft_hex", i), hex.EncodeToString(b.TFT)))
+		}
+		c.log.Info("s11: Create Bearer Request received", fields...)
+		if c.handler == nil {
+			resp := gtpv2.EncodeCreateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			metrics.S11MessagesTotal.WithLabelValues("create_bearer", "rejected").Inc()
+			return
+		}
+		c.handler.HandleCreateBearerRequest(remote.String(), req)
+
+	case gtpv2.MsgUpdateBearerRequest:
+		req, decErr := gtpv2.DecodeUpdateBearerRequest(msg)
+		if decErr != nil {
+			c.log.Warn("s11: Update Bearer Request decode error",
+				zap.String("remote", remote.String()),
+				zap.Uint32("seq", msg.SeqNum),
+				zap.Uint32("teid", msg.TEID),
+				zap.String("raw_hex", hex.EncodeToString(pkt)),
+				zap.Error(decErr))
+			resp := gtpv2.EncodeUpdateBearerResponse(msg.TEID, msg.SeqNum, gtpv2.CauseInvalidMsgFormat, nil)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			return
+		}
+		fields := []zap.Field{
+			zap.String("remote", remote.String()),
+			zap.Uint32("seq", req.SeqNum),
+			zap.Uint32("teid", req.TEID),
+			zap.Int("bearer_count", len(req.Bearers)),
+		}
+		for i, b := range req.Bearers {
+			fields = append(fields,
+				zap.Uint8(fmt.Sprintf("bearer_%d_ebi", i), b.EBI),
+				zap.Uint8(fmt.Sprintf("bearer_%d_qci", i), b.QCI),
+				zap.String(fmt.Sprintf("bearer_%d_tft_hex", i), hex.EncodeToString(b.TFT)))
+		}
+		c.log.Info("s11: Update Bearer Request received", fields...)
+		if c.handler == nil {
+			resp := gtpv2.EncodeUpdateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			metrics.S11MessagesTotal.WithLabelValues("update_bearer", "rejected").Inc()
+			return
+		}
+		c.handler.HandleUpdateBearerRequest(remote.String(), req)
+
+	case gtpv2.MsgDeleteBearerRequest:
+		req, decErr := gtpv2.DecodeDeleteBearerRequest(msg)
+		if decErr != nil {
+			c.log.Warn("s11: Delete Bearer Request decode error",
+				zap.String("remote", remote.String()),
+				zap.Uint32("seq", msg.SeqNum),
+				zap.Uint32("teid", msg.TEID),
+				zap.String("raw_hex", hex.EncodeToString(pkt)),
+				zap.Error(decErr))
+			resp := gtpv2.EncodeDeleteBearerResponse(msg.TEID, msg.SeqNum, gtpv2.CauseInvalidMsgFormat, nil)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			return
+		}
+		c.log.Info("s11: Delete Bearer Request received",
+			zap.String("remote", remote.String()),
+			zap.Uint32("seq", req.SeqNum),
+			zap.Uint32("teid", req.TEID),
+			zap.Uint8s("ebis", req.EBIs))
+		if c.handler == nil {
+			resp := gtpv2.EncodeDeleteBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.EBIs)
+			_, _ = c.conn.WriteToUDP(resp, remote)
+			metrics.S11MessagesTotal.WithLabelValues("delete_bearer", "rejected").Inc()
+			return
+		}
+		c.handler.HandleDeleteBearerRequest(remote.String(), req)
 
 	case gtpv2.MsgDeleteSessionResponse:
 		v, ok := c.pendingDSR.LoadAndDelete(msg.SeqNum)

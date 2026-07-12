@@ -174,6 +174,9 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	ue.Lock()
 	ue.ENBS1APID = enbUEID
 	ue.ENBGlobalID = remoteAddr
+	ue.S1BindingGeneration++
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.S1ReleasePending = false
 	if emmTAI := taiFromIE(tai); emmTAI != nil {
 		ue.TAI = emmTAI
 	}
@@ -185,7 +188,7 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	log.Info("nas: idle TAU: UE found, sending TAU Accept",
 		zap.Uint32("mme_ue_id", mmeUEID))
 
-	if err := s.sendTAUAccept(ue, log); err != nil {
+	if err := s.sendTAUAcceptForRequest(ue, log, tauReq); err != nil {
 		log.Warn("nas: idle TAU: sendTAUAccept failed", zap.Error(err))
 		return
 	}
@@ -212,6 +215,7 @@ func (s *Server) processTrackingAreaUpdate(ue *uecontext.Context, inner []byte, 
 	ue.Lock()
 	mmeUEID := ue.MMEUES1APID
 	tai := ue.TAI
+	releaseWasPending := ue.S1ReleasePending
 	ue.Unlock()
 
 	if tai != nil && !s.validateTAI(tai) {
@@ -223,19 +227,36 @@ func (s *Server) processTrackingAreaUpdate(ue *uecontext.Context, inner []byte, 
 
 	ue.Lock()
 	ue.SetEMMState(emm.StateTrackingAreaUpdating)
+	if ue.S1ReleasePending {
+		oldGeneration := ue.S1BindingGeneration
+		ue.S1BindingGeneration++
+		ue.S1BindingState = uecontext.S1BindingActive
+		ue.S1ReleasePending = false
+		log.Info("nas: connected TAU received during S1 release; preserving binding",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint64("old_binding_generation", oldGeneration),
+			zap.Uint64("binding_generation", ue.S1BindingGeneration),
+			zap.String("selected_resolution", "release_cancelled_process_tau"),
+			zap.Bool("release_cancelled", true),
+			zap.Bool("binding_preserved", true))
+	}
 	ue.Unlock()
 
 	log.Info("nas: connected TAU: sending TAU Accept",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint8("update_type", tauReq.EPSUpdateType))
 
-	if err := s.sendTAUAccept(ue, log); err != nil {
+	if err := s.sendTAUAcceptForRequest(ue, log, tauReq); err != nil {
+		ue.Lock()
+		ue.SetEMMState(emm.StateRegistered)
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.Unlock()
 		return err
 	}
 	ue.Lock()
 	step := ue.AttachStep
 	ue.Unlock()
-	if step == uecontext.AttachStepNone &&
+	if step == uecontext.AttachStepNone && !releaseWasPending &&
 		s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU {
 		go s.sendEMMInformation(mmeUEID, "tau", log)
 	}
@@ -245,6 +266,9 @@ func (s *Server) processTrackingAreaUpdate(ue *uecontext.Context, inner []byte, 
 // processTAUComplete handles a TAU Complete from the UE after GUTI reallocation.
 func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) error {
 	ue.Lock()
+	oldGUTI := ue.PendingOldGUTI
+	pendingGUTI := ue.PendingGUTI
+	reallocPending := ue.GUTIReallocPending
 	ue.SetEMMState(emm.StateRegistered)
 	ue.AttachStep = uecontext.AttachStepNone
 	ue.StopTimer(uecontext.TimerT3450)
@@ -253,6 +277,25 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 	imsi := ue.IMSI
 
 	ue.Unlock()
+
+	if reallocPending && pendingGUTI != nil {
+		s.ueManager.UpdateGUTI(ue, pendingGUTI)
+		s.ueManager.RemoveGUTIAlias(ue, oldGUTI)
+		ue.Lock()
+		ue.PendingOldGUTI = nil
+		ue.PendingGUTI = nil
+		ue.GUTIReallocPending = false
+		ue.GUTIReallocRetry = 0
+		ue.GUTIReallocStartedAt = time.Time{}
+		ue.PendingTAUAcceptNAS = nil
+		ue.Unlock()
+		log.Info("nas: TAU GUTI reallocation committed",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("old_guti", serialiseGUTIForLog(oldGUTI)),
+			zap.String("new_guti", serialiseGUTIForLog(pendingGUTI)),
+			zap.Bool("database_updated", true))
+	}
 
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "complete").Inc()
 	log.Info("nas: TAU Complete: UE re-registered",
@@ -267,10 +310,47 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 	return nil
 }
 
+type tauAcceptOptions struct {
+	ReallocateGUTI     bool
+	ReallocationReason string
+	UpdateResult       uint8
+}
+
 // sendTAUAccept builds and sends a security-protected TAU Accept to the UE.
-// If a GUTI allocator is configured, a new GUTI is assigned and the UE is
-// moved to AttachStepWaitingTAUComplete (waiting for TAU Complete).
+// Same-MME TAU does not reallocate GUTI by default; when no GUTI is included,
+// TAU completes when the TAU Accept is sent and no TAU Complete is expected.
 func (s *Server) sendTAUAccept(ue *uecontext.Context, log *zap.Logger) error {
+	return s.sendTAUAcceptWithOptions(ue, log, tauAcceptOptions{
+		ReallocateGUTI:     s.operCfg.TAU.ReallocateGUTI,
+		ReallocationReason: "same_mme_policy",
+		UpdateResult:       emm.EPSUpdateResultTAUpdated,
+	})
+}
+
+func (s *Server) sendTAUAcceptWithGUTIReallocation(ue *uecontext.Context, log *zap.Logger, reason string) error {
+	if reason == "" {
+		reason = "explicit"
+	}
+	return s.sendTAUAcceptWithOptions(ue, log, tauAcceptOptions{
+		ReallocateGUTI:     true,
+		ReallocationReason: reason,
+		UpdateResult:       emm.EPSUpdateResultTAUpdated,
+	})
+}
+
+func (s *Server) sendTAUAcceptForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) error {
+	updateResult := emm.EPSUpdateResultTAUpdated
+	if req != nil {
+		updateResult = tauAcceptResultForRequest(req.EPSUpdateType)
+	}
+	return s.sendTAUAcceptWithOptions(ue, log, tauAcceptOptions{
+		ReallocateGUTI:     s.operCfg.TAU.ReallocateGUTI,
+		ReallocationReason: "same_mme_policy",
+		UpdateResult:       updateResult,
+	})
+}
+
+func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger, opts tauAcceptOptions) error {
 	ue.Lock()
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
@@ -278,28 +358,32 @@ func (s *Server) sendTAUAccept(ue *uecontext.Context, log *zap.Logger) error {
 	knasEnc := append([]byte(nil), ue.KNASenc...)
 	tai := ue.TAI
 	mmeUEID := ue.MMEUES1APID
+	oldGUTI := cloneGUTI(ue.GUTI)
+	existingPending := cloneGUTI(ue.PendingGUTI)
+	reallocPending := ue.GUTIReallocPending
+	dlCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
 	hasKeys := len(knasInt) > 0
 
-	// Allocate a new GUTI when we have a security context (so the GUTI reallocation
-	// is authenticated via TAU Complete).
+	// Allocate a new GUTI only when policy/procedure explicitly requests it.
+	// A same-MME TAU does not require GUTI reallocation, and forcing it causes
+	// unnecessary TAU Complete dependency on ordinary idle returns.
 	var newGUTI *emm.GUTI
-	if s.gutiAlloc != nil && hasKeys {
-		newGUTI = s.gutiAlloc.Allocate()
+	if opts.ReallocateGUTI && s.gutiAlloc != nil && hasKeys {
+		if existingPending != nil {
+			newGUTI = existingPending
+		} else {
+			allocated, err := s.gutiAlloc.AllocateUnique(func(g *emm.GUTI) bool {
+				_, ok := s.ueManager.GetByGUTI(uecontext.SerialiseGUTI(g))
+				return ok
+			})
+			if err != nil {
+				return fmt.Errorf("sendTAUAccept: allocate GUTI: %w", err)
+			}
+			newGUTI = allocated
+		}
 	}
-
-	ue.Lock()
-	if newGUTI != nil {
-		// Don't set ue.GUTI here — UpdateGUTI (called after encoding) sets it
-		// and removes the old GUTI index entry atomically.
-		ue.AttachStep = uecontext.AttachStepWaitingTAUComplete
-	} else {
-		ue.SetEMMState(emm.StateRegistered)
-		ue.AttachStep = uecontext.AttachStepNone
-	}
-	dlCount := ue.IncrementDLCount()
-	ue.Unlock()
 
 	// Build TAI list from config (fall back to UE's stored TAI)
 	var taiList []emm.TAI
@@ -316,7 +400,14 @@ func (s *Server) sendTAUAccept(ue *uecontext.Context, log *zap.Logger) error {
 		taiList = []emm.TAI{*tai}
 	}
 
-	tauAcceptPDU := emm.EncodeTAUAccept(0x00, 0x21, taiList, newGUTI)
+	tauAcceptPDU := emm.EncodeTAUAcceptWithParams(emm.TAUAcceptParams{
+		UpdateResult:             opts.UpdateResult,
+		T3412:                    0x21,
+		TAIList:                  taiList,
+		IncludeGUTI:              newGUTI != nil,
+		GUTI:                     newGUTI,
+		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
+	})
 
 	var toSend []byte
 	var encErr error
@@ -335,28 +426,183 @@ func (s *Server) sendTAUAccept(ue *uecontext.Context, log *zap.Logger) error {
 		toSend = tauAcceptPDU
 	}
 
+	log.Info("nas: TAU Accept encoded",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("update_result", opts.UpdateResult),
+		zap.Bool("guti_included", newGUTI != nil),
+		zap.String("old_guti", serialiseGUTIForLog(oldGUTI)),
+		zap.String("pending_new_guti", serialiseGUTIForLog(newGUTI)),
+		zap.String("reallocation_reason", opts.ReallocationReason),
+		zap.Bool("ims_voice_over_ps_configured", s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS),
+		zap.Bool("ims_voice_over_ps_advertised", s.epsNetworkFeatureSupport() != nil),
+		zap.String("eps_network_feature_support_hex", fmt.Sprintf("%x", encodeFeatureSupportForLog(s.epsNetworkFeatureSupport()))),
+		zap.String("plain_tau_accept_hex", fmt.Sprintf("%x", tauAcceptPDU)),
+		zap.String("protected_tau_accept_hex", fmt.Sprintf("%x", toSend)),
+		zap.Uint32("dl_count", dlCount),
+		zap.Bool("t3450_started", false))
+
 	if err := s.SendDownlinkNAS(mmeUEID, toSend); err != nil {
 		return fmt.Errorf("sendTAUAccept: send: %w", err)
 	}
 
-	// Start T3450 when waiting for TAU Complete (GUTI reallocation in progress)
+	var oldAlias *emm.GUTI
+	var pendingAlias *emm.GUTI
+	var retry int
+	ue.Lock()
+	ue.DLNASCount.Increment()
 	if newGUTI != nil {
-		ue.Lock()
+		if !reallocPending {
+			ue.PendingOldGUTI = cloneGUTI(oldGUTI)
+			ue.PendingGUTI = cloneGUTI(newGUTI)
+			ue.GUTIReallocPending = true
+			ue.GUTIReallocRetry = 0
+			ue.GUTIReallocStartedAt = time.Now()
+		} else {
+			ue.GUTIReallocRetry++
+		}
+		ue.AttachStep = uecontext.AttachStepWaitingTAUComplete
+		ue.PendingTAUAcceptNAS = append(ue.PendingTAUAcceptNAS[:0], toSend...)
 		ue.StartTimer(uecontext.TimerT3450, 6*time.Second, func() {
-			log.Warn("nas: T3450 expired: TAU Complete not received",
-				zap.Uint32("mme_ue_id", mmeUEID))
+			s.retransmitPendingTAUAccept(ue, log)
 		})
-		ue.Unlock()
+		oldAlias = cloneGUTI(ue.PendingOldGUTI)
+		pendingAlias = cloneGUTI(ue.PendingGUTI)
+		retry = ue.GUTIReallocRetry
+	} else {
+		ue.SetEMMState(emm.StateRegistered)
+		ue.AttachStep = uecontext.AttachStepNone
+	}
+	ue.Unlock()
 
-		// Update GUTI index outside the context lock
-		s.ueManager.UpdateGUTI(ue, newGUTI)
+	if newGUTI != nil {
+		s.ueManager.AddGUTIAlias(ue, oldAlias)
+		s.ueManager.AddGUTIAlias(ue, pendingAlias)
+		log.Info("nas: TAU GUTI reallocation pending",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("old_guti", serialiseGUTIForLog(oldAlias)),
+			zap.String("pending_new_guti", serialiseGUTIForLog(pendingAlias)),
+			zap.String("primary_guti", serialiseGUTIForLog(oldAlias)),
+			zap.Bool("old_alias_present", s.ueManager.GUTIAliasPresent(ue, oldAlias)),
+			zap.Bool("new_alias_present", s.ueManager.GUTIAliasPresent(ue, pendingAlias)),
+			zap.String("tau_state", "waiting_tau_complete"),
+			zap.Int("t3450_retry_count", retry))
 	}
 
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "accept").Inc()
 	log.Info("nas: TAU Accept sent",
 		zap.Uint32("mme_ue_id", mmeUEID),
-		zap.Bool("guti_realloc", newGUTI != nil))
+		zap.Bool("guti_realloc", newGUTI != nil),
+		zap.Bool("send_success", true),
+		zap.Bool("t3450_started", newGUTI != nil))
 	return nil
+}
+
+func tauAcceptResultForRequest(updateType uint8) uint8 {
+	switch updateType {
+	case emm.EPSUpdateTypeCombined, emm.EPSUpdateTypeCombinedIMSIAttach:
+		return emm.EPSUpdateResultCombinedTALAUpdated
+	default:
+		return emm.EPSUpdateResultTAUpdated
+	}
+}
+
+func (s *Server) retransmitPendingTAUAccept(ue *uecontext.Context, log *zap.Logger) {
+	ue.Lock()
+	if !ue.GUTIReallocPending || len(ue.PendingTAUAcceptNAS) == 0 {
+		ue.Unlock()
+		return
+	}
+	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	enbAddr := ue.ENBGlobalID
+	bindingGeneration := ue.S1BindingGeneration
+	bindingState := ue.S1BindingState
+	if enbAddr == "" {
+		oldGUTI := cloneGUTI(ue.PendingOldGUTI)
+		pendingGUTI := cloneGUTI(ue.PendingGUTI)
+		ue.SetEMMState(emm.StateRegistered)
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.GUTIReallocPending = false
+		ue.GUTIReallocRetry = 0
+		ue.GUTIReallocStartedAt = time.Time{}
+		ue.PendingOldGUTI = nil
+		ue.PendingGUTI = nil
+		ue.PendingTAUAcceptNAS = nil
+		ue.Unlock()
+		s.ueManager.RemoveGUTIAlias(ue, pendingGUTI)
+		s.ueManager.AddGUTIAlias(ue, oldGUTI)
+		log.Warn("nas: T3450 expired without valid S1 binding; TAU GUTI reallocation rolled back",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("old_guti", serialiseGUTIForLog(oldGUTI)),
+			zap.String("pending_new_guti", serialiseGUTIForLog(pendingGUTI)),
+			zap.Bool("valid_s1_binding", false),
+			zap.Uint64("binding_generation", bindingGeneration),
+			zap.String("binding_state", bindingState.String()),
+			zap.Bool("retransmission_attempted", false),
+			zap.String("rollback_reason", "no_s1_binding"),
+			zap.Bool("s11_delete_required", false))
+		return
+	}
+	retry := ue.GUTIReallocRetry + 1
+	pdu := append([]byte(nil), ue.PendingTAUAcceptNAS...)
+	oldGUTI := cloneGUTI(ue.PendingOldGUTI)
+	pendingGUTI := cloneGUTI(ue.PendingGUTI)
+	ue.GUTIReallocRetry = retry
+	if retry >= 5 {
+		ue.SetEMMState(emm.StateRegistered)
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.GUTIReallocPending = false
+		ue.GUTIReallocRetry = 0
+		ue.GUTIReallocStartedAt = time.Time{}
+		ue.PendingOldGUTI = nil
+		ue.PendingGUTI = nil
+		ue.PendingTAUAcceptNAS = nil
+		ue.Unlock()
+		s.ueManager.RemoveGUTIAlias(ue, pendingGUTI)
+		s.ueManager.AddGUTIAlias(ue, oldGUTI)
+		log.Warn("nas: T3450 retry exhausted; TAU GUTI reallocation rolled back",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("old_guti", serialiseGUTIForLog(oldGUTI)),
+			zap.String("pending_new_guti", serialiseGUTIForLog(pendingGUTI)),
+			zap.Bool("s11_delete_required", false))
+		return
+	}
+	ue.StartTimer(uecontext.TimerT3450, 6*time.Second, func() {
+		s.retransmitPendingTAUAccept(ue, log)
+	})
+	ue.Unlock()
+
+	if err := s.SendDownlinkNAS(mmeUEID, pdu); err != nil {
+		log.Warn("nas: T3450 expired: TAU Accept retransmission failed",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.Int("t3450_retry_count", retry),
+			zap.Error(err))
+		return
+	}
+	log.Warn("nas: T3450 expired: TAU Accept retransmitted",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.String("old_guti", serialiseGUTIForLog(oldGUTI)),
+		zap.String("pending_new_guti", serialiseGUTIForLog(pendingGUTI)),
+		zap.Int("t3450_retry_count", retry))
+}
+
+func cloneGUTI(g *emm.GUTI) *emm.GUTI {
+	if g == nil {
+		return nil
+	}
+	c := *g
+	return &c
+}
+
+func serialiseGUTIForLog(g *emm.GUTI) string {
+	if g == nil {
+		return ""
+	}
+	return uecontext.SerialiseGUTI(g)
 }
 
 // sendTAUReject sends a plain TAU Reject to the UE identified by mmeUEID.

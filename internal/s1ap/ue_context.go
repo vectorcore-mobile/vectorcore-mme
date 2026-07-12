@@ -63,23 +63,30 @@ func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ie
 		emmState := ue.EMMState
 		currentENB := ue.ENBGlobalID
 		imsi := ue.IMSI
-		if emmState == emm.StateRegistered && (currentENB == "" || currentENB == remoteAddr) {
-			ue.StopAllTimers()
-			ue.SetECMState(emm.ECMIdle)
+		preserveEPS := emmState == emm.StateRegistered ||
+			emmState == emm.StateTrackingAreaUpdating ||
+			emmState == emm.StateServiceRequestInitiated
+		if preserveEPS && (currentENB == "" || currentENB == remoteAddr) {
+			if emmState != emm.StateTrackingAreaUpdating {
+				ue.StopAllTimers()
+			}
+			ue.LastReleaseCause = ies.CauseName(causeGroup, causeValue)
 			ue.S1ReleasePending = true
 			ue.S1ReleaseENBID = enbUEID
 			ue.S1ReleaseENBAddr = remoteAddr
-			ue.ENBS1APID = 0
-			ue.ENBGlobalID = ""
-			ue.ENBU_TEID = 0
-			ue.ENBU_IP = nil
+			ue.S1ReleaseGeneration = ue.S1BindingGeneration
+			ue.S1BindingState = uecontext.S1BindingReleasePending
+			bindingGeneration := ue.S1BindingGeneration
 			ue.Unlock()
 
-			s.log.Info("s1ap: UE going ECM-IDLE (release request)",
+			s.log.Info("s1ap: UE S1 release pending",
 				zap.String("remote", remoteAddr),
 				zap.Uint32("mme_ue_id", mmeUEID),
 				zap.Uint32("enb_ue_id", enbUEID),
-				zap.String("imsi", imsi))
+				zap.String("imsi", imsi),
+				zap.Uint64("binding_generation", bindingGeneration),
+				zap.String("binding_state", uecontext.S1BindingReleasePending.String()),
+				zap.Bool("binding_preserved", true))
 			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
 		} else {
 			ue.Unlock()
@@ -124,21 +131,43 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 	ue.Lock()
 	emmState := ue.EMMState
 	imsi := ue.IMSI
-	ue.StopAllTimers()
+	if emmState != emm.StateTrackingAreaUpdating {
+		ue.StopAllTimers()
+	}
 
 	switch emmState {
-	case emm.StateRegistered:
+	case emm.StateRegistered, emm.StateTrackingAreaUpdating, emm.StateServiceRequestInitiated:
+		if ue.S1ReleaseGeneration != 0 && ue.S1ReleaseGeneration != ue.S1BindingGeneration {
+			releaseGeneration := ue.S1ReleaseGeneration
+			currentGeneration := ue.S1BindingGeneration
+			currentENB := ue.ENBGlobalID
+			currentENBUEID := ue.ENBS1APID
+			ue.S1ReleasePending = false
+			ue.S1ReleaseENBID = 0
+			ue.S1ReleaseENBAddr = ""
+			ue.S1ReleaseGeneration = 0
+			ue.Unlock()
+			log.Info("s1ap: stale UE Context Release Complete ignored for old S1 binding",
+				zap.Uint64("release_generation", releaseGeneration),
+				zap.Uint64("binding_generation", currentGeneration),
+				zap.String("current_enb", currentENB),
+				zap.Uint32("current_enb_ue_id", currentENBUEID))
+			return
+		}
 		if ue.S1ReleasePending &&
 			ue.S1ReleaseENBAddr == remoteAddr &&
 			(enbUEID == 0 || ue.S1ReleaseENBID == 0 || enbUEID == ue.S1ReleaseENBID) {
 			ue.S1ReleasePending = false
 			ue.S1ReleaseENBID = 0
 			ue.S1ReleaseENBAddr = ""
+			ue.S1ReleaseGeneration = 0
 			if ue.ENBGlobalID != "" && (ue.ENBGlobalID != remoteAddr || (enbUEID != 0 && ue.ENBS1APID != enbUEID)) {
+				currentENB := ue.ENBGlobalID
+				currentENBUEID := ue.ENBS1APID
 				ue.Unlock()
 				log.Info("s1ap: stale UE Context Release Complete acknowledged old access context",
-					zap.String("current_enb", ue.ENBGlobalID),
-					zap.Uint32("current_enb_ue_id", ue.ENBS1APID))
+					zap.String("current_enb", currentENB),
+					zap.Uint32("current_enb_ue_id", currentENBUEID))
 				return
 			}
 		}
@@ -147,14 +176,16 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		// already connected to the target — clobbering ENBGlobalID here would break DL NAS
 		// and make PageUE think the UE is idle while it's actually connected to the target.
 		if ue.ENBGlobalID != "" && ue.ENBGlobalID != remoteAddr {
+			currentENB := ue.ENBGlobalID
 			ue.Unlock()
 			log.Info("s1ap: stale UE Context Release Complete (post-HO source), ignoring",
-				zap.String("current_enb", ue.ENBGlobalID),
+				zap.String("current_enb", currentENB),
 				zap.String("release_from", remoteAddr))
 			return
 		}
 		// UE released S1 without detaching — keep context as ECM-IDLE so it can be paged.
 		ue.SetECMState(emm.ECMIdle)
+		releaseCause := ue.LastReleaseCause
 		ue.ENBS1APID = 0
 		ue.ENBGlobalID = "" // must be cleared: handleDisconnect matches on this field
 		ue.ENBU_TEID = 0
@@ -162,9 +193,14 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		ue.S1ReleasePending = false
 		ue.S1ReleaseENBID = 0
 		ue.S1ReleaseENBAddr = ""
+		ue.S1ReleaseGeneration = 0
+		ue.S1BindingState = uecontext.S1BindingReleased
 		ue.Unlock()
 
-		log.Info("s1ap: UE going ECM-IDLE (registered)", zap.String("imsi", imsi))
+		log.Info("s1ap: UE going ECM-IDLE (registered)",
+			zap.String("imsi", imsi),
+			zap.String("last_release_cause", releaseCause),
+			zap.Bool("s1_connected", false))
 		metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "inbound", "idle").Inc()
 
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
@@ -584,17 +620,8 @@ func (s *Server) sendUEContextReleaseCommandCause(enbAddr string, mmeUEID, enbUE
 }
 
 // encodeUES1APIDs encodes the UE-S1AP-IDs CHOICE (pair form) per APER X.691.
-// CHOICE with extension marker: ext=0 (1 bit), index=0 (1 bit), then byte-align.
-// SEQUENCE preamble: ext=0 (1 bit), then byte-align.
-// MME-UE-S1AP-ID (0..4294967295) + ENB-UE-S1AP-ID (0..16777215).
+// CHOICE and SEQUENCE preamble bits are packed continuously; do not byte-align
+// between the CHOICE selector and the selected UE-S1AP-ID-pair value.
 func encodeUES1APIDs(mmeUEID, enbUEID uint32) []byte {
-	w := aper.NewBitWriter()
-	w.WriteBit(0) // CHOICE: no extension
-	w.WriteBit(0) // CHOICE: index = 0 (uE-S1AP-ID-pair)
-	w.AlignToByte()
-	w.WriteBit(0) // SEQUENCE: no extension
-	w.AlignToByte()
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(mmeUEID), 0, 4294967295)
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(enbUEID), 0, 16777215)
-	return w.Bytes()
+	return ies.EncodeUES1APIDPair(mmeUEID, enbUEID)
 }

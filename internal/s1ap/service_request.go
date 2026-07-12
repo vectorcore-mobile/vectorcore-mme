@@ -181,6 +181,9 @@ func (s *Server) handleServiceRequest(
 	// to increment the paging-success metric, then clears it.
 	realUE.ENBS1APID = enbUEID
 	realUE.ENBGlobalID = enbAddr
+	realUE.S1BindingGeneration++
+	realUE.S1BindingState = uecontext.S1BindingActive
+	realUE.S1ReleasePending = false
 	if tai != nil {
 		plmnBytes, _ := ies.EncodePLMN(tai.MCC, tai.MNC)
 		t := emm.TAI{TAC: tai.TAC}
@@ -336,6 +339,7 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 	log.Info("s1ap: Service Request re-established", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
 
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateRecovered, "ESTABLISHED")
+	s.ResumePendingNetworkBearerProcedures(ue)
 
 	if mbrSGWCTEID != 0 && mbrEBI != 0 && mbrENBUTEID != 0 {
 		mbr := &gtpv2.ModifyBearerRequest{

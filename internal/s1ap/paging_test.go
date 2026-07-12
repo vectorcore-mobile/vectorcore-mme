@@ -435,7 +435,7 @@ func TestUEContextRelease_GoesIdle(t *testing.T) {
 	}
 }
 
-func TestUEContextReleaseRequest_GoesIdleBeforeComplete(t *testing.T) {
+func TestUEContextReleaseRequest_MarksReleasePendingBeforeComplete(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)
 
@@ -483,28 +483,32 @@ func TestUEContextReleaseRequest_GoesIdleBeforeComplete(t *testing.T) {
 	enbuTEID := found.ENBU_TEID
 	releasePending := found.S1ReleasePending
 	releaseENBID := found.S1ReleaseENBID
+	bindingState := found.S1BindingState
 	found.Unlock()
 
 	if emmState != emm.StateRegistered {
 		t.Errorf("EMMState: got %v, want StateRegistered", emmState)
 	}
-	if ecmState != emm.ECMIdle {
-		t.Errorf("ECMState: got %v, want ECMIdle", ecmState)
+	if ecmState != emm.ECMConnected {
+		t.Errorf("ECMState: got %v, want ECMConnected while release is pending", ecmState)
 	}
 	if sgwcTEID != 0xABCD0001 {
 		t.Errorf("SGWC_TEID should be preserved: got %#x", sgwcTEID)
 	}
-	if enbUEID != 0 {
-		t.Errorf("ENBS1APID should be cleared: got %d", enbUEID)
+	if enbUEID != 1 {
+		t.Errorf("ENBS1APID should be preserved while release is pending: got %d", enbUEID)
 	}
-	if enbGlobalID != "" {
-		t.Errorf("ENBGlobalID should be cleared: got %q", enbGlobalID)
+	if enbGlobalID != addr {
+		t.Errorf("ENBGlobalID should be preserved while release is pending: got %q", enbGlobalID)
 	}
-	if enbuTEID != 0 {
-		t.Errorf("ENBU_TEID should be cleared: got %#x", enbuTEID)
+	if enbuTEID != 0x00000001 {
+		t.Errorf("ENBU_TEID should be preserved while release is pending: got %#x", enbuTEID)
 	}
 	if !releasePending {
 		t.Error("S1ReleasePending should be true until UE Context Release Complete")
+	}
+	if bindingState != uecontext.S1BindingReleasePending {
+		t.Errorf("S1BindingState: got %s, want %s", bindingState, uecontext.S1BindingReleasePending)
 	}
 	if releaseENBID != 1 {
 		t.Errorf("S1ReleaseENBID: got %d, want 1", releaseENBID)
