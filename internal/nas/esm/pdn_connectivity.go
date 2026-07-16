@@ -39,6 +39,13 @@ type ESMInformationResponse struct {
 	PCO                    []byte
 }
 
+type PDNDisconnectRequest struct {
+	EPSBearerID            uint8
+	ProcedureTransactionID uint8
+	LinkedEPSBearerID      uint8
+	PCO                    []byte
+}
+
 // DecodePDNConnectivityRequest decodes a PDN Connectivity Request from the ESM container.
 func DecodePDNConnectivityRequest(data []byte) *PDNConnectivityRequest {
 	if len(data) < 3 {
@@ -164,6 +171,51 @@ func DecodeESMInformationResponse(data []byte) (*ESMInformationResponse, error) 
 	return resp, nil
 }
 
+func DecodePDNDisconnectRequest(data []byte) (*PDNDisconnectRequest, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("esm: PDN Disconnect Request too short: %d", len(data))
+	}
+	if data[0]&0x0f != PDEPSSessionMgmt {
+		return nil, fmt.Errorf("esm: unexpected protocol discriminator %d", data[0]&0x0f)
+	}
+	if data[2] != MsgPDNDisconnectRequest {
+		return nil, fmt.Errorf("esm: unexpected message type %#x", data[2])
+	}
+	req := &PDNDisconnectRequest{
+		EPSBearerID:            data[0] >> 4,
+		ProcedureTransactionID: data[1],
+		LinkedEPSBearerID:      data[3] & 0x0f,
+	}
+	for i := 4; i < len(data); {
+		iei := data[i]
+		i++
+		switch iei {
+		case 0x27:
+			if i >= len(data) {
+				return nil, fmt.Errorf("esm: truncated PCO length")
+			}
+			pcoLen := int(data[i])
+			i++
+			if i+pcoLen > len(data) {
+				return nil, fmt.Errorf("esm: truncated PCO value")
+			}
+			req.PCO = append([]byte(nil), data[i:i+pcoLen]...)
+			i += pcoLen
+		default:
+			if i >= len(data) {
+				return nil, fmt.Errorf("esm: truncated optional IE %#x", iei)
+			}
+			ieLen := int(data[i])
+			i++
+			if i+ieLen > len(data) {
+				return nil, fmt.Errorf("esm: optional IE %#x truncated", iei)
+			}
+			i += ieLen
+		}
+	}
+	return req, nil
+}
+
 // DecodeActivateDefaultEPSBearerContextAccept decodes an ESM Activate Default EPS Bearer
 // Context Accept from an Attach Complete ESM message container.
 func DecodeActivateDefaultEPSBearerContextAccept(data []byte) (*ActivateDefaultEPSBearerContextAccept, error) {
@@ -218,6 +270,15 @@ func EncodePDNConnectivityReject(pti uint8, cause uint8) []byte {
 		PDEPSSessionMgmt, // PD = ESM, bearer ID = 0
 		pti,              // Procedure Transaction ID
 		MsgPDNConnectivityReject,
+		cause,
+	}
+}
+
+func EncodePDNDisconnectReject(pti uint8, cause uint8) []byte {
+	return []byte{
+		PDEPSSessionMgmt, // PD = ESM, bearer ID = 0
+		pti,
+		MsgPDNDisconnectReject,
 		cause,
 	}
 }

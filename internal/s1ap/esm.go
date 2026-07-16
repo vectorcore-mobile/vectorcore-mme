@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sort"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -15,8 +17,30 @@ import (
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
+
+func canonicalizeRequestedAPN(requestedAPN string, ue *uecontext.Context) (canonical string, cfg uecontext.SubscriberAPNConfig, authorized bool) {
+	if requestedAPN == "" {
+		return "", uecontext.SubscriberAPNConfig{}, false
+	}
+	if ue.SubscriberAPNConfigs == nil {
+		if strings.EqualFold(requestedAPN, ue.APN) {
+			return ue.APN, uecontext.SubscriberAPNConfig{ServiceSelection: ue.APN}, true
+		}
+		return requestedAPN, uecontext.SubscriberAPNConfig{}, false
+	}
+	if cfg, ok := ue.SubscriberAPNConfigs[requestedAPN]; ok {
+		return requestedAPN, cfg, true
+	}
+	for apn, cfg := range ue.SubscriberAPNConfigs {
+		if strings.EqualFold(apn, requestedAPN) {
+			return apn, cfg, true
+		}
+	}
+	return requestedAPN, uecontext.SubscriberAPNConfig{}, false
+}
 
 func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log *zap.Logger) error {
 	msg, err := esm.Decode(result.Plain)
@@ -32,8 +56,10 @@ func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log
 		zap.Uint8("ebi", msg.Header.EPSBearerID),
 		zap.Uint8("pti", msg.Header.ProcedureTransactionID),
 		zap.Uint8("esm_message_type", msg.Header.MessageType),
+		zap.String("esm_message_name", esm.MessageTypeName(msg.Header.MessageType)),
 		zap.String("plain_nas_hex", hex.EncodeToString(result.Plain)),
 	)
+	esmLog.Info("s1ap: decoded ESM message")
 
 	switch msg.Header.MessageType {
 	case esm.MsgPDNConnectivityRequest:
@@ -50,6 +76,35 @@ func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log
 			return nil
 		}
 		return s.handleESMInformationResponse(ue, resp, esmLog)
+	case esm.MsgPDNDisconnectRequest:
+		req, err := esm.DecodePDNDisconnectRequest(result.Plain)
+		if err != nil {
+			esmLog.Warn("s1ap: malformed PDN Disconnect Request", zap.Error(err))
+			return nil
+		}
+		esmLog.Info("s1ap: decoded PDN Disconnect Request",
+			zap.Uint8("request_ebi", req.EPSBearerID),
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.Uint8("pti", req.ProcedureTransactionID),
+			zap.String("pco_hex", hex.EncodeToString(req.PCO)))
+		return s.handlePDNDisconnectRequest(ue, req, esmLog)
+	case esm.MsgBearerResourceModificationRequest:
+		req, err := esm.DecodeBearerResourceModificationRequest(result.Plain)
+		if err != nil {
+			esmLog.Warn("s1ap: malformed Bearer Resource Modification Request", zap.Error(err))
+			return nil
+		}
+		esmLog.Info("s1ap: decoded Bearer Resource Modification Request",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.String("tfa_hex", hex.EncodeToString(req.TFA)))
+		return s.handleBearerResourceModificationRequest(ue, req, esmLog)
+	case esm.MsgESMStatus:
+		status, err := esm.DecodeESMStatus(result.Plain)
+		if err != nil {
+			esmLog.Warn("s1ap: malformed ESM Status", zap.Error(err))
+			return nil
+		}
+		return s.handleESMStatus(ue, result, status, esmLog)
 	case esm.MsgActivateDefaultEPSBearerContextAccept:
 		accept, err := esm.DecodeActivateDefaultEPSBearerContextAccept(result.Plain)
 		if err != nil {
@@ -67,12 +122,43 @@ func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log
 			esmLog.Warn("s1ap: malformed bearer procedure response", zap.Error(err))
 			return nil
 		}
+		esmLog.Info("s1ap: decoded bearer procedure response",
+			zap.String("response_message_name", esm.MessageTypeName(resp.MessageType)),
+			zap.Uint8("response_ebi", resp.EPSBearerID),
+			zap.Uint8("pti", resp.ProcedureTransactionID),
+			zap.Uint8("cause", resp.Cause),
+			zap.String("pco_hex", hex.EncodeToString(resp.PCO)))
+		if s.handlePDNDisconnectBearerResponse(ue, resp, esmLog) {
+			return nil
+		}
 		s.handleDedicatedBearerNASResponse(ue, resp, esmLog)
 		return nil
 	default:
 		esmLog.Warn("s1ap: unsupported ESM message")
 		return nil
 	}
+}
+
+func (s *Server) handleESMStatus(ue *uecontext.Context, result *nas.DecodeResult, status *esm.ESMStatus, log *zap.Logger) error {
+	ue.Lock()
+	imsi := ue.IMSI
+	mmeUEID := ue.MMEUES1APID
+	lastDownlink := ue.LastDownlinkNASMessage
+	ue.Unlock()
+
+	log.Warn("s1ap: ESM Status received",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.Uint8("security_header_type", result.SecHeaderType),
+		zap.Uint32("uplink_nas_count", result.Count),
+		zap.Uint8("sequence_number", result.Sequence),
+		zap.String("received_mac", hex.EncodeToString(result.MAC)),
+		zap.String("deciphered_plain_nas", hex.EncodeToString(result.Plain)),
+		zap.Uint8("message_type", result.MsgType),
+		zap.Uint8("esm_cause", status.Cause),
+		zap.String("esm_cause_name", esm.CauseName(status.Cause)),
+		zap.String("triggering_last_downlink_message", lastDownlink))
+	return nil
 }
 
 func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PDNConnectivityRequest, log *zap.Logger) error {
@@ -115,9 +201,8 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	if requestedAPN == "" {
 		requestedAPN = ue.APN
 	}
-	apnCfg, authorized := ue.SubscriberAPNConfigs[requestedAPN]
-	if ue.SubscriberAPNConfigs == nil {
-		authorized = requestedAPN == ue.APN
+	requestedAPN, apnCfg, authorized := canonicalizeRequestedAPN(requestedAPN, ue)
+	if ue.SubscriberAPNConfigs == nil && authorized && apnCfg.ServiceSelection == "" {
 		apnCfg = uecontext.SubscriberAPNConfig{ServiceSelection: requestedAPN}
 	}
 	mmeID := ue.MMEUES1APID
@@ -137,7 +222,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		log.Info("s1ap: PDN Connectivity Request for already active APN",
 			zap.String("requested_apn", requestedAPN),
 			zap.Uint8("pti", req.ProcedureTransactionID))
-		return nil
+		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
 	}
 	if ue.PendingPDN != nil {
 		ue.Unlock()
@@ -208,26 +293,33 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	ue.Lock()
 	ue.PendingPDN = pdn
 	ue.Unlock()
+	pdnType := subscriberPDNType(&apnCfg, req.PDNType)
+	bearerQCI := subscriberBearerQCI(&apnCfg, requestedAPN)
+	arpPriority, preemptionCapability, preemptionVulnerability := subscriberARPProfile(&apnCfg)
+	uplinkAMBR, downlinkAMBR := subscriberAPNAMBR(&apnCfg)
 
 	csr := &gtpv2.CreateSessionRequest{
-		SGWAddress:       sgwAddr,
-		IMSI:             imsi,
-		MSISDN:           msisdn,
-		APN:              requestedAPN,
-		RATType:          gtpv2.RATTypeEUTRAN,
-		ServingNetwork:   plmn,
-		LocalS11TEID:     localTEID,
-		LocalS11IP:       localIP,
-		PGWIP:            pgwIP,
-		ULIPLMN:          plmn,
-		ULITAC:           ulitac,
-		ULIECI:           ecgieci,
-		PCO:              req.PCO,
-		PDNType:          gtpv2.PDNTypeIPv4,
-		DefaultEBI:       ebi,
-		BearerQCI:        5,
-		UplinkAMBRKbps:   100_000,
-		DownlinkAMBRKbps: 100_000,
+		SGWAddress:              sgwAddr,
+		IMSI:                    imsi,
+		MSISDN:                  msisdn,
+		APN:                     requestedAPN,
+		RATType:                 gtpv2.RATTypeEUTRAN,
+		ServingNetwork:          plmn,
+		LocalS11TEID:            localTEID,
+		LocalS11IP:              localIP,
+		PGWIP:                   pgwIP,
+		ULIPLMN:                 plmn,
+		ULITAC:                  ulitac,
+		ULIECI:                  ecgieci,
+		PCO:                     req.PCO,
+		PDNType:                 pdnType,
+		DefaultEBI:              ebi,
+		BearerQCI:               bearerQCI,
+		BearerPriorityLevel:     arpPriority,
+		PreemptionCapability:    preemptionCapability,
+		PreemptionVulnerability: preemptionVulnerability,
+		UplinkAMBRKbps:          uplinkAMBR,
+		DownlinkAMBRKbps:        downlinkAMBR,
 	}
 	if err := s.s11.SendCSR(mmeID, csr); err != nil {
 		ue.Lock()
@@ -288,27 +380,152 @@ func (s *Server) handleESMInformationResponse(ue *uecontext.Context, resp *esm.E
 
 func (s *Server) handleStandaloneBearerAccept(ue *uecontext.Context, accept *esm.ActivateDefaultEPSBearerContextAccept, log *zap.Logger) error {
 	ue.Lock()
-	defer ue.Unlock()
 	for _, pdn := range ue.PDNs {
 		if pdn.DefaultEBI == accept.EPSBearerID {
 			pdn.NASAccepted = true
 			if pdn.ERABEstablished && pdn.ModifyBearerAccepted {
 				pdn.State = "active"
+			} else if pdn.ERABEstablished && !pdn.ModifyBearerSent {
+				pdn.State = "access-established"
 			}
 			log.Info("s1ap: Activate Default EPS Bearer Context Accept received",
 				zap.String("apn", pdn.APN),
 				zap.Uint8("ebi", accept.EPSBearerID),
 				zap.Uint8("pti", accept.ProcedureTransactionID),
 				zap.Bool("erab_established", pdn.ERABEstablished),
+				zap.Bool("modify_bearer_sent", pdn.ModifyBearerSent),
 				zap.Bool("modify_bearer_accepted", pdn.ModifyBearerAccepted),
 				zap.String("pco_hex", hex.EncodeToString(accept.PCO)))
+			ue.Unlock()
+			s.maybeAdvanceDefaultBearer(ue, accept.EPSBearerID, "nas-accept", log)
 			return nil
 		}
 	}
+	ue.Unlock()
 	log.Warn("s1ap: Activate Default EPS Bearer Context Accept for unknown bearer",
 		zap.Uint8("ebi", accept.EPSBearerID),
 		zap.Uint8("pti", accept.ProcedureTransactionID))
 	return nil
+}
+
+func (s *Server) handlePDNDisconnectRequest(ue *uecontext.Context, req *esm.PDNDisconnectRequest, log *zap.Logger) error {
+	ue.Lock()
+	target := findPDNByLinkedEBILocked(ue, req.LinkedEPSBearerID)
+	if target == nil {
+		ue.Unlock()
+		log.Warn("s1ap: PDN Disconnect Request for unknown linked bearer",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.Uint8("pti", req.ProcedureTransactionID))
+		return s.sendPDNDisconnectReject(ue, req.ProcedureTransactionID, esm.ESMCauseProtocolError, log)
+	}
+	if target.DisconnectRequested {
+		ue.Unlock()
+		log.Warn("s1ap: PDN Disconnect Request while disconnect already pending",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.Uint8("pti", req.ProcedureTransactionID))
+		return s.sendPDNDisconnectReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
+	}
+	target.DisconnectPTI = req.ProcedureTransactionID
+	target.DisconnectRequested = true
+	target.DisconnectNASAccepted = false
+	target.State = "pdn-disconnect-requested"
+	apn := target.APN
+	defaultEBI := target.DefaultEBI
+	ue.Unlock()
+
+	log.Info("s1ap: PDN Disconnect Request received",
+		zap.String("apn", apn),
+		zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+		zap.Uint8("default_ebi", defaultEBI),
+		zap.Uint8("pti", req.ProcedureTransactionID),
+		zap.String("pco_hex", hex.EncodeToString(req.PCO)))
+	if err := s.sendProtectedNAS(ue, esm.EncodeDeactivateEPSBearerContextRequest(defaultEBI, req.ProcedureTransactionID, esm.ESMCauseRegularDeactivation), "Deactivate EPS Bearer Context Request"); err != nil {
+		ue.Lock()
+		if current := findPDNByLinkedEBILocked(ue, req.LinkedEPSBearerID); current != nil && current.DisconnectPTI == req.ProcedureTransactionID {
+			current.DisconnectRequested = false
+			current.State = "active"
+		}
+		ue.Unlock()
+		log.Warn("s1ap: failed to send PDN Disconnect deactivation request",
+			zap.String("apn", apn),
+			zap.Uint8("default_ebi", defaultEBI),
+			zap.Error(err))
+		return err
+	}
+	ue.Lock()
+	if current := findPDNByLinkedEBILocked(ue, req.LinkedEPSBearerID); current != nil && current.DisconnectPTI == req.ProcedureTransactionID {
+		current.State = "pdn-disconnect-deactivate-sent"
+	}
+	ue.Unlock()
+	log.Info("s1ap: PDN Disconnect deactivation started",
+		zap.String("apn", apn),
+		zap.Uint8("default_ebi", defaultEBI),
+		zap.Uint8("pti", req.ProcedureTransactionID))
+	return nil
+}
+
+func (s *Server) handleBearerResourceModificationRequest(ue *uecontext.Context, req *esm.BearerResourceModificationRequest, log *zap.Logger) error {
+	ue.Lock()
+	linkedPDN := findPDNByLinkedEBILocked(ue, req.LinkedEPSBearerID)
+	dedicated := ue.DedicatedBearers[req.LinkedEPSBearerID]
+	ue.Unlock()
+
+	if linkedPDN == nil && dedicated == nil {
+		log.Warn("s1ap: Bearer Resource Modification Request for unknown bearer",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID))
+		return s.sendBearerResourceModificationReject(ue, req.ProcedureTransactionID, esm.ESMCauseProtocolError, log)
+	}
+
+	if dedicated == nil {
+		log.Info("s1ap: Bearer Resource Modification Request unsupported for default bearer",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.Bool("matched_default_bearer", linkedPDN != nil),
+			zap.Bool("matched_dedicated_bearer", false))
+		return s.sendBearerResourceModificationReject(ue, req.ProcedureTransactionID, esm.ESMCauseServiceOptionNotSupported, log)
+	}
+
+	log.Info("s1ap: Bearer Resource Modification Request received",
+		zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+		zap.Bool("matched_default_bearer", linkedPDN != nil),
+		zap.Bool("matched_dedicated_bearer", dedicated != nil),
+		zap.String("tfa_hex", hex.EncodeToString(req.TFA)))
+	if err := s.HandleLocalBearerResourceModification(ue, req); err != nil {
+		log.Warn("s1ap: Bearer Resource Modification Request handling failed",
+			zap.Uint8("linked_ebi", req.LinkedEPSBearerID),
+			zap.Error(err))
+		return s.sendBearerResourceModificationReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
+	}
+	return nil
+}
+
+func (s *Server) handlePDNDisconnectBearerResponse(ue *uecontext.Context, resp *esm.BearerProcedureResponse, log *zap.Logger) bool {
+	if resp.MessageType != esm.MsgDeactivateEPSBearerContextAccept {
+		return false
+	}
+	var matched *uecontext.PDNContext
+	ue.Lock()
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || !pdn.DisconnectRequested || pdn.DefaultEBI != resp.EPSBearerID {
+			continue
+		}
+		if resp.ProcedureTransactionID != 0 && pdn.DisconnectPTI != resp.ProcedureTransactionID {
+			continue
+		}
+		pdn.DisconnectNASAccepted = true
+		pdn.State = "pdn-disconnect-deactivate-accepted"
+		matched = pdn
+		break
+	}
+	ue.Unlock()
+	if matched == nil {
+		return false
+	}
+	log.Info("s1ap: PDN Disconnect deactivate accept received",
+		zap.String("apn", matched.APN),
+		zap.Uint8("default_ebi", matched.DefaultEBI),
+		zap.Uint8("pti", resp.ProcedureTransactionID))
+	s.advancePDNDisconnectCleanup(ue, matched.DefaultEBI, log)
+	return true
 }
 
 func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.CreateSessionResponse, err error, log *zap.Logger) {
@@ -334,7 +551,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 		_ = s.sendESMReject(ue, pti, esm.ESMCauseRequestRejectedUnspecified, log)
 		return
 	}
-	if resp.Cause != gtpv2.CauseRequestAccepted {
+	if !gtpv2.IsAcceptedCause(resp.Cause) {
 		log.Warn("s1ap: IMS CSRsp rejected",
 			zap.String("apn", apn),
 			zap.Uint8("cause", resp.Cause),
@@ -366,7 +583,8 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	ue.PendingPDN = nil
 	ue.Unlock()
 
-	activate := esm.EncodePDNConnectivityAcceptWithPCO(pti, pdn.APN, pdn.DefaultEBI, pdn.UEIPv4, pdn.PGWPCO)
+	esmAPN := s.apnForNAS(pdn.APN)
+	activate := esm.EncodePDNConnectivityAcceptWithPCO(pti, esmAPN, pdn.DefaultEBI, pdn.UEIPv4, pdn.PGWPCO)
 	protected, _, err := s.protectNAS(ue, activate)
 	if err != nil {
 		log.Warn("s1ap: failed to protect IMS Activate Default EPS Bearer Context Request",
@@ -375,7 +593,8 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 			zap.Error(err))
 		return
 	}
-	if err := s.SendERABSetupRequest(ue.MMEUES1APID, []ERABSetupItem{{
+	imsERABTxID := fmt.Sprintf("ims-erab-%d-%d", ue.MMEUES1APID, pdn.DefaultEBI)
+	if err := s.SendERABSetupRequestTracked(ue.MMEUES1APID, []ERABSetupItem{{
 		EBI:                     pdn.DefaultEBI,
 		QCI:                     5,
 		ARPPriority:             8,
@@ -384,7 +603,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 		SGWS1UIPv4:              pdn.SGWU_IP,
 		SGWS1UTEID:              pdn.SGWU_TEID,
 		NASPDU:                  protected,
-	}}); err != nil {
+	}}, "ims_default_bearer", imsERABTxID); err != nil {
 		log.Warn("s1ap: failed to send IMS E-RAB Setup Request",
 			zap.String("apn", pdn.APN),
 			zap.Uint8("ebi", pdn.DefaultEBI),
@@ -398,6 +617,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	ue.Unlock()
 	log.Info("s1ap: IMS Activate Default EPS Bearer Context Request sent",
 		zap.String("apn", pdn.APN),
+		zap.String("esm_apn", esmAPN),
 		zap.Uint8("pti", pti),
 		zap.Uint8("default_ebi", pdn.DefaultEBI),
 		zap.String("paa_ipv4", pdn.UEIPv4.String()),
@@ -413,6 +633,30 @@ func (s *Server) sendESMReject(ue *uecontext.Context, pti uint8, cause uint8, lo
 		return err
 	}
 	log.Info("s1ap: PDN Connectivity Reject sent",
+		zap.Uint8("pti", pti),
+		zap.Uint8("esm_cause", cause))
+	return nil
+}
+
+func (s *Server) sendPDNDisconnectReject(ue *uecontext.Context, pti uint8, cause uint8, log *zap.Logger) error {
+	reject := esm.EncodePDNDisconnectReject(pti, cause)
+	if err := s.sendProtectedNAS(ue, reject, "PDN Disconnect Reject"); err != nil {
+		log.Warn("s1ap: failed to send PDN Disconnect Reject", zap.Error(err), zap.Uint8("esm_cause", cause))
+		return err
+	}
+	log.Info("s1ap: PDN Disconnect Reject sent",
+		zap.Uint8("pti", pti),
+		zap.Uint8("esm_cause", cause))
+	return nil
+}
+
+func (s *Server) sendBearerResourceModificationReject(ue *uecontext.Context, pti uint8, cause uint8, log *zap.Logger) error {
+	reject := esm.EncodeBearerResourceModificationReject(pti, cause)
+	if err := s.sendProtectedNAS(ue, reject, "Bearer Resource Modification Reject"); err != nil {
+		log.Warn("s1ap: failed to send Bearer Resource Modification Reject", zap.Error(err), zap.Uint8("esm_cause", cause))
+		return err
+	}
+	log.Info("s1ap: Bearer Resource Modification Reject sent",
 		zap.Uint8("pti", pti),
 		zap.Uint8("esm_cause", cause))
 	return nil
@@ -466,10 +710,147 @@ func allocateDefaultBearerIDLocked(ue *uecontext.Context) uint8 {
 			used[pdn.DefaultEBI] = true
 		}
 	}
+	for ebi := range ue.DedicatedBearers {
+		if ebi != 0 {
+			used[ebi] = true
+		}
+	}
+	for ebi := range ue.EBIReservations {
+		if ebi != 0 {
+			used[ebi] = true
+		}
+	}
+	for _, tx := range ue.PendingBearerTransactions {
+		for ebi := range tx.Bearers {
+			if ebi != 0 {
+				used[ebi] = true
+			}
+		}
+	}
 	for ebi := uint8(5); ebi <= 15; ebi++ {
 		if !used[ebi] {
 			return ebi
 		}
 	}
 	return 0
+}
+
+func findPDNByLinkedEBILocked(ue *uecontext.Context, linkedEBI uint8) *uecontext.PDNContext {
+	if linkedEBI == 0 {
+		return nil
+	}
+	for _, pdn := range ue.PDNs {
+		if pdn != nil && pdn.DefaultEBI == linkedEBI {
+			return pdn
+		}
+	}
+	if ue.DefaultEBI == linkedEBI && ue.APN != "" {
+		if ue.PDNs == nil {
+			ue.PDNs = make(map[string]*uecontext.PDNContext)
+		}
+		pdn := ue.PDNs[ue.APN]
+		if pdn == nil {
+			pdn = &uecontext.PDNContext{
+				APN:          ue.APN,
+				DefaultEBI:   ue.DefaultEBI,
+				LocalS11TEID: ue.LocalS11TEID,
+				SGWAddress:   ue.SGWAddress,
+				SGWC_TEID:    ue.SGWC_TEID,
+				SGWC_IP:      append([]byte(nil), ue.SGWC_IP...),
+				SGWU_TEID:    ue.SGWU_TEID,
+				SGWU_IP:      append([]byte(nil), ue.SGWU_IP...),
+				ENBU_TEID:    ue.ENBU_TEID,
+				ENBU_IP:      append([]byte(nil), ue.ENBU_IP...),
+				UEIPv4:       append([]byte(nil), ue.UEIPv4...),
+				State:        "legacy-default-bearer",
+			}
+			ue.PDNs[ue.APN] = pdn
+		}
+		return pdn
+	}
+	return nil
+}
+
+func (s *Server) advancePDNDisconnectCleanup(ue *uecontext.Context, linkedEBI uint8, log *zap.Logger) {
+	ue.Lock()
+	pdn := findPDNByLinkedEBILocked(ue, linkedEBI)
+	if pdn == nil || !pdn.DisconnectRequested || !pdn.DisconnectNASAccepted {
+		ue.Unlock()
+		return
+	}
+	linkedDedicated := collectLinkedDedicatedBearersLocked(ue, linkedEBI)
+	mmeUEID := ue.MMEUES1APID
+	txID := fmt.Sprintf("pdn-disc-%d-%d", mmeUEID, linkedEBI)
+	if len(linkedDedicated) == 0 {
+		ue.Unlock()
+		s.sendDeleteSessionForPDN(ue, linkedEBI, log)
+		return
+	}
+	if !hasActiveS1BindingLocked(ue) {
+		for _, ebi := range linkedDedicated {
+			delete(ue.DedicatedBearers, ebi)
+		}
+		ue.Unlock()
+		s.sendDeleteSessionForPDN(ue, linkedEBI, log)
+		return
+	}
+	items := make([]ERABReleaseItem, 0, len(linkedDedicated))
+	for _, ebi := range linkedDedicated {
+		items = append(items, ERABReleaseItem{
+			EBI:        ebi,
+			CauseGroup: ies.CauseGroupNAS,
+			Cause:      ies.CauseNASNormalRelease,
+		})
+	}
+	pdn.State = "pdn-disconnect-erab-release-pending"
+	ue.Unlock()
+	if err := s.SendERABReleaseRequestTracked(mmeUEID, items, "pdn_disconnect_bearers", txID); err != nil {
+		log.Warn("s1ap: failed to send PDN disconnect E-RAB Release Request",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint8("linked_ebi", linkedEBI),
+			zap.Error(err))
+		ue.Lock()
+		for _, ebi := range linkedDedicated {
+			delete(ue.DedicatedBearers, ebi)
+		}
+		ue.Unlock()
+		s.sendDeleteSessionForPDN(ue, linkedEBI, log)
+		return
+	}
+	log.Info("s1ap: PDN disconnect E-RAB Release Request sent",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("linked_ebi", linkedEBI),
+		zap.Uint8s("dedicated_ebis", linkedDedicated))
+}
+
+func collectLinkedDedicatedBearersLocked(ue *uecontext.Context, linkedEBI uint8) []uint8 {
+	out := make([]uint8, 0, len(ue.DedicatedBearers))
+	for ebi, proc := range ue.DedicatedBearers {
+		if proc == nil || proc.LinkedEBI != linkedEBI {
+			continue
+		}
+		out = append(out, ebi)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+func pdnDisconnectInProgress(pdn *uecontext.PDNContext) bool {
+	if pdn == nil {
+		return false
+	}
+	if pdn.DisconnectRequested || pdn.DisconnectNASAccepted {
+		return true
+	}
+	switch pdn.State {
+	case "pdn-disconnect-requested",
+		"pdn-disconnect-deactivate-sent",
+		"pdn-disconnect-deactivate-accepted",
+		"pdn-disconnect-erab-release-pending",
+		"pdn-disconnect-erab-release-complete",
+		"pdn-disconnect-delete-session-pending":
+		return true
+	default:
+		return false
+	}
 }

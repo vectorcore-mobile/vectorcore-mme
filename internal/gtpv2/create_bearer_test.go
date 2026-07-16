@@ -2,6 +2,7 @@ package gtpv2
 
 import (
 	"encoding/hex"
+	"errors"
 	"net"
 	"os"
 	"strings"
@@ -23,7 +24,7 @@ func loadHexFixture(t *testing.T, path string) []byte {
 }
 
 func TestDecodeNokiaCreateBearerMultipleContextsAllocatesEBIs(t *testing.T) {
-	msg, err := Decode(loadHexFixture(t, "testdata/cisco_nokia/create_bearer_two_zero_ebi.hex"))
+	msg, err := Decode(loadHexFixture(t, "testdata/legacy_nokia/create_bearer_two_zero_ebi.hex"))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestDecodeNokiaCreateBearerMultipleContextsAllocatesEBIs(t *testing.T) {
 }
 
 func TestDecodeSonimCreateBearerAllocatesNextFreeEBI(t *testing.T) {
-	msg, err := Decode(loadHexFixture(t, "testdata/cisco_sonim/create_bearer_one_zero_ebi.hex"))
+	msg, err := Decode(loadHexFixture(t, "testdata/legacy_sonim/create_bearer_one_zero_ebi.hex"))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -77,6 +78,179 @@ func TestDecodeSonimCreateBearerAllocatesNextFreeEBI(t *testing.T) {
 	}
 	if req.Bearers[0].EBI != 10 {
 		t.Fatalf("allocated EBI got %d, want 10", req.Bearers[0].EBI)
+	}
+}
+
+func TestDecodeCreateBearerRequestRejectsMissingMandatoryIEs(t *testing.T) {
+	baseBearer := []IE{
+		EncodeEBI(0, 0),
+		EncodeBearerQoS(9, 8, false, true),
+		{Type: IETypeTFT, Instance: 0, Value: []byte{0x20}},
+		EncodeFTEID(IFTypeS1USGW, 0x01020304, net.ParseIP("10.0.0.3"), 0),
+	}
+
+	cases := []struct {
+		name string
+		ies  []IE
+		want error
+	}{
+		{
+			name: "missing linked ebi",
+			ies: []IE{
+				EncodeGrouped(IETypeBearerContext, 0, baseBearer),
+			},
+			want: ErrMandatoryIEMissing,
+		},
+		{
+			name: "missing bearer qos",
+			ies: []IE{
+				EncodeEBI(6, 0),
+				EncodeGrouped(IETypeBearerContext, 0, []IE{
+					EncodeEBI(0, 0),
+					{Type: IETypeTFT, Instance: 0, Value: []byte{0x20}},
+					EncodeFTEID(IFTypeS1USGW, 0x01020304, net.ParseIP("10.0.0.3"), 0),
+				}),
+			},
+			want: ErrMandatoryIEMissing,
+		},
+		{
+			name: "missing tft",
+			ies: []IE{
+				EncodeEBI(6, 0),
+				EncodeGrouped(IETypeBearerContext, 0, []IE{
+					EncodeEBI(0, 0),
+					EncodeBearerQoS(9, 8, false, true),
+					EncodeFTEID(IFTypeS1USGW, 0x01020304, net.ParseIP("10.0.0.3"), 0),
+				}),
+			},
+			want: ErrMandatoryIEMissing,
+		},
+		{
+			name: "missing sgw fteid",
+			ies: []IE{
+				EncodeEBI(6, 0),
+				EncodeGrouped(IETypeBearerContext, 0, []IE{
+					EncodeEBI(0, 0),
+					EncodeBearerQoS(9, 8, false, true),
+					{Type: IETypeTFT, Instance: 0, Value: []byte{0x20}},
+				}),
+			},
+			want: ErrConditionalIEMissing,
+		},
+		{
+			name: "missing pgw fteid",
+			ies: []IE{
+				EncodeEBI(6, 0),
+				EncodeGrouped(IETypeBearerContext, 0, []IE{
+					EncodeEBI(0, 0),
+					EncodeBearerQoS(9, 8, false, true),
+					{Type: IETypeTFT, Instance: 0, Value: []byte{0x20}},
+					EncodeFTEID(IFTypeS1USGW, 0x01020304, net.ParseIP("10.0.0.3"), 0),
+				}),
+			},
+			want: ErrConditionalIEMissing,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DecodeCreateBearerRequest(&Message{
+				Type: MsgCreateBearerRequest,
+				IEs:  tc.ies,
+			})
+			if err == nil {
+				t.Fatal("DecodeCreateBearerRequest unexpectedly succeeded")
+			}
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("error got %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecodeCreateBearerRequestRejectsInvalidMandatoryIEs(t *testing.T) {
+	_, err := DecodeCreateBearerRequest(&Message{
+		Type: MsgCreateBearerRequest,
+		IEs: []IE{
+			EncodeEBI(6, 0),
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				EncodeEBI(0, 0),
+				{Type: IETypeBearerQoS, Instance: 0, Value: []byte{0x01}},
+				{Type: IETypeTFT, Instance: 0, Value: []byte{0x20}},
+				{Type: IETypeFTEID, Instance: 0, Value: []byte{0x40 | IFTypeS1USGW, 0x11, 0x22, 0x33, 0x44}},
+			}),
+		},
+	})
+	if err == nil {
+		t.Fatal("DecodeCreateBearerRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, ErrMandatoryIEIncorrect) {
+		t.Fatalf("error got %v, want %v", err, ErrMandatoryIEIncorrect)
+	}
+}
+
+func TestDecodeUpdateBearerRequestRejectsMissingMandatoryEBI(t *testing.T) {
+	_, err := DecodeUpdateBearerRequest(&Message{
+		Type: MsgUpdateBearerRequest,
+		IEs: []IE{
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				{Type: IETypeTFT, Instance: 0, Value: []byte{0xa4, 0x04}},
+			}),
+		},
+	})
+	if err == nil {
+		t.Fatal("DecodeUpdateBearerRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, ErrMandatoryIEMissing) {
+		t.Fatalf("error got %v, want %v", err, ErrMandatoryIEMissing)
+	}
+}
+
+func TestDecodeUpdateBearerRequestRejectsInvalidOptionalIEs(t *testing.T) {
+	_, err := DecodeUpdateBearerRequest(&Message{
+		Type: MsgUpdateBearerRequest,
+		IEs: []IE{
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				EncodeEBI(9, 0),
+				{Type: IETypeBearerQoS, Instance: 0, Value: []byte{0x01}},
+			}),
+		},
+	})
+	if err == nil {
+		t.Fatal("DecodeUpdateBearerRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, ErrMandatoryIEIncorrect) {
+		t.Fatalf("error got %v, want %v", err, ErrMandatoryIEIncorrect)
+	}
+}
+
+func TestDecodeDeleteBearerRequestRejectsMissingEBI(t *testing.T) {
+	_, err := DecodeDeleteBearerRequest(&Message{
+		Type: MsgDeleteBearerRequest,
+		IEs:  []IE{},
+	})
+	if err == nil {
+		t.Fatal("DecodeDeleteBearerRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, ErrMandatoryIEMissing) {
+		t.Fatalf("error got %v, want %v", err, ErrMandatoryIEMissing)
+	}
+}
+
+func TestDecodeDeleteBearerRequestRejectsGroupedContextWithoutEBI(t *testing.T) {
+	_, err := DecodeDeleteBearerRequest(&Message{
+		Type: MsgDeleteBearerRequest,
+		IEs: []IE{
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				{Type: IETypeCause, Instance: 0, Value: []byte{CauseRequestAccepted, 0}},
+			}),
+		},
+	})
+	if err == nil {
+		t.Fatal("DecodeDeleteBearerRequest unexpectedly succeeded")
+	}
+	if !errors.Is(err, ErrMandatoryIEMissing) {
+		t.Fatalf("error got %v, want %v", err, ErrMandatoryIEMissing)
 	}
 }
 
@@ -106,8 +280,146 @@ func TestCreateBearerResponseIncludesENBFTEID(t *testing.T) {
 	}
 }
 
+func TestCreateBearerResponseIncludesReferenceStyleULIAndSGWFTEID(t *testing.T) {
+	out := EncodeCreateBearerResponseWithMeta(0x6d0933c3, 0x86b, CauseRequestAccepted, []CreateBearerBearer{{
+		EBI:        7,
+		ENBS1UTEID: 0x7788c3a0,
+		ENBS1UIP:   net.ParseIP("192.168.105.247").To4(),
+		SGWS1UTEID: 0x2280f13f,
+		SGWS1UIP:   net.ParseIP("10.90.250.59").To4(),
+	}}, &CreateBearerResponseMeta{
+		IncludeULI: true,
+		ULIPLMN:    [3]byte{0x13, 0x51, 0x34},
+		ULITAC:     1,
+		ULIECI:     0x05300c81,
+	})
+	msg, err := Decode(out)
+	if err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	if msg.TEID != 0x6d0933c3 {
+		t.Fatalf("response TEID got 0x%x, want 0x6d0933c3", msg.TEID)
+	}
+	uli := FindIE(msg.IEs, IETypeULI, 0)
+	if uli == nil {
+		t.Fatal("ULI IE missing")
+	}
+	wantULI := EncodeULI([3]byte{0x13, 0x51, 0x34}, 1, 0x05300c81)
+	if got := hex.EncodeToString(uli.Value); got != hex.EncodeToString(wantULI.Value) {
+		t.Fatalf("ULI got %s, want %s", got, hex.EncodeToString(wantULI.Value))
+	}
+	children, err := FindGroupedIEs(FindIE(msg.IEs, IETypeBearerContext, 0))
+	if err != nil {
+		t.Fatalf("FindGroupedIEs: %v", err)
+	}
+	sgwFTEID, err := DecodeFTEID(FindIE(children, IETypeFTEID, FTEIDInstanceSGWU))
+	if err != nil {
+		t.Fatalf("Decode SGW FTEID: %v", err)
+	}
+	if sgwFTEID.InterfaceType != IFTypeS1USGW || sgwFTEID.TEID != 0x2280f13f || !sgwFTEID.IP.Equal(net.ParseIP("10.90.250.59").To4()) {
+		t.Fatalf("SGW FTEID got %+v", sgwFTEID)
+	}
+}
+
+func TestBearerProcedureResponsesUseShortCauseIE(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "create bearer",
+			raw: EncodeCreateBearerResponse(0x12345678, 0x101, CauseRequestAccepted, []CreateBearerBearer{{
+				EBI: 7,
+			}}),
+		},
+		{
+			name: "update bearer",
+			raw: EncodeUpdateBearerResponse(0x12345678, 0x102, CauseRequestAccepted, []UpdateBearerBearer{{
+				EBI: 7,
+			}}),
+		},
+		{
+			name: "delete bearer",
+			raw:  EncodeDeleteBearerResponse(0x12345678, 0x103, CauseRequestAccepted, []uint8{7}),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, err := Decode(tc.raw)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			causeIE := FindIE(msg.IEs, IETypeCause, 0)
+			if causeIE == nil || len(causeIE.Value) != 2 {
+				t.Fatalf("top-level Cause IE len got %d, want 2", len(causeIE.Value))
+			}
+			children, err := FindGroupedIEs(FindIE(msg.IEs, IETypeBearerContext, 0))
+			if err != nil {
+				t.Fatalf("FindGroupedIEs: %v", err)
+			}
+			bearerCause := FindIE(children, IETypeCause, 0)
+			if bearerCause == nil || len(bearerCause.Value) != 2 {
+				t.Fatalf("bearer Cause IE len got %d, want 2", len(bearerCause.Value))
+			}
+		})
+	}
+}
+
+func TestUpdateBearerResponseIncludesReferenceStyleULI(t *testing.T) {
+	out := EncodeUpdateBearerResponseWithMeta(0xc04dad7b, 0x23a, CauseRequestAccepted, []UpdateBearerBearer{{
+		EBI: 9,
+	}}, &UpdateBearerResponseMeta{
+		IncludeULI: true,
+		ULIPLMN:    [3]byte{0x13, 0x51, 0x34},
+		ULITAC:     1,
+		ULIECI:     0x000c8001,
+	})
+	msg, err := Decode(out)
+	if err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	uli := FindIE(msg.IEs, IETypeULI, 0)
+	if uli == nil {
+		t.Fatal("ULI IE missing")
+	}
+	wantULI := EncodeULI([3]byte{0x13, 0x51, 0x34}, 1, 0x000c8001)
+	if got := hex.EncodeToString(uli.Value); got != hex.EncodeToString(wantULI.Value) {
+		t.Fatalf("ULI got %s, want %s", got, hex.EncodeToString(wantULI.Value))
+	}
+}
+
+func TestDeleteBearerResponseIncludesReferenceStyleULIAndTimestamp(t *testing.T) {
+	out := EncodeDeleteBearerResponseWithMeta(0xc04dad7b, 0x23e, CauseRequestAccepted, []uint8{9}, &DeleteBearerResponseMeta{
+		IncludeULI:          true,
+		ULIPLMN:             [3]byte{0x13, 0x51, 0x34},
+		ULITAC:              1,
+		ULIECI:              0x000c8001,
+		IncludeULITimestamp: true,
+		ULITimestamp:        0xedfe9032,
+	})
+	msg, err := Decode(out)
+	if err != nil {
+		t.Fatalf("Decode response: %v", err)
+	}
+	uli := FindIE(msg.IEs, IETypeULI, 0)
+	if uli == nil {
+		t.Fatal("ULI IE missing")
+	}
+	wantULI := EncodeULI([3]byte{0x13, 0x51, 0x34}, 1, 0x000c8001)
+	if got := hex.EncodeToString(uli.Value); got != hex.EncodeToString(wantULI.Value) {
+		t.Fatalf("ULI got %s, want %s", got, hex.EncodeToString(wantULI.Value))
+	}
+	uliTS := FindIE(msg.IEs, IETypeULITimestamp, 0)
+	if uliTS == nil {
+		t.Fatal("ULI Timestamp IE missing")
+	}
+	if got := hex.EncodeToString(uliTS.Value); got != "edfe9032" {
+		t.Fatalf("ULI Timestamp got %s, want edfe9032", got)
+	}
+}
+
 func TestDecodeNokiaUpdateBearerDeleteFilters(t *testing.T) {
-	msg, err := Decode(loadHexFixture(t, "testdata/cisco_nokia/update_bearer_delete_filters.hex"))
+	msg, err := Decode(loadHexFixture(t, "testdata/legacy_nokia/update_bearer_delete_filters.hex"))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -129,7 +441,7 @@ func TestDecodeNokiaUpdateBearerDeleteFilters(t *testing.T) {
 }
 
 func TestDecodeSonimUpdateBearerReplaceFilters(t *testing.T) {
-	msg, err := Decode(loadHexFixture(t, "testdata/cisco_sonim/update_bearer_replace_filters.hex"))
+	msg, err := Decode(loadHexFixture(t, "testdata/legacy_sonim/update_bearer_replace_filters.hex"))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -146,7 +458,7 @@ func TestDecodeSonimUpdateBearerReplaceFilters(t *testing.T) {
 }
 
 func TestDecodeSonimDeleteBearerRequest(t *testing.T) {
-	msg, err := Decode(loadHexFixture(t, "testdata/cisco_sonim/delete_bearer_ebi11.hex"))
+	msg, err := Decode(loadHexFixture(t, "testdata/legacy_sonim/delete_bearer_ebi11.hex"))
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}

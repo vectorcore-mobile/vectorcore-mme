@@ -44,10 +44,16 @@ func TestAttachWithCollidingGUTIDoesNotEvictCandidateUE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ecgiValue, err := ies.EncodeECGI(ies.ECGI{MCC: "311", MNC: "435", ECGI: 0x197})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(268276)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
 		{ID: pdu.IETAI, Criticality: aper.CriticalityReject, Value: taiValue},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore, Value: ecgiValue},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeRRCEstablishmentCause(3)},
 	}
 
 	srv.handleMessage(addr, pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, aper.CriticalityIgnore, ieList))

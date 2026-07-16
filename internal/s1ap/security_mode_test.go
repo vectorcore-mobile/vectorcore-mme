@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
@@ -71,7 +72,7 @@ func TestProcessAuthResponseSecurityModeCommandUsesDLCountZero(t *testing.T) {
 	}
 }
 
-func TestProcessAuthResponseSecurityModeCommandIncludesHashMME(t *testing.T) {
+func TestProcessAuthResponseSecurityModeCommandOmitsHashMMEOnAttach(t *testing.T) {
 	srv := newTAUTestServer()
 	srv.secCfg = config.SecurityConfig{
 		IntegrityAlgorithms: []string{"EIA2"},
@@ -85,7 +86,6 @@ func TestProcessAuthResponseSecurityModeCommandIncludesHashMME(t *testing.T) {
 	xres := []byte{0x70, 0xba, 0x3c, 0xde, 0x5a, 0xce, 0xaa, 0xdc}
 	kasme := mustHexForS1AP(t, "ed5ad878b984563b23b013fc9ba344f827a2ac0b27398ff8ee4030f297a1f4b6")
 	initialAttach := mustHexForS1AP(t, "21170876eb9d010741010bf613513400140ac000000502f07000050201d011d191e0")
-	wantHash := mustHexForS1AP(t, "4caba3d8e98b6958")
 	ue.Lock()
 	ue.XRES = append([]byte(nil), xres...)
 	ue.KASME = append([]byte(nil), kasme...)
@@ -106,7 +106,7 @@ func TestProcessAuthResponseSecurityModeCommandIncludesHashMME(t *testing.T) {
 	if got, want := nasPDU[5], byte(0); got != want {
 		t.Fatalf("NAS sequence number: got %d, want %d", got, want)
 	}
-	wantPlain := append([]byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x02, 0xf0, 0x70, 0x4f, 0x08}, wantHash...)
+	wantPlain := []byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x02, 0xf0, 0x70}
 	if !bytes.Equal(nasPDU[6:], wantPlain) {
 		t.Fatalf("plain SMC: got %x, want %x", nasPDU[6:], wantPlain)
 	}
@@ -139,7 +139,6 @@ func TestProcessAuthResponseSecurityModeCommandNormalizesRealUECapability(t *tes
 	xres := []byte{0x66, 0xb2, 0x6d, 0x2c, 0xac, 0x1a, 0xe7, 0x8d}
 	kasme := mustHexForS1AP(t, "410d87ad18eb7135366d55a4c12d593360a92e33644c6eba01fb9adeb1fb3542")
 	initialAttach := mustHexForS1AP(t, "0741620bf61351347fa601c100da0805f0f0e0e01d00320201d031272c8080211001010010810600000000830600000000000100000300000c00000d000007000008000009000012005213513400015c4108310375607e901103575892200b6014205230200002c00480400800021f00040260045d0103e0c1")
-	wantHash := mustHexForS1AP(t, "8f5b0baf1fa722e9")
 	ue.Lock()
 	ue.XRES = append([]byte(nil), xres...)
 	ue.KASME = append([]byte(nil), kasme...)
@@ -154,7 +153,7 @@ func TestProcessAuthResponseSecurityModeCommandNormalizesRealUECapability(t *tes
 
 	msg := readCapturedPDU(t, ch)
 	nasPDU := decodeNASPDUFromPDU(t, msg)
-	wantPlain := append([]byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x04, 0xf0, 0xf0, 0xe0, 0x60, 0x4f, 0x08}, wantHash...)
+	wantPlain := []byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x00, 0x04, 0xf0, 0xf0, 0xe0, 0x60}
 	if !bytes.Equal(nasPDU[6:], wantPlain) {
 		t.Fatalf("plain SMC: got %x, want %x", nasPDU[6:], wantPlain)
 	}
@@ -204,10 +203,16 @@ func TestInitialUEProtectedAttachSuppressesHashMME(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ecgiValue, err := ies.EncodeECGI(ies.ECGI{MCC: "001", MNC: "01", ECGI: 0x12345})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: 0, Value: ies.EncodeENBUEApID(268200)},
 		{ID: pdu.IENAS_PDU, Criticality: 0, Value: ies.EncodeNASPDU(protectedAttach)},
 		{ID: pdu.IETAI, Criticality: 0, Value: taiValue},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore, Value: ecgiValue},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeRRCEstablishmentCause(3)},
 	}
 	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, 0, ieList))
 

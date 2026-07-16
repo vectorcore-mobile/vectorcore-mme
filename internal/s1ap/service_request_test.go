@@ -239,6 +239,224 @@ func TestHandleServiceRequest_ValidKnownUE(t *testing.T) {
 	}
 }
 
+func TestHandleServiceRequest_ResumeICSCarriesRetainedBearers(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.18:36412"
+	ch := setupSendCapture(srv, addr)
+
+	realUE, mmec, mtmsi := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.PDNs["ims"] = &uecontext.PDNContext{
+		APN:                  "ims",
+		DefaultEBI:           5,
+		SGWU_TEID:            0xAABB1122,
+		SGWU_IP:              net.ParseIP("10.99.0.1").To4(),
+		ERABEstablished:      true,
+		ModifyBearerAccepted: true,
+		State:                "active",
+	}
+	realUE.DedicatedBearers[9] = &uecontext.DedicatedBearerContext{
+		AssignedEBI:     9,
+		LinkedEBI:       5,
+		QCI:             1,
+		ARP:             14,
+		SGWS1UTEID:      0x11111111,
+		SGWS1UIP:        net.ParseIP("10.99.0.2").To4(),
+		ERABEstablished: true,
+		State:           "active",
+	}
+	realUE.DedicatedBearers[10] = &uecontext.DedicatedBearerContext{
+		AssignedEBI:     10,
+		LinkedEBI:       5,
+		QCI:             2,
+		ARP:             14,
+		SGWS1UTEID:      0x22222222,
+		SGWS1UIP:        net.ParseIP("10.99.0.3").To4(),
+		ERABEstablished: true,
+		State:           "active",
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 108
+	tempUE.ENBGlobalID = addr
+	tempUE.Unlock()
+
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
+
+	msg := readCapturedPDU(t, ch)
+	if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+		t.Fatalf("PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+	}
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("decode ICS IE list: %v", err)
+	}
+	var erabList []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IENAS_PDU {
+			t.Fatal("resume ICS unexpectedly included top-level NAS-PDU")
+		}
+		if ie.ID == pdu.IEERABToBeSetupListCtxtSUReq {
+			erabList = ie.Value
+		}
+	}
+	if len(erabList) == 0 {
+		t.Fatal("resume ICS missing E-RABToBeSetupListCtxtSUReq")
+	}
+	items := decodeResumeICSErabList(t, erabList)
+	if got, want := len(items), 3; got != want {
+		t.Fatalf("resume ICS item count got %d, want %d", got, want)
+	}
+	gotEBIs := []uint8{items[0].EBI, items[1].EBI, items[2].EBI}
+	wantEBIs := []uint8{9, 10, 5}
+	for i := range wantEBIs {
+		if gotEBIs[i] != wantEBIs[i] {
+			t.Fatalf("resume ICS EBI[%d] got %d, want %d", i, gotEBIs[i], wantEBIs[i])
+		}
+		if items[i].NASPDUPresent {
+			t.Fatalf("resume ICS item %d unexpectedly carried NAS-PDU", i)
+		}
+	}
+	if items[0].QCI != 1 || items[1].QCI != 2 || items[2].QCI != 5 {
+		t.Fatalf("resume ICS QCIs got [%d %d %d], want [1 2 5]", items[0].QCI, items[1].QCI, items[2].QCI)
+	}
+}
+
+func TestHandleServiceRequest_ResumeICSSkipsDisconnectingIMSBearer(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.19:36412"
+	ch := setupSendCapture(srv, addr)
+
+	realUE, mmec, mtmsi := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.PDNs["ims"] = &uecontext.PDNContext{
+		APN:                   "ims",
+		DefaultEBI:            6,
+		SGWU_TEID:             0xBBCC2233,
+		SGWU_IP:               net.ParseIP("10.99.0.2").To4(),
+		ERABEstablished:       true,
+		ModifyBearerAccepted:  true,
+		DisconnectRequested:   true,
+		DisconnectNASAccepted: true,
+		State:                 "pdn-disconnect-delete-session-pending",
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 109
+	tempUE.ENBGlobalID = addr
+	tempUE.Unlock()
+
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no ICS Request PDU sent on valid Service Request")
+	}
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode ICS PDU: %v", err)
+	}
+	if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+		t.Fatalf("PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+	}
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("decode ICS IE list: %v", err)
+	}
+	var erabList []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEERABToBeSetupListCtxtSUReq {
+			erabList = ie.Value
+			break
+		}
+	}
+	if len(erabList) == 0 {
+		t.Fatal("resume ICS missing E-RABToBeSetupListCtxtSUReq")
+	}
+	bearers := decodeResumeICSErabList(t, erabList)
+	if len(bearers) != 1 {
+		t.Fatalf("E-RAB item count got %d, want 1", len(bearers))
+	}
+	if bearers[0].EBI != 5 {
+		t.Fatalf("resumed EBI got %d, want only default bearer 5", bearers[0].EBI)
+	}
+}
+
+func decodeResumeICSErabList(t *testing.T, data []byte) []normalizedERABSetupItem {
+	t.Helper()
+	r := aper.NewBitReader(data)
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil {
+		t.Fatalf("decode resume ICS E-RAB count: %v", err)
+	}
+	r.AlignToByte()
+	items := make([]normalizedERABSetupItem, 0, int(count))
+	for i := 0; i < int(count); i++ {
+		ieID, err := aper.DecodeConstrainedWholeNumber(r, 0, 65535)
+		if err != nil {
+			t.Fatalf("decode resume ICS item %d IE ID: %v", i, err)
+		}
+		crit, err := aper.DecodeCriticality(r)
+		if err != nil {
+			t.Fatalf("decode resume ICS item %d criticality: %v", i, err)
+		}
+		itemBytes, err := aper.ReadOpenType(r)
+		if err != nil {
+			t.Fatalf("read resume ICS item %d open type: %v", i, err)
+		}
+		item := decodeResumeICSErabItem(t, itemBytes)
+		item.SingleContainerIEID = uint16(ieID)
+		item.SingleContainerCriticality = crit
+		items = append(items, item)
+	}
+	return items
+}
+
+func decodeResumeICSErabItem(t *testing.T, data []byte) normalizedERABSetupItem {
+	t.Helper()
+	r := aper.NewBitReader(data)
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode resume ICS extension bit: %v", err)
+	}
+	nasPresent, err := r.ReadBit()
+	if err != nil {
+		t.Fatalf("decode resume ICS NAS presence: %v", err)
+	}
+	item := normalizedERABSetupItem{NASPDUPresent: nasPresent == 1}
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode resume ICS IE extension presence: %v", err)
+	}
+	if ext, err := r.ReadBit(); err != nil || ext != 0 {
+		t.Fatalf("decode resume ICS E-RAB ID extension got %d err=%v, want 0 nil", ext, err)
+	}
+	ebi, err := aper.DecodeConstrainedWholeNumber(r, 0, 15)
+	if err != nil {
+		t.Fatalf("decode resume ICS E-RAB ID: %v", err)
+	}
+	item.EBI = uint8(ebi)
+	if ext, err := r.ReadBit(); err != nil || ext != 0 {
+		t.Fatalf("decode resume ICS QoS extension got %d err=%v, want 0 nil", ext, err)
+	}
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode resume ICS GBR presence: %v", err)
+	}
+	if ieExt, err := r.ReadBit(); err != nil || ieExt != 0 {
+		t.Fatalf("decode resume ICS QoS IE extensions got %d err=%v, want 0 nil", ieExt, err)
+	}
+	qci, err := aper.DecodeConstrainedWholeNumber(r, 0, 255)
+	if err != nil {
+		t.Fatalf("decode resume ICS QCI: %v", err)
+	}
+	item.QCI = uint8(qci)
+	return item
+}
+
 func TestHandleServiceRequest_DelaysResumeICSPendingReleaseComplete(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.0.0.15:36412"
@@ -360,10 +578,16 @@ func TestInitialUEMessageServiceRequestUsesSTMSIIE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ecgiValue, err := ies.EncodeECGI(ies.ECGI{MCC: "001", MNC: "01", ECGI: 0x12345})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(106)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(buildSRPDU(1))},
 		{ID: pdu.IETAI, Criticality: aper.CriticalityReject, Value: taiValue},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore, Value: ecgiValue},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeRRCEstablishmentCause(3)},
 		{ID: pdu.IESTMSI, Criticality: aper.CriticalityReject, Value: stmsi},
 	}
 
@@ -386,6 +610,53 @@ func TestInitialUEMessageServiceRequestUsesSTMSIIE(t *testing.T) {
 	}
 	if enbUEID != 106 {
 		t.Fatalf("eNB UE ID got %d, want 106", enbUEID)
+	}
+}
+
+func TestInitialUEMessageExtendedServiceRequestUsesNASMobileIdentity(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.17:36412"
+	ch := setupSendCapture(srv, addr)
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+
+	taiValue, err := ies.EncodeTAI(ies.TAI{MCC: "001", MNC: "01", TAC: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecgiValue, err := ies.EncodeECGI(ies.ECGI{MCC: "001", MNC: "01", ECGI: 0x12345})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x00, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(108)},
+		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
+		{ID: pdu.IETAI, Criticality: aper.CriticalityReject, Value: taiValue},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore, Value: ecgiValue},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeRRCEstablishmentCause(3)},
+	}
+
+	before := srv.ueManager.Count()
+	srv.handleMessage(addr, pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, aper.CriticalityIgnore, ieList))
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no ICS Request PDU sent on Extended Service Request")
+	}
+	if srv.ueManager.Count() != before {
+		t.Fatalf("manager count got %d, want %d", srv.ueManager.Count(), before)
+	}
+	realUE.Lock()
+	step := realUE.AttachStep
+	enbUEID := realUE.ENBS1APID
+	realUE.Unlock()
+	if step != uecontext.AttachStepWaitingICSRespSR {
+		t.Fatalf("AttachStep got %d, want WaitingICSRespSR", step)
+	}
+	if enbUEID != 108 {
+		t.Fatalf("eNB UE ID got %d, want 108", enbUEID)
 	}
 }
 

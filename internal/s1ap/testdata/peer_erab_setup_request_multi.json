@@ -1,0 +1,35 @@
+{
+  "source": "/tmp/peer-mme.log",
+  "timestamp": "14:35:42:114",
+  "procedure_code": 5,
+  "message_type": "initiatingMessage",
+  "items": [
+    {
+      "single_container_ie_id": 17,
+      "ebi": 6,
+      "qci": 5,
+      "sgw_s1u_ipv4": "10.90.250.59",
+      "sgw_s1u_teid": 4052217836,
+      "nas_pdu_present": true,
+      "nas_pdu_length": 118
+    },
+    {
+      "single_container_ie_id": 17,
+      "ebi": 7,
+      "qci": 2,
+      "sgw_s1u_ipv4": "10.90.250.59",
+      "sgw_s1u_teid": 359790045,
+      "nas_pdu_present": true,
+      "nas_pdu_length": 55
+    },
+    {
+      "single_container_ie_id": 17,
+      "ebi": 8,
+      "qci": 1,
+      "sgw_s1u_ipv4": "10.90.250.59",
+      "sgw_s1u_teid": 2759089332,
+      "nas_pdu_present": true,
+      "nas_pdu_length": 55
+    }
+  ]
+}

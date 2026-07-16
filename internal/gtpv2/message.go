@@ -67,6 +67,57 @@ func EncodeNoTEID(m *Message) []byte {
 	return buf
 }
 
+// EncodePiggybacked returns one UDP payload containing a primary GTPv2-C
+// message followed by one piggybacked message. The primary message gets the
+// piggyback flag set; the final message keeps it clear.
+func EncodePiggybacked(primary, piggyback []byte) ([]byte, error) {
+	if len(primary) == 0 || len(piggyback) == 0 {
+		return nil, fmt.Errorf("gtpv2: piggyback requires non-empty primary and piggyback messages")
+	}
+	if len(primary) < 1 || len(piggyback) < 1 {
+		return nil, fmt.Errorf("gtpv2: piggyback message too short")
+	}
+	out := make([]byte, 0, len(primary)+len(piggyback))
+	out = append(out, primary...)
+	out[0] |= 0x10
+	out = append(out, piggyback...)
+	return out, nil
+}
+
+// DecodeAll parses one or more GTPv2-C messages from a UDP datagram.
+// If the piggybacking flag is set on a message, decoding continues at the next
+// message boundary until the final message with P=0 is reached.
+func DecodeAll(b []byte) ([]*Message, error) {
+	if len(b) == 0 {
+		return nil, fmt.Errorf("gtpv2: empty datagram")
+	}
+	var msgs []*Message
+	for len(b) > 0 {
+		if len(b) < headerLenNoTEID {
+			return nil, fmt.Errorf("gtpv2: trailing datagram too short (%d bytes)", len(b))
+		}
+		length := binary.BigEndian.Uint16(b[2:4])
+		totalLen := int(length) + 4
+		if len(b) < totalLen {
+			return nil, fmt.Errorf("gtpv2: length field %d but only %d bytes available", length, len(b))
+		}
+		msg, err := Decode(b[:totalLen])
+		if err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, msg)
+		piggyback := (b[0] & 0x10) != 0
+		b = b[totalLen:]
+		if !piggyback {
+			if len(b) != 0 {
+				return nil, fmt.Errorf("gtpv2: trailing bytes present after final message (%d bytes)", len(b))
+			}
+			break
+		}
+	}
+	return msgs, nil
+}
+
 // Decode parses a GTPv2-C datagram.
 func Decode(b []byte) (*Message, error) {
 	if len(b) < headerLenNoTEID {
@@ -87,6 +138,9 @@ func Decode(b []byte) (*Message, error) {
 	}
 
 	if tBit == 0 {
+		if expectedTotal < headerLenNoTEID {
+			return nil, fmt.Errorf("gtpv2: no-TEID message length %d smaller than header %d", expectedTotal, headerLenNoTEID)
+		}
 		seqNum := uint32(b[4])<<16 | uint32(b[5])<<8 | uint32(b[6])
 		ies, err := DecodeIEs(b[headerLenNoTEID:expectedTotal])
 		if err != nil {
@@ -102,6 +156,9 @@ func Decode(b []byte) (*Message, error) {
 
 	if len(b) < headerLen {
 		return nil, fmt.Errorf("gtpv2: TEID-present datagram too short (%d bytes)", len(b))
+	}
+	if expectedTotal < headerLen {
+		return nil, fmt.Errorf("gtpv2: TEID-present message length %d smaller than header %d", expectedTotal, headerLen)
 	}
 	teid := binary.BigEndian.Uint32(b[4:8])
 	seqNum := uint32(b[8])<<16 | uint32(b[9])<<8 | uint32(b[10])

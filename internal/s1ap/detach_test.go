@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 func buildProtectedDetachPDU(t *testing.T, guti *emm.GUTI, detachType uint8, count uint32) []byte {
@@ -32,10 +34,16 @@ func buildInitialUEWithDetach(t *testing.T, enbUEID uint32, nasPDU []byte) []byt
 	if err != nil {
 		t.Fatal(err)
 	}
+	ecgiValue, err := ies.EncodeECGI(ies.ECGI{MCC: "001", MNC: "01", ECGI: 0x12345})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbUEID)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
 		{ID: pdu.IETAI, Criticality: aper.CriticalityReject, Value: taiValue},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore, Value: ecgiValue},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeRRCEstablishmentCause(3)},
 		{ID: pdu.IESTMSI, Criticality: aper.CriticalityReject, Value: stmsi},
 	}
 	return pdu.BuildInitiatingMessage(pdu.ProcInitialUEMessage, aper.CriticalityIgnore, ieList)
@@ -76,7 +84,7 @@ func TestInitialUEDetachNonSwitchOffDeletesSession(t *testing.T) {
 		t.Fatalf("eNB UE ID got %d, want 3", enbUEID)
 	}
 
-	srv.HandleDSRResult(realUE.MMEUES1APID, nil)
+	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
 	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
 		t.Fatal("UE still active after DSR success")
 	}
@@ -106,6 +114,124 @@ func TestInitialUEDetachSwitchOffSuppressesDetachAccept(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected UE Context Release Command after switch-off detach")
+	}
+}
+
+func TestInitialUEDetachDeletesAllActivePDNSessions(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.42:36412"
+	setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.APN = "internet"
+	realUE.SGWAddress = "10.90.250.59:2123"
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:        "internet",
+			DefaultEBI: 5,
+			SGWAddress: "10.90.250.59:2123",
+			SGWC_TEID:  0xCCDD3344,
+			State:      "active",
+		},
+		"ims": {
+			APN:        "ims",
+			DefaultEBI: 6,
+			SGWAddress: "10.90.250.59:2123",
+			SGWC_TEID:  0x11223344,
+			State:      "active",
+		},
+	}
+	realUE.Unlock()
+
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 5, nasPDU))
+
+	if len(mock.dsrCalls) != 2 {
+		t.Fatalf("DSR calls got %d, want 2", len(mock.dsrCalls))
+	}
+	seen := map[uint8]gtpv2.DeleteSessionRequest{}
+	for _, call := range mock.dsrCalls {
+		seen[call.EBI] = call
+	}
+	if _, ok := seen[5]; !ok {
+		t.Fatal("missing internet DSR for EBI 5")
+	}
+	if _, ok := seen[6]; !ok {
+		t.Fatal("missing IMS DSR for EBI 6")
+	}
+
+	srv.HandleDSRResult(realUE.MMEUES1APID, 6, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); !ok {
+		t.Fatal("UE removed after first DSR result, want retained until all PDNs are deleted")
+	}
+
+	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
+		t.Fatal("UE still active after all DSR results")
+	}
+}
+
+func TestInitialUEDetachDeletesAllActivePDNSessionsOutOfOrderResponses(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.43:36412"
+	setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.APN = "internet"
+	realUE.SGWAddress = "10.90.250.59:2123"
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:        "internet",
+			DefaultEBI: 5,
+			SGWAddress: "10.90.250.59:2123",
+			SGWC_TEID:  0xCCDD3344,
+			State:      "active",
+		},
+		"ims": {
+			APN:        "ims",
+			DefaultEBI: 6,
+			SGWAddress: "10.90.250.59:2123",
+			SGWC_TEID:  0x11223344,
+			State:      "active",
+		},
+	}
+	realUE.Unlock()
+
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 6, nasPDU))
+
+	srv.HandleDSRResult(realUE.MMEUES1APID, 6, nil)
+
+	remaining, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID)
+	if !ok || remaining == nil {
+		t.Fatal("UE removed after first out-of-order DSR result, want retained")
+	}
+	remaining.Lock()
+	if _, ok := remaining.PDNs["ims"]; ok {
+		remaining.Unlock()
+		t.Fatal("IMS PDN still present after IMS DSR result")
+	}
+	if _, ok := remaining.PDNs["internet"]; !ok {
+		remaining.Unlock()
+		t.Fatal("internet PDN removed by wrong DSR correlation")
+	}
+	remaining.Unlock()
+
+	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
+		t.Fatal("UE still active after both out-of-order DSR results")
 	}
 }
 

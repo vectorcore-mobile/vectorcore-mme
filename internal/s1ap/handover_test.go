@@ -29,8 +29,7 @@ var (
 )
 
 // roundTripGlobalENBID encodes then decodes a GlobalENBID to get the form
-// the MME sees after it processes the S1 Setup or TargetID IE. This is needed
-// because EncodePLMN/DecodePLMN swap the MNC digit order (BCD encoding detail).
+// the MME sees after it processes the S1 Setup or TargetID IE.
 func roundTripGlobalENBID(g ies.GlobalENBID) ies.GlobalENBID {
 	encoded, err := ies.EncodeGlobalENBID(g)
 	if err != nil {

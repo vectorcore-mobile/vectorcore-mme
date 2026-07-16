@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,87 @@ func TestHandleS1SetupRequestStoresPLMNAndSupportedTA(t *testing.T) {
 	}
 }
 
+func TestHandleS1SetupRequestMalformedSupportedTAsStillConnects(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.168.105.36:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	globalENBID, err := ies.EncodeGlobalENBID(ies.GlobalENBID{
+		MCC: "311",
+		MNC: "435",
+		ENB: ies.ENBID{Type: ies.ENBIDTypeMacro, Value: 0x197},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEGlobal_ENB_ID, Criticality: aper.CriticalityReject, Value: globalENBID},
+		{ID: pdu.IESupportedTAs, Criticality: aper.CriticalityReject, Value: []byte{0xff, 0x00, 0xaa}},
+		{ID: pdu.IEDefaultPagingDRX, Criticality: aper.CriticalityIgnore, Value: ies.EncodePagingDRX(1)},
+	}
+
+	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcS1Setup, aper.CriticalityReject, ieList))
+
+	resp := readCapturedPDU(t, ch)
+	if resp.Type != pdu.PDUTypeSuccessfulOutcome {
+		t.Fatalf("response Type: got %s, want successfulOutcome", resp.Type)
+	}
+	if resp.ProcedureCode != pdu.ProcS1Setup {
+		t.Fatalf("response ProcedureCode: got %d, want %d", resp.ProcedureCode, pdu.ProcS1Setup)
+	}
+
+	val, ok := srv.enbs.Load(remoteAddr)
+	if !ok {
+		t.Fatal("eNB context was not stored")
+	}
+	enb := val.(*ENBContext)
+	if len(enb.SupportedTAs) != 0 {
+		t.Fatalf("SupportedTAs: got %+v, want empty list on decode failure", enb.SupportedTAs)
+	}
+}
+
+func TestHandleS1SetupRequestMissingDefaultPagingDRXSendsFailure(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.168.105.35:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	globalENBID, err := ies.EncodeGlobalENBID(ies.GlobalENBID{
+		MCC: "311",
+		MNC: "435",
+		ENB: ies.ENBID{Type: ies.ENBIDTypeMacro, Value: 0x197},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plmn, err := ies.EncodePLMN("311", "435")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEGlobal_ENB_ID, Criticality: aper.CriticalityReject, Value: globalENBID},
+		{ID: pdu.IESupportedTAs, Criticality: aper.CriticalityReject, Value: encodeSupportedTAsForTest(plmn, 1, true)},
+	}
+
+	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcS1Setup, aper.CriticalityReject, ieList))
+
+	resp := readCapturedPDU(t, ch)
+	if resp.Type != pdu.PDUTypeInitiatingMessage {
+		t.Fatalf("response Type: got %s, want initiatingMessage", resp.Type)
+	}
+	if resp.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("response ProcedureCode: got %d, want %d", resp.ProcedureCode, pdu.ProcErrorIndication)
+	}
+	assertErrorIndicationCause(t, resp, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
+	assertErrorIndicationDiagnostics(t, resp, diagnosticExpectation{
+		ProcedureCode:        pdu.ProcS1Setup,
+		TriggeringMessage:    pdu.PDUTypeInitiatingMessage,
+		ProcedureCriticality: aper.CriticalityReject,
+		Items: []diagnosticIEExpectation{
+			{IEID: pdu.IEDefaultPagingDRX, Criticality: aper.CriticalityIgnore, TypeOfError: typeOfErrorMissing},
+		},
+	})
+}
+
 func TestDecodeSupportedTAsBareAndHeaderForms(t *testing.T) {
 	for _, c := range []struct {
 		name       string
@@ -128,6 +210,29 @@ func TestDecodeSupportedTAsBareAndHeaderForms(t *testing.T) {
 				t.Fatalf("BroadcastPLMNs: got %+v", tas[0].BroadcastPLMNs)
 			}
 		})
+	}
+}
+
+func TestDecodeSupportedTAsRealENBEncoding(t *testing.T) {
+	data, err := hex.DecodeString("00000040134153")
+	if err != nil {
+		t.Fatalf("DecodeString: %v", err)
+	}
+	tas, err := decodeSupportedTAsStrict(data)
+	if err != nil {
+		t.Fatalf("decodeSupportedTAsStrict: %v", err)
+	}
+	if len(tas) != 1 {
+		t.Fatalf("count: got %d, want 1", len(tas))
+	}
+	if tas[0].TAC != 1 {
+		t.Fatalf("TAC: got %d, want 1", tas[0].TAC)
+	}
+	if len(tas[0].BroadcastPLMNs) != 1 {
+		t.Fatalf("BroadcastPLMNs count: got %d, want 1", len(tas[0].BroadcastPLMNs))
+	}
+	if tas[0].BroadcastPLMNs[0].MCC != "311" || tas[0].BroadcastPLMNs[0].MNC != "435" {
+		t.Fatalf("BroadcastPLMN: got %+v, want 311/435", tas[0].BroadcastPLMNs[0])
 	}
 }
 
@@ -205,6 +310,51 @@ func TestEncodeServedGUMMEIsAdvertisesConfiguredMMEIdentity(t *testing.T) {
 	if len(mmec) != 1 || mmec[0] != 1 {
 		t.Fatalf("MMEC: got % X, want 01", mmec)
 	}
+}
+
+func TestHandleResetMissingResetTypeSendsErrorIndication(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.40:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)},
+	}
+
+	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcReset, aper.CriticalityReject, ieList))
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
+	assertErrorIndicationDiagnostics(t, msg, diagnosticExpectation{
+		ProcedureCode:        pdu.ProcReset,
+		TriggeringMessage:    pdu.PDUTypeInitiatingMessage,
+		ProcedureCriticality: aper.CriticalityReject,
+		Items: []diagnosticIEExpectation{
+			{IEID: pdu.IEResetType, Criticality: aper.CriticalityReject, TypeOfError: typeOfErrorMissing},
+		},
+	})
+}
+
+func TestHandleResetMalformedResetTypeSendsErrorIndication(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.41:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)},
+		{ID: pdu.IEResetType, Criticality: aper.CriticalityReject, Value: []byte{0x80}},
+	}
+
+	srv.handleMessage(remoteAddr, pdu.BuildInitiatingMessage(pdu.ProcReset, aper.CriticalityReject, ieList))
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 }
 
 func buildS1SetupRequestForTest(t *testing.T, mcc, mnc string, enbID uint32, tac uint16) []byte {

@@ -38,3 +38,21 @@ func TestPLMNEncodeDecodeTBCD(t *testing.T) {
 		})
 	}
 }
+
+func TestECGIRoundTripThreeDigitMNC(t *testing.T) {
+	wire, err := EncodeECGI(ECGI{MCC: "311", MNC: "435", ECGI: 0x05300c81})
+	if err != nil {
+		t.Fatalf("EncodeECGI: %v", err)
+	}
+	want := []byte{0x13, 0x41, 0x53, 0x53, 0x00, 0xC8, 0x10}
+	if !bytes.Equal(wire, want) {
+		t.Fatalf("EncodeECGI: got % X, want % X", wire, want)
+	}
+	decoded, err := DecodeECGI(wire)
+	if err != nil {
+		t.Fatalf("DecodeECGI: %v", err)
+	}
+	if decoded.MCC != "311" || decoded.MNC != "435" || decoded.ECGI != 0x05300c81 {
+		t.Fatalf("DecodeECGI: got %+v, want MCC=311 MNC=435 ECGI=0x05300c81", decoded)
+	}
+}

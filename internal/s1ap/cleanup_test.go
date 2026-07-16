@@ -170,6 +170,47 @@ func TestSendDeleteSession_SendsDSRWhenSessionEstablished(t *testing.T) {
 	}
 }
 
+func TestSendDeleteSession_PrefersPDNLinkedBearerOverLegacyUEField(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	ue := uecontext.NewContext(11)
+	ue.IMSI = "204950000000011"
+	ue.APN = "ims"
+	ue.SGWAddress = "10.90.250.59:2123"
+	ue.SGWC_TEID = 0x22334455
+	ue.DefaultEBI = 5
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"ims": {
+			APN:        "ims",
+			DefaultEBI: 6,
+			SGWAddress: "10.90.250.59:2123",
+			SGWC_TEID:  0x22334455,
+			State:      "active",
+		},
+	}
+
+	srv.sendDeleteSession(ue)
+
+	if len(mock.dsrCalls) != 1 {
+		t.Fatalf("expected 1 DSR call, got %d", len(mock.dsrCalls))
+	}
+	dsr := mock.dsrCalls[0]
+	if got, want := dsr.EBI, uint8(6); got != want {
+		t.Fatalf("DSR EBI: got %d, want %d", got, want)
+	}
+	ue.Lock()
+	remainingUE := ue.SGWC_TEID
+	remainingPDN := ue.PDNs["ims"].SGWC_TEID
+	ue.Unlock()
+	if remainingUE != 0 {
+		t.Fatalf("UE SGWC_TEID should be cleared after DSR, got %#x", remainingUE)
+	}
+	if remainingPDN != 0 {
+		t.Fatalf("PDN SGWC_TEID should be cleared after DSR, got %#x", remainingPDN)
+	}
+}
+
 func TestSendDeleteSession_IdempotentNoop(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)
@@ -212,7 +253,7 @@ func TestHandleDSRResult_RemovesDetachedUEContext(t *testing.T) {
 	ue.Unlock()
 	srv.ueManager.Register(ue)
 
-	srv.HandleDSRResult(mmeID, nil)
+	srv.HandleDSRResult(mmeID, 0, nil)
 
 	if _, ok := srv.ueManager.GetByMMEID(mmeID); ok {
 		t.Fatal("detached UE still present by MME UE S1AP ID after DSR success")
@@ -232,7 +273,7 @@ func TestHandleDSRResult_DoesNotRemoveRegisteredUE(t *testing.T) {
 	ue.Unlock()
 	srv.ueManager.Register(ue)
 
-	srv.HandleDSRResult(mmeID, nil)
+	srv.HandleDSRResult(mmeID, 0, nil)
 
 	if _, ok := srv.ueManager.GetByMMEID(mmeID); !ok {
 		t.Fatal("registered UE was removed by DSR success")

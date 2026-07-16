@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -39,16 +40,24 @@ type S11Client interface {
 }
 
 type S11BearerResponder interface {
-	SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer) error
-	SendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer) error
-	SendDeleteBearerResponse(peer string, teid uint32, seq uint32, cause uint8, ebis []uint8) error
+	SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer, meta *gtpv2.CreateBearerResponseMeta) error
+	SendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer, meta *gtpv2.UpdateBearerResponseMeta) error
+	SendDeleteBearerResponse(peer string, teid uint32, seq uint32, cause uint8, ebis []uint8, meta *gtpv2.DeleteBearerResponseMeta) error
+}
+
+type S11PiggybackResponder interface {
+	SendCreateBearerResponseWithPiggybackMBR(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer, meta *gtpv2.CreateBearerResponseMeta, mmeUEID uint32, mbr *gtpv2.ModifyBearerRequest) (uint32, error)
 }
 
 // BearerInfo carries the default EPS bearer parameters needed for the ICS Request E-RAB list.
 type BearerInfo struct {
-	EBI       uint8
-	SGWU_TEID uint32
-	SGWU_IP   []byte // 4-byte IPv4
+	EBI                     uint8
+	QCI                     uint8
+	ARPPriority             uint8
+	PreemptionCapability    bool
+	PreemptionVulnerability bool
+	SGWU_TEID               uint32
+	SGWU_IP                 []byte // 4-byte IPv4
 }
 
 // NoopS6aClient is retained for unit tests. Runtime MME always starts S6a.
@@ -64,14 +73,17 @@ type NoopS11Client struct{}
 func (NoopS11Client) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
 func (NoopS11Client) SendMBR(_ uint32, _ *gtpv2.ModifyBearerRequest) error  { return nil }
 func (NoopS11Client) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
-func (NoopS11Client) SendCreateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.CreateBearerBearer) error {
+func (NoopS11Client) SendCreateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.CreateBearerBearer, _ *gtpv2.CreateBearerResponseMeta) error {
 	return nil
 }
-func (NoopS11Client) SendUpdateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.UpdateBearerBearer) error {
+func (NoopS11Client) SendUpdateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.UpdateBearerBearer, _ *gtpv2.UpdateBearerResponseMeta) error {
 	return nil
 }
-func (NoopS11Client) SendDeleteBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []uint8) error {
+func (NoopS11Client) SendDeleteBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []uint8, _ *gtpv2.DeleteBearerResponseMeta) error {
 	return nil
+}
+func (NoopS11Client) SendCreateBearerResponseWithPiggybackMBR(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.CreateBearerBearer, _ *gtpv2.CreateBearerResponseMeta, _ uint32, _ *gtpv2.ModifyBearerRequest) (uint32, error) {
+	return 0, nil
 }
 
 // S10Client is the interface the S1AP layer uses for S10 inter-MME context transfer.
@@ -117,6 +129,8 @@ type Server struct {
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
+
+	completedCreateBearerResponses sync.Map // string bearerTxKey -> *cachedCreateBearerResponse
 }
 
 // NewServer creates a new S1AP Server.
@@ -204,9 +218,9 @@ func (s *Server) handleMessage(remoteAddr string, data []byte) {
 	case pdu.PDUTypeInitiatingMessage:
 		s.dispatchInitiating(remoteAddr, p)
 	case pdu.PDUTypeSuccessfulOutcome:
-		s.dispatchSuccessful(remoteAddr, p)
+		s.dispatchSuccessful(remoteAddr, p, data)
 	case pdu.PDUTypeUnsuccessfulOutcome:
-		s.dispatchUnsuccessful(remoteAddr, p)
+		s.dispatchUnsuccessful(remoteAddr, p, data)
 	default:
 		s.log.Warn("s1ap: unknown PDU type", zap.Uint8("type", uint8(p.Type)))
 	}
@@ -216,6 +230,9 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error", zap.String("remote", remoteAddr), zap.Error(err))
+		return
+	}
+	if !s.validateInboundProcedureIEs(remoteAddr, p, ies) {
 		return
 	}
 
@@ -236,6 +253,8 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleErrorIndication(remoteAddr, p, ies)
 	case pdu.ProcReset:
 		s.handleReset(remoteAddr, p, ies)
+	case pdu.ProcENBConfigurationUpdate:
+		s.handleENBConfigurationUpdate(remoteAddr, p, ies)
 	case pdu.ProcHandoverPreparation:
 		s.handleHandoverRequired(remoteAddr, p, ies)
 	case pdu.ProcHandoverNotification:
@@ -247,19 +266,26 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 	}
 }
 
-func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU) {
+func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU, raw []byte) {
 	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error (success)", zap.String("remote", remoteAddr), zap.Error(err))
+		return
+	}
+	if !s.validateInboundProcedureIEs(remoteAddr, p, ies) {
 		return
 	}
 	switch p.ProcedureCode {
 	case pdu.ProcInitialContextSetup:
 		s.handleInitialContextSetupResponse(remoteAddr, p, ies)
 	case pdu.ProcERABSetup:
-		s.handleERABSetupResponse(remoteAddr, p, ies)
+		s.handleERABSetupResponse(remoteAddr, p, raw, ies)
+	case pdu.ProcERABRelease:
+		s.handleERABReleaseComplete(remoteAddr, p, raw, ies)
 	case pdu.ProcUEContextRelease:
 		s.handleUEContextReleaseComplete(remoteAddr, p, ies)
+	case pdu.ProcUEContextModification:
+		s.handleUEContextModificationResponse(remoteAddr, p, ies)
 	case pdu.ProcHandoverResourceAllocation:
 		s.handleHandoverRequestAck(remoteAddr, p, ies)
 	default:
@@ -269,17 +295,29 @@ func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU) {
 	}
 }
 
-func (s *Server) dispatchUnsuccessful(remoteAddr string, p *pdu.PDU) {
+func (s *Server) dispatchUnsuccessful(remoteAddr string, p *pdu.PDU, raw []byte) {
 	ies, err := decodeProcedureIEsCompat(p.Value)
 	if err != nil {
 		s.log.Warn("s1ap: IE decode error (unsuccessful)", zap.String("remote", remoteAddr), zap.Error(err))
 		return
 	}
+	if !s.validateInboundProcedureIEs(remoteAddr, p, ies) {
+		return
+	}
 	switch p.ProcedureCode {
 	case pdu.ProcInitialContextSetup:
 		s.handleInitialContextSetupFailure(remoteAddr, p, ies)
+	case pdu.ProcERABSetup:
+		s.log.Warn("s1ap: unsuccessful E-RAB Setup outcome received",
+			zap.String("remote", remoteAddr),
+			zap.Uint8("procedure_code", p.ProcedureCode),
+			zap.String("pdu_choice", p.Type.String()),
+			zap.String("criticality", p.Criticality.String()),
+			zap.String("raw_s1ap_hex", hex.EncodeToString(raw)))
 	case pdu.ProcHandoverResourceAllocation:
 		s.handleHandoverRequestFailure(remoteAddr, p, ies)
+	case pdu.ProcUEContextModification:
+		s.handleUEContextModificationFailure(remoteAddr, p, ies)
 	default:
 		s.log.Debug("s1ap: unhandled unsuccessful outcome",
 			zap.Uint8("code", p.ProcedureCode),

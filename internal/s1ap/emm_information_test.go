@@ -10,6 +10,7 @@ import (
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 // operCfgWithName returns an OperatorConfig with a full name configured and EMM Information enabled.
@@ -158,6 +159,26 @@ func TestSendEMMInformation_NothingToSend(t *testing.T) {
 	defer ue.Unlock()
 	if uint32(ue.DLNASCount) != startDLCount {
 		t.Errorf("DL NAS count changed when nothing was sent: got %d, want %d", ue.DLNASCount, startDLCount)
+	}
+}
+
+func TestShouldDeferAttachEMMInformationForSecondaryIMS(t *testing.T) {
+	ue := &uecontext.Context{
+		APN:            "internet",
+		SubscriberAPNs: []string{"internet", "IMS"},
+	}
+	if !shouldDeferAttachEMMInformation(ue) {
+		t.Fatal("shouldDeferAttachEMMInformation=false, want true")
+	}
+}
+
+func TestShouldDeferAttachEMMInformationForIMSDefault(t *testing.T) {
+	ue := &uecontext.Context{
+		APN:            "ims",
+		SubscriberAPNs: []string{"internet", "ims"},
+	}
+	if shouldDeferAttachEMMInformation(ue) {
+		t.Fatal("shouldDeferAttachEMMInformation=true, want false")
 	}
 }
 

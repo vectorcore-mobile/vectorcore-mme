@@ -35,6 +35,7 @@ s10:
 s11:
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
+  recovery_restart_counter: 0    # GTPv2 Recovery IE value used in Echo Response
 
 gateway_selection:
   dns:

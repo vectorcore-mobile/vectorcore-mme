@@ -145,6 +145,7 @@ type Context struct {
 	PendingPDN                *PDNContext
 	DedicatedBearers          map[uint8]*DedicatedBearerContext
 	PendingBearerTransactions map[string]*DedicatedBearerTransaction
+	PendingERABProcedures     map[string]*PendingERABProcedure
 	EBIReservations           map[uint8]EBIReservation
 
 	// Handover security state (TS 33.401 §7.2.8)
@@ -177,33 +178,47 @@ type Context struct {
 }
 
 type SubscriberAPNConfig struct {
-	ContextIdentifier   uint32
-	ServiceSelection    string
-	MIPHomeAgentAddress net.IP
-	MIPHomeAgentHost    string
-	PDNGWAllocationType *int32
+	ContextIdentifier       uint32
+	ServiceSelection        string
+	MIPHomeAgentAddress     net.IP
+	MIPHomeAgentHost        string
+	PDNGWAllocationType     *int32
+	PDNType                 uint8
+	QCI                     uint8
+	ARPPriority             uint8
+	PreemptionCapability    bool
+	PreemptionVulnerability bool
+	APNAMBRDown             uint32
+	APNAMBRUp               uint32
 }
 
 type PDNContext struct {
-	APN                    string
-	ProcedureTransactionID uint8
-	PDNType                uint8
-	DefaultEBI             uint8
-	LocalS11TEID           uint32
-	SGWAddress             string
-	SGWC_TEID              uint32
-	SGWC_IP                net.IP
-	SGWU_TEID              uint32
-	SGWU_IP                net.IP
-	ENBU_TEID              uint32
-	ENBU_IP                net.IP
-	UEIPv4                 net.IP
-	UEPCO                  []byte
-	PGWPCO                 []byte
-	NASAccepted            bool
-	ERABEstablished        bool
-	ModifyBearerAccepted   bool
-	State                  string
+	APN                      string
+	ProcedureTransactionID   uint8
+	DisconnectPTI            uint8
+	PDNType                  uint8
+	DefaultEBI               uint8
+	LocalS11TEID             uint32
+	SGWAddress               string
+	SGWC_TEID                uint32
+	SGWC_IP                  net.IP
+	SGWU_TEID                uint32
+	SGWU_IP                  net.IP
+	ENBU_TEID                uint32
+	ENBU_IP                  net.IP
+	UEIPv4                   net.IP
+	UEPCO                    []byte
+	PGWPCO                   []byte
+	NASAccepted              bool
+	ERABEstablished          bool
+	ModifyBearerSent         bool
+	ModifyBearerAccepted     bool
+	ModifyBearerFailed       bool
+	ModifyBearerDeferred     bool
+	ModifyBearerFallbackSent bool
+	DisconnectRequested      bool
+	DisconnectNASAccepted    bool
+	State                    string
 }
 
 type CreateBearerState string
@@ -211,10 +226,12 @@ type CreateBearerState string
 const (
 	CreateBearerReceived       CreateBearerState = "received"
 	CreateBearerWaitingForUE   CreateBearerState = "waiting_for_ue"
+	CreateBearerWaitingForLink CreateBearerState = "waiting_for_linked_bearer"
 	CreateBearerPaging         CreateBearerState = "paging"
 	CreateBearerActivatingNAS  CreateBearerState = "activating_nas"
 	CreateBearerSettingUpERAB  CreateBearerState = "setting_up_erab"
 	CreateBearerWaitingResults CreateBearerState = "waiting_results"
+	CreateBearerCleaningUpERAB CreateBearerState = "cleaning_up_erab"
 	CreateBearerCompleted      CreateBearerState = "completed"
 	CreateBearerFailed         CreateBearerState = "failed"
 	CreateBearerTimedOut       CreateBearerState = "timed_out"
@@ -280,6 +297,15 @@ func (t *DedicatedBearerTransaction) TryMarkResponseSent() bool {
 	return t.responseSent.CompareAndSwap(false, true)
 }
 
+type PendingERABProcedure struct {
+	TransactionID       string
+	ProcedureKind       string
+	ExpectedEBIs        map[uint8]struct{}
+	S1BindingGeneration uint64
+	CreatedAt           time.Time
+	Deadline            time.Time
+}
+
 // NewContext creates a new UE context with an MME UE S1AP ID.
 func NewContext(mmeID uint32) *Context {
 	return &Context{
@@ -289,6 +315,7 @@ func NewContext(mmeID uint32) *Context {
 		PDNs:                      make(map[string]*PDNContext),
 		DedicatedBearers:          make(map[uint8]*DedicatedBearerContext),
 		PendingBearerTransactions: make(map[string]*DedicatedBearerTransaction),
+		PendingERABProcedures:     make(map[string]*PendingERABProcedure),
 		EBIReservations:           make(map[uint8]EBIReservation),
 		timers:                    make(map[string]*time.Timer),
 		CreatedAt:                 time.Now(),

@@ -13,7 +13,7 @@ import (
 
 const ueRadioCapabilityLogBytes = 96
 
-func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, _ *pdu.PDU, ieList []pdu.ProtocolIE) {
+func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
 	var mmeUEID uint32
 	var enbUEID uint32
 	var radioCapability []byte
@@ -26,7 +26,8 @@ func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, _ *pdu.PDU,
 				s.log.Warn("s1ap: UECapabilityInfoIndication MME UE S1AP ID decode error",
 					zap.String("remote", remoteAddr),
 					zap.Error(err))
-				continue
+				s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
 			}
 			mmeUEID = id
 		case pdu.IEENBS1APID:
@@ -35,7 +36,8 @@ func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, _ *pdu.PDU,
 				s.log.Warn("s1ap: UECapabilityInfoIndication eNB UE S1AP ID decode error",
 					zap.String("remote", remoteAddr),
 					zap.Error(err))
-				continue
+				s.sendErrorIndication(remoteAddr, p, mmeUEID, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
 			}
 			enbUEID = id
 		case pdu.IEUERadioCapability:
@@ -46,13 +48,14 @@ func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, _ *pdu.PDU,
 					zap.Int("raw_len", len(ie.Value)),
 					zap.String("raw", truncateHex(ie.Value, ueRadioCapabilityLogBytes)),
 					zap.Error(err))
-				continue
+				s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
 			}
 			radioCapability = capability
 		}
 	}
 
-	ue, ok := s.findUEByS1APIDs(remoteAddr, mmeUEID, enbUEID)
+	ue, ok := s.findUEForUEAssociatedMessage(remoteAddr, p, mmeUEID, enbUEID)
 	if ok && len(radioCapability) > 0 {
 		ue.Lock()
 		ue.UERadioCapability = append(ue.UERadioCapability[:0], radioCapability...)

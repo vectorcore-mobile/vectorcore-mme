@@ -164,6 +164,63 @@ func TestCreateSessionRequestIncludesAPNRestrictionWithoutPCO(t *testing.T) {
 	}
 }
 
+func TestCreateSessionRequestUsesSubscribedBearerQoSAndAMBR(t *testing.T) {
+	req := &CreateSessionRequest{
+		SGWAddress:              "10.90.250.59:2123",
+		IMSI:                    "311435300070580",
+		MSISDN:                  "16752012880",
+		APN:                     "ims",
+		RATType:                 RATTypeEUTRAN,
+		ServingNetwork:          [3]byte{0x13, 0x51, 0x34},
+		LocalS11TEID:            2,
+		LocalS11IP:              net.ParseIP("10.90.250.186"),
+		PGWIP:                   net.ParseIP("10.90.250.92"),
+		ULIPLMN:                 [3]byte{0x13, 0x51, 0x34},
+		ULITAC:                  1,
+		ULIECI:                  0x00019730,
+		PDNType:                 PDNTypeIPv4,
+		DefaultEBI:              6,
+		BearerQCI:               5,
+		BearerPriorityLevel:     2,
+		PreemptionCapability:    true,
+		PreemptionVulnerability: false,
+		UplinkAMBRKbps:          512,
+		DownlinkAMBRKbps:        1024,
+	}
+
+	msg, err := Decode(req.Encode(3))
+	if err != nil {
+		t.Fatalf("Decode CSR: %v", err)
+	}
+
+	ambr := FindIE(msg.IEs, IETypeAMBR, 0)
+	if ambr == nil || !bytes.Equal(ambr.Value, []byte{0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00}) {
+		t.Fatalf("AMBR got %x, want 0000020000000400", ambr.Value)
+	}
+
+	bc := FindIE(msg.IEs, IETypeBearerContext, 0)
+	children, err := FindGroupedIEs(bc)
+	if err != nil {
+		t.Fatalf("decode Bearer Context: %v", err)
+	}
+	qos := FindIE(children, IETypeBearerQoS, 0)
+	if qos == nil {
+		t.Fatal("Bearer Context missing Bearer QoS")
+	}
+	if got, want := qos.Value[1], uint8(5); got != want {
+		t.Fatalf("Bearer QoS QCI got %d, want %d", got, want)
+	}
+	if got, want := (qos.Value[0]>>2)&0x0f, uint8(2); got != want {
+		t.Fatalf("Bearer QoS priority level got %d, want %d", got, want)
+	}
+	if got := qos.Value[0]&0x40 != 0; got != true {
+		t.Fatalf("Bearer QoS PCI bit got %t, want true", got)
+	}
+	if got := qos.Value[0]&0x01 != 0; got != false {
+		t.Fatalf("Bearer QoS PVI bit got %t, want false", got)
+	}
+}
+
 func TestDecodeCreateSessionResponsePreservesPGWPCO(t *testing.T) {
 	pco := []byte{
 		0x80, 0x00,
@@ -190,5 +247,43 @@ func TestDecodeCreateSessionResponsePreservesPGWPCO(t *testing.T) {
 	}
 	if !bytes.Equal(resp.PCO, pco) {
 		t.Fatalf("PCO got %x, want %x", resp.PCO, pco)
+	}
+}
+
+func TestDecodeCreateSessionResponseAcceptsAllSuccessfulCauses(t *testing.T) {
+	causes := []uint8{
+		CauseRequestAccepted,
+		CauseRequestAcceptedPartially,
+		CauseNewPDNTypeDueToNetworkPref,
+		CauseNewPDNTypeDueToSingleAddr,
+	}
+	for _, cause := range causes {
+		t.Run(CauseName(cause), func(t *testing.T) {
+			msg := &Message{
+				Type: MsgCreateSessionResponse,
+				IEs: []IE{
+					{Type: IETypeCause, Value: []byte{cause, 0x00}},
+					EncodeFTEID(IFTypeS11S4SGW, 0x01020304, net.ParseIP("10.0.0.2"), 0),
+					EncodeGrouped(IETypeBearerContext, 0, []IE{
+						EncodeEBI(5, 0),
+						EncodeFTEID(IFTypeS1USGW, 0x10203040, net.ParseIP("10.0.0.3"), 0),
+					}),
+				},
+			}
+
+			resp, err := DecodeCreateSessionResponse(msg)
+			if err != nil {
+				t.Fatalf("DecodeCreateSessionResponse: %v", err)
+			}
+			if resp.Cause != cause {
+				t.Fatalf("cause got %d, want %d", resp.Cause, cause)
+			}
+			if resp.SGWC_TEID != 0x01020304 {
+				t.Fatalf("SGW-C TEID got 0x%x, want 0x01020304", resp.SGWC_TEID)
+			}
+			if resp.EBI != 5 {
+				t.Fatalf("EBI got %d, want 5", resp.EBI)
+			}
+		})
 	}
 }

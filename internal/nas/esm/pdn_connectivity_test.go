@@ -145,3 +145,26 @@ func TestESMInformationRequestResponse(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }
+
+func TestDecodePDNDisconnectRequest(t *testing.T) {
+	raw := []byte{
+		0x02, 0x03, MsgPDNDisconnectRequest, 0x06,
+		0x27, 0x03, 0x80, 0x00, 0x0d,
+	}
+	req, err := DecodePDNDisconnectRequest(raw)
+	if err != nil {
+		t.Fatalf("DecodePDNDisconnectRequest: %v", err)
+	}
+	if req.EPSBearerID != 0 {
+		t.Fatalf("EPSBearerID got %d, want 0", req.EPSBearerID)
+	}
+	if req.ProcedureTransactionID != 3 {
+		t.Fatalf("PTI got %d, want 3", req.ProcedureTransactionID)
+	}
+	if req.LinkedEPSBearerID != 6 {
+		t.Fatalf("linked EBI got %d, want 6", req.LinkedEPSBearerID)
+	}
+	if !bytes.Equal(req.PCO, []byte{0x80, 0x00, 0x0d}) {
+		t.Fatalf("PCO got %x, want %x", req.PCO, []byte{0x80, 0x00, 0x0d})
+	}
+}

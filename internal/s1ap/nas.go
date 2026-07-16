@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -225,13 +226,13 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			return
 		}
 		ue.Lock()
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
 		ue.DLNASCount.Increment()
 		ue.Unlock()
-		if err := s.SendInitialContextSetup(mmeID, protected, nil); err != nil {
-			log.Error("s1ap: SendInitialContextSetup failed (noop)", zap.Error(err))
-		}
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, protected)
 		metrics.NASProceduresTotal.WithLabelValues("Attach", "accept_noop").Inc()
-		log.Info("s1ap: ICS sent (noop S11, no bearer)")
+		log.Info("s1ap: Attach Accept sent without ICS (noop S11, no bearer)")
 		return
 	}
 
@@ -283,26 +284,48 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	// MCC2|MCC1, MNC3|MCC3, MNC2|MNC1. S1AP stores PLMN bytes in a
 	// different layout, so use the serving PLMN built from MME config here.
 	uliPLMN := plmn
+	pdnType := subscriberPDNType((*uecontext.SubscriberAPNConfig)(nil), gtpv2.PDNTypeIPv4)
+	bearerQCI := defaultBearerQCIForAPN(apn)
+	arpPriority, preemptionCapability, preemptionVulnerability := uint8(8), false, true
+	uplinkAMBR, downlinkAMBR := uint32(100_000), uint32(100_000)
+	if apnConfig != nil {
+		cfg := uecontext.SubscriberAPNConfig{
+			PDNType:                 apnConfig.PDNType,
+			QCI:                     apnConfig.QCI,
+			ARPPriority:             apnConfig.ARPPriority,
+			PreemptionCapability:    apnConfig.PreemptionCapability,
+			PreemptionVulnerability: apnConfig.PreemptionVulnerability,
+			APNAMBRUp:               apnConfig.APNAMBRUp,
+			APNAMBRDown:             apnConfig.APNAMBRDown,
+		}
+		pdnType = subscriberPDNType(&cfg, gtpv2.PDNTypeIPv4)
+		bearerQCI = subscriberBearerQCI(&cfg, apn)
+		arpPriority, preemptionCapability, preemptionVulnerability = subscriberARPProfile(&cfg)
+		uplinkAMBR, downlinkAMBR = subscriberAPNAMBR(&cfg)
+	}
 
 	csr := &gtpv2.CreateSessionRequest{
-		SGWAddress:       sgwAddr,
-		IMSI:             imsi,
-		MSISDN:           msisdn,
-		APN:              apn,
-		RATType:          gtpv2.RATTypeEUTRAN,
-		ServingNetwork:   plmn,
-		LocalS11TEID:     localTEID,
-		LocalS11IP:       localIP,
-		PGWIP:            pgwIP,
-		ULIPLMN:          uliPLMN,
-		ULITAC:           ulitac,
-		ULIECI:           ecgieci,
-		PCO:              pco,
-		PDNType:          gtpv2.PDNTypeIPv4,
-		DefaultEBI:       5,
-		BearerQCI:        9,
-		UplinkAMBRKbps:   100_000,
-		DownlinkAMBRKbps: 100_000,
+		SGWAddress:              sgwAddr,
+		IMSI:                    imsi,
+		MSISDN:                  msisdn,
+		APN:                     apn,
+		RATType:                 gtpv2.RATTypeEUTRAN,
+		ServingNetwork:          plmn,
+		LocalS11TEID:            localTEID,
+		LocalS11IP:              localIP,
+		PGWIP:                   pgwIP,
+		ULIPLMN:                 uliPLMN,
+		ULITAC:                  ulitac,
+		ULIECI:                  ecgieci,
+		PCO:                     pco,
+		PDNType:                 pdnType,
+		DefaultEBI:              5,
+		BearerQCI:               bearerQCI,
+		BearerPriorityLevel:     arpPriority,
+		PreemptionCapability:    preemptionCapability,
+		PreemptionVulnerability: preemptionVulnerability,
+		UplinkAMBRKbps:          uplinkAMBR,
+		DownlinkAMBRKbps:        downlinkAMBR,
 	}
 	if err := s.s11.SendCSR(mmeID, csr); err != nil {
 		log.Error("s1ap: SendCSR failed", zap.Error(err))
@@ -361,7 +384,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		return
 	}
 
-	if resp.Cause != gtpv2.CauseRequestAccepted {
+	if !gtpv2.IsAcceptedCause(resp.Cause) {
 		log.Warn("s1ap: CSRsp rejected",
 			zap.Uint8("cause", resp.Cause),
 			zap.String("cause_name", gtpv2.CauseName(resp.Cause)))
@@ -443,7 +466,8 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	ue.Unlock()
 
 	// Build ESM Activate Default EPS Bearer Context Request
-	esmAccept := esm.EncodePDNConnectivityAcceptWithPCO(pti, apn, ebi, ueIPv4, pgwPCO)
+	esmAPN := s.apnForNAS(apn)
+	esmAccept := esm.EncodePDNConnectivityAcceptWithPCO(pti, esmAPN, ebi, ueIPv4, pgwPCO)
 
 	var taiList []emm.TAI
 	if tai != nil {
@@ -500,6 +524,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		zap.Uint8("nas_sequence_number", protected[5]),
 		zap.Uint8("security_header_type", protected[0]>>4),
 		zap.Uint8("protocol_discriminator", protected[0]&0x0f),
+		zap.String("esm_apn", esmAPN),
 		zap.String("knas_int_prefix_hex", truncateHex(knasInt, 8)),
 		zap.String("knas_enc_prefix_hex", truncateHex(knasEnc, 8)),
 		zap.String("plain_activate_default_eps_bearer_context_request_hex", hex.EncodeToString(esmAccept)),
@@ -526,44 +551,129 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 
 // HandleMBRResult is called when a Modify Bearer Response arrives.
 func (s *Server) HandleMBRResult(mmeUEID uint32, err error) {
+	if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
+		ue.Lock()
+		for _, pdn := range ue.PDNs {
+			if pdn.State != "modify-bearer-pending" {
+				continue
+			}
+			if err != nil {
+				pdn.ModifyBearerAccepted = false
+				pdn.ModifyBearerFailed = true
+				pdn.ModifyBearerDeferred = false
+				pdn.ModifyBearerFallbackSent = false
+				pdn.State = "modify-bearer-failed"
+				apn := pdn.APN
+				ebi := pdn.DefaultEBI
+				nasAccepted := pdn.NASAccepted
+				erabEstablished := pdn.ERABEstablished
+				ue.StopTimer(imsModifyBearerSettleTimerName(ebi))
+				ue.StopTimer(imsModifyBearerTimerName(ebi))
+				ue.Unlock()
+				s.log.Warn("s1ap: PDN Modify Bearer failed",
+					zap.Uint32("mme_ue_id", mmeUEID),
+					zap.String("apn", apn),
+					zap.Uint8("ebi", ebi),
+					zap.Bool("nas_accepted", nasAccepted),
+					zap.Bool("erab_established", erabEstablished),
+					zap.Error(err))
+				s.failPendingCreateBearersForLinkedEBI(ue, ebi, gtpv2.CauseRequestRejected, "modify_bearer_failed")
+				return
+			}
+			pdn.ModifyBearerAccepted = true
+			pdn.ModifyBearerFailed = false
+			pdn.ModifyBearerDeferred = false
+			pdn.ModifyBearerFallbackSent = false
+			if pdn.NASAccepted && pdn.ERABEstablished {
+				pdn.State = "active"
+			} else {
+				pdn.State = "access-established"
+			}
+			apn := pdn.APN
+			ebi := pdn.DefaultEBI
+			nasAccepted := pdn.NASAccepted
+			erabEstablished := pdn.ERABEstablished
+			ue.StopTimer(imsModifyBearerSettleTimerName(ebi))
+			ue.StopTimer(imsModifyBearerTimerName(ebi))
+			ue.Unlock()
+			s.log.Info("s1ap: PDN Modify Bearer accepted",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.String("apn", apn),
+				zap.Uint8("ebi", ebi),
+				zap.Bool("nas_accepted", nasAccepted),
+				zap.Bool("erab_established", erabEstablished))
+			s.maybeAdvanceDefaultBearer(ue, ebi, "modify-bearer-accepted", s.log)
+			return
+		}
+		ue.Unlock()
+	}
 	if err != nil {
 		s.log.Warn("s1ap: MBRsp error (data path may degrade)",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		return
 	}
-	if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
-		ue.Lock()
-		for _, pdn := range ue.PDNs {
-			if pdn.State == "modify-bearer-pending" {
-				pdn.ModifyBearerAccepted = true
-				if pdn.NASAccepted && pdn.ERABEstablished {
-					pdn.State = "active"
-				} else {
-					pdn.State = "access-established"
-				}
-				s.log.Info("s1ap: PDN Modify Bearer accepted",
-					zap.Uint32("mme_ue_id", mmeUEID),
-					zap.String("apn", pdn.APN),
-					zap.Uint8("ebi", pdn.DefaultEBI),
-					zap.Bool("nas_accepted", pdn.NASAccepted),
-					zap.Bool("erab_established", pdn.ERABEstablished))
-				ue.Unlock()
-				return
-			}
-		}
-		ue.Unlock()
-	}
 	s.log.Info("s1ap: MBR accepted, data path established", zap.Uint32("mme_ue_id", mmeUEID))
 }
 
 // HandleDSRResult is called when a Delete Session Response arrives.
-func (s *Server) HandleDSRResult(mmeUEID uint32, err error) {
+func (s *Server) HandleDSRResult(mmeUEID uint32, linkedEBI uint8, err error) {
 	if err != nil {
-		s.log.Warn("s1ap: DSRsp error", zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
+		s.log.Warn("s1ap: DSRsp error",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint8("linked_ebi", linkedEBI),
+			zap.Error(err))
 		return
 	}
-	s.log.Info("s1ap: DSRsp accepted, session deleted", zap.Uint32("mme_ue_id", mmeUEID))
+	s.log.Info("s1ap: DSRsp accepted, session deleted",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("linked_ebi", linkedEBI))
+	if s.cleanupDisconnectedPDN(mmeUEID, linkedEBI, "s11-delete-session") {
+		if s.detachedUEDeleteSessionsComplete(mmeUEID) {
+			s.cleanupDetachedUE(mmeUEID, "s11-delete-session")
+		}
+		return
+	}
 	s.cleanupDetachedUE(mmeUEID, "s11-delete-session")
+}
+
+func (s *Server) cleanupDisconnectedPDN(mmeUEID uint32, linkedEBI uint8, reason string) bool {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return false
+	}
+	ue.Lock()
+	var targetAPN string
+	var removedLinkedEBI uint8
+	for apn, pdn := range ue.PDNs {
+		if pdn == nil || pdn.State != "pdn-disconnect-delete-session-pending" {
+			continue
+		}
+		if linkedEBI != 0 && pdn.DefaultEBI != linkedEBI {
+			continue
+		}
+		targetAPN = apn
+		removedLinkedEBI = pdn.DefaultEBI
+		delete(ue.PDNs, apn)
+		break
+	}
+	if targetAPN == "" {
+		ue.Unlock()
+		return false
+	}
+	for ebi, proc := range ue.DedicatedBearers {
+		if proc != nil && proc.LinkedEBI == removedLinkedEBI {
+			delete(ue.DedicatedBearers, ebi)
+		}
+	}
+	imsi := ue.IMSI
+	ue.Unlock()
+	s.log.Info("s1ap: PDN context removed after DSRsp",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.String("apn", targetAPN),
+		zap.Uint8("linked_ebi", removedLinkedEBI),
+		zap.String("reason", reason))
+	return true
 }
 
 func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
@@ -597,31 +707,213 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 		zap.String("reason", reason))
 }
 
+func (s *Server) detachedUEDeleteSessionsComplete(mmeUEID uint32) bool {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return false
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.EMMState != emm.StateDeregisteredInitiated {
+		return false
+	}
+	if ue.SGWC_TEID != 0 {
+		return false
+	}
+	for _, pdn := range ue.PDNs {
+		if pdn == nil {
+			continue
+		}
+		if pdn.State == "pdn-disconnect-delete-session-pending" || pdn.SGWC_TEID != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // sendDeleteSession sends a GTPv2-C Delete Session Request to the S-GW for the given UE.
-// It reads and clears SGWC_TEID under lock so subsequent calls are no-ops.
+// It resolves the linked default bearer from the authoritative PDN context when
+// present and clears the selected control-plane TEID under lock so repeated calls
+// stay idempotent across detach and UE context release cleanup.
 func (s *Server) sendDeleteSession(ue *uecontext.Context) {
 	ue.Lock()
-	sgwcTEID := ue.SGWC_TEID
-	ue.SGWC_TEID = 0 // prevent double-send across processDetach → handleUEContextReleaseComplete
-	sgwAddr := ue.SGWAddress
-	ebi := ue.DefaultEBI
-	imsi := ue.IMSI
-	mmeID := ue.MMEUES1APID
-	apn := ue.APN
+	sgwcTEID, sgwAddr, ebi, imsi, mmeID, apn := resolveDeleteSessionTargetLocked(ue)
+	localS11TEID := ue.LocalS11TEID
+	ecgieci := ue.ECGIECI
+	var ulitac uint16
+	if ue.TAI != nil {
+		ulitac = ue.TAI.TAC
+	}
 	ue.Unlock()
 
 	if sgwcTEID == 0 {
 		return // no session established, or DSR already sent
 	}
+	req := s.buildDeleteSessionRequest(sgwAddr, sgwcTEID, ebi, localS11TEID, ulitac, ecgieci)
 	s.log.Info("s1ap: sending Delete Session Request",
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeID),
 		zap.String("apn", apn),
 		zap.Uint8("ebi", ebi),
 		zap.Uint32("sgwc_teid", sgwcTEID))
-	if err := s.s11.SendDSR(mmeID, &gtpv2.DeleteSessionRequest{SGWAddress: sgwAddr, SGWC_TEID: sgwcTEID, EBI: ebi}); err != nil {
+	if err := s.s11.SendDSR(mmeID, req); err != nil {
 		s.log.Warn("s1ap: SendDSR failed", zap.Uint32("mme_ue_id", mmeID), zap.Error(err))
 	}
+}
+
+func (s *Server) sendDeleteSessionsForDetach(ue *uecontext.Context) {
+	ue.Lock()
+	if ue.DefaultEBI != 0 && ue.APN != "" {
+		_ = findPDNByLinkedEBILocked(ue, ue.DefaultEBI)
+	}
+	linkedEBIs := make([]uint8, 0, len(ue.PDNs))
+	seen := make(map[uint8]struct{}, len(ue.PDNs))
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.DefaultEBI == 0 || pdn.SGWC_TEID == 0 {
+			continue
+		}
+		if _, ok := seen[pdn.DefaultEBI]; ok {
+			continue
+		}
+		seen[pdn.DefaultEBI] = struct{}{}
+		linkedEBIs = append(linkedEBIs, pdn.DefaultEBI)
+	}
+	legacyPending := ue.SGWC_TEID != 0
+	ue.Unlock()
+
+	if len(linkedEBIs) == 0 {
+		if legacyPending {
+			s.sendDeleteSession(ue)
+		}
+		return
+	}
+	for _, linkedEBI := range linkedEBIs {
+		s.sendDeleteSessionForPDN(ue, linkedEBI, s.log)
+	}
+}
+
+func resolveDeleteSessionTargetLocked(ue *uecontext.Context) (uint32, string, uint8, string, uint32, string) {
+	sgwcTEID := ue.SGWC_TEID
+	sgwAddr := ue.SGWAddress
+	ebi := ue.DefaultEBI
+	imsi := ue.IMSI
+	mmeID := ue.MMEUES1APID
+	apn := ue.APN
+	if sgwcTEID == 0 {
+		return 0, sgwAddr, ebi, imsi, mmeID, apn
+	}
+	if pdn := resolvePDNForDeleteSessionLocked(ue, sgwcTEID); pdn != nil {
+		if pdn.DefaultEBI != 0 {
+			ebi = pdn.DefaultEBI
+		}
+		if pdn.SGWAddress != "" {
+			sgwAddr = pdn.SGWAddress
+		}
+		if pdn.APN != "" {
+			apn = pdn.APN
+		}
+		pdn.SGWC_TEID = 0
+	}
+	ue.SGWC_TEID = 0
+	return sgwcTEID, sgwAddr, ebi, imsi, mmeID, apn
+}
+
+func resolvePDNForDeleteSessionLocked(ue *uecontext.Context, sgwcTEID uint32) *uecontext.PDNContext {
+	if ue == nil || sgwcTEID == 0 {
+		return nil
+	}
+	for _, pdn := range ue.PDNs {
+		if pdn == nil {
+			continue
+		}
+		if pdn.SGWC_TEID == sgwcTEID {
+			return pdn
+		}
+	}
+	if ue.APN != "" {
+		if pdn := ue.PDNs[ue.APN]; pdn != nil && pdn.SGWC_TEID != 0 {
+			return pdn
+		}
+	}
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.SGWC_TEID == 0 {
+			continue
+		}
+		return pdn
+	}
+	return nil
+}
+
+func (s *Server) sendDeleteSessionForPDN(ue *uecontext.Context, linkedEBI uint8, log *zap.Logger) {
+	ue.Lock()
+	pdn := findPDNByLinkedEBILocked(ue, linkedEBI)
+	if pdn == nil {
+		ue.Unlock()
+		return
+	}
+	sgwcTEID := pdn.SGWC_TEID
+	sgwAddr := pdn.SGWAddress
+	apn := pdn.APN
+	mmeID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	localS11TEID := pdn.LocalS11TEID
+	if localS11TEID == 0 {
+		localS11TEID = ue.LocalS11TEID
+	}
+	ecgieci := ue.ECGIECI
+	var ulitac uint16
+	if ue.TAI != nil {
+		ulitac = ue.TAI.TAC
+	}
+	pdn.SGWC_TEID = 0
+	pdn.State = "pdn-disconnect-delete-session-pending"
+	if ue.DefaultEBI == linkedEBI || ue.SGWC_TEID == sgwcTEID {
+		ue.SGWC_TEID = 0
+	}
+	ue.Unlock()
+
+	if sgwcTEID == 0 {
+		log.Info("s1ap: PDN disconnect completed without DSR",
+			zap.Uint32("mme_ue_id", mmeID),
+			zap.String("imsi", imsi),
+			zap.String("apn", apn),
+			zap.Uint8("linked_ebi", linkedEBI))
+		s.cleanupDisconnectedPDN(mmeID, linkedEBI, "no-s11-session")
+		return
+	}
+	log.Info("s1ap: sending PDN Delete Session Request",
+		zap.Uint32("mme_ue_id", mmeID),
+		zap.String("imsi", imsi),
+		zap.String("apn", apn),
+		zap.Uint8("linked_ebi", linkedEBI),
+		zap.Uint32("sgwc_teid", sgwcTEID))
+	req := s.buildDeleteSessionRequest(sgwAddr, sgwcTEID, linkedEBI, localS11TEID, ulitac, ecgieci)
+	if err := s.s11.SendDSR(mmeID, req); err != nil {
+		log.Warn("s1ap: PDN SendDSR failed",
+			zap.Uint32("mme_ue_id", mmeID),
+			zap.String("apn", apn),
+			zap.Error(err))
+	}
+}
+
+func (s *Server) buildDeleteSessionRequest(sgwAddr string, sgwcTEID uint32, ebi uint8, localS11TEID uint32, ulitac uint16, ecgieci uint32) *gtpv2.DeleteSessionRequest {
+	req := &gtpv2.DeleteSessionRequest{
+		SGWAddress:          sgwAddr,
+		SGWC_TEID:           sgwcTEID,
+		EBI:                 ebi,
+		LocalS11TEID:        localS11TEID,
+		LocalS11IP:          net.IP(s.s11LocalIP),
+		IncludeIndicationOI: true,
+	}
+	if ulitac != 0 || ecgieci != 0 {
+		req.IncludeULI = true
+		req.ULIPLMN = s.buildPLMN()
+		req.ULITAC = ulitac
+		req.ULIECI = ecgieci
+		req.IncludeULITimestamp = true
+		req.ULITimestamp = uint32(time.Now().UTC().Unix()) + 2208988800
+	}
+	return req
 }
 
 // buildPLMN builds the 3-byte PLMN BCD from the NF config (MCC+MNC).
@@ -642,6 +934,14 @@ func (s *Server) buildPLMN() [3]byte {
 		plmn[2] = (digit(mnc[1]) << 4) | digit(mnc[0])
 	}
 	return plmn
+}
+
+func (s *Server) apnForNAS(apn string) string {
+	apn = strings.TrimSpace(apn)
+	if apn == "" {
+		return apn
+	}
+	return strings.TrimSuffix(apn, ".")
 }
 
 func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, guti *emm.GUTI) {
@@ -699,14 +999,52 @@ func cloneSubscriberAPNConfigs(profile *gateway.SubscriberProfile) map[string]ue
 	out := make(map[string]uecontext.SubscriberAPNConfig, len(profile.APNs))
 	for name, cfg := range profile.APNs {
 		out[name] = uecontext.SubscriberAPNConfig{
-			ContextIdentifier:   cfg.ContextIdentifier,
-			ServiceSelection:    cfg.ServiceSelection,
-			MIPHomeAgentAddress: append(net.IP(nil), cfg.MIPHomeAgentAddress...),
-			MIPHomeAgentHost:    cfg.MIPHomeAgentHost,
-			PDNGWAllocationType: cloneInt32Ptr(cfg.PDNGWAllocationType),
+			ContextIdentifier:       cfg.ContextIdentifier,
+			ServiceSelection:        cfg.ServiceSelection,
+			MIPHomeAgentAddress:     append(net.IP(nil), cfg.MIPHomeAgentAddress...),
+			MIPHomeAgentHost:        cfg.MIPHomeAgentHost,
+			PDNGWAllocationType:     cloneInt32Ptr(cfg.PDNGWAllocationType),
+			PDNType:                 cfg.PDNType,
+			QCI:                     cfg.QCI,
+			ARPPriority:             cfg.ARPPriority,
+			PreemptionCapability:    cfg.PreemptionCapability,
+			PreemptionVulnerability: cfg.PreemptionVulnerability,
+			APNAMBRDown:             cfg.APNAMBRDown,
+			APNAMBRUp:               cfg.APNAMBRUp,
 		}
 	}
 	return out
+}
+
+func subscriberPDNType(cfg *uecontext.SubscriberAPNConfig, fallback uint8) uint8 {
+	if cfg != nil && cfg.PDNType != 0 {
+		return cfg.PDNType
+	}
+	if fallback != 0 {
+		return fallback
+	}
+	return gtpv2.PDNTypeIPv4
+}
+
+func subscriberBearerQCI(cfg *uecontext.SubscriberAPNConfig, apn string) uint8 {
+	if cfg != nil && cfg.QCI != 0 {
+		return cfg.QCI
+	}
+	return defaultBearerQCIForAPN(apn)
+}
+
+func subscriberARPProfile(cfg *uecontext.SubscriberAPNConfig) (uint8, bool, bool) {
+	if cfg != nil && cfg.ARPPriority != 0 {
+		return cfg.ARPPriority, cfg.PreemptionCapability, cfg.PreemptionVulnerability
+	}
+	return 8, false, true
+}
+
+func subscriberAPNAMBR(cfg *uecontext.SubscriberAPNConfig) (uint32, uint32) {
+	if cfg != nil && (cfg.APNAMBRUp != 0 || cfg.APNAMBRDown != 0) {
+		return cfg.APNAMBRUp, cfg.APNAMBRDown
+	}
+	return 100_000, 100_000
 }
 
 func cloneInt32Ptr(v *int32) *int32 {

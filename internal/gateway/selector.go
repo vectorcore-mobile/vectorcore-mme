@@ -34,16 +34,25 @@ const (
 )
 
 type APNConfiguration struct {
-	ContextIdentifier   uint32
-	ServiceSelection    string
-	MIPHomeAgentAddress net.IP
-	MIPHomeAgentHost    string
-	PDNGWAllocationType *int32
+	ContextIdentifier       uint32
+	ServiceSelection        string
+	MIPHomeAgentAddress     net.IP
+	MIPHomeAgentHost        string
+	PDNGWAllocationType     *int32
+	PDNType                 uint8
+	QCI                     uint8
+	ARPPriority             uint8
+	PreemptionCapability    bool
+	PreemptionVulnerability bool
+	APNAMBRDown             uint32
+	APNAMBRUp               uint32
 }
 
 type SubscriberProfile struct {
 	DefaultContextID uint32
 	APNs             map[string]APNConfiguration
+	UEAMBRDown       uint32
+	UEAMBRUp         uint32
 }
 
 func (p *SubscriberProfile) DefaultAPNConfiguration() *APNConfiguration {

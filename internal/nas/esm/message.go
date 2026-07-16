@@ -19,7 +19,9 @@ const (
 	MsgPDNDisconnectRequest                     uint8 = 0xD2
 	MsgPDNDisconnectReject                      uint8 = 0xD3
 	MsgBearerResourceAllocationRequest          uint8 = 0xD4
+	MsgBearerResourceAllocationReject           uint8 = 0xD5
 	MsgBearerResourceModificationRequest        uint8 = 0xD6
+	MsgBearerResourceModificationReject         uint8 = 0xD7
 	MsgESMStatus                                uint8 = 0xE8
 	MsgESMInformationRequest                    uint8 = 0xD9
 	MsgESMInformation                           uint8 = MsgESMInformationRequest
@@ -56,6 +58,59 @@ type ESMHeader struct {
 type ESMMessage struct {
 	Header  ESMHeader
 	Payload []byte
+}
+
+func MessageTypeName(messageType uint8) string {
+	switch messageType {
+	case MsgActivateDefaultEPSBearerContextRequest:
+		return "ActivateDefaultEPSBearerContextRequest"
+	case MsgActivateDefaultEPSBearerContextAccept:
+		return "ActivateDefaultEPSBearerContextAccept"
+	case MsgActivateDefaultEPSBearerContextReject:
+		return "ActivateDefaultEPSBearerContextReject"
+	case MsgActivateDedicatedEPSBearerContextRequest:
+		return "ActivateDedicatedEPSBearerContextRequest"
+	case MsgActivateDedicatedEPSBearerContextAccept:
+		return "ActivateDedicatedEPSBearerContextAccept"
+	case MsgActivateDedicatedEPSBearerContextReject:
+		return "ActivateDedicatedEPSBearerContextReject"
+	case MsgModifyEPSBearerContextRequest:
+		return "ModifyEPSBearerContextRequest"
+	case MsgModifyEPSBearerContextAccept:
+		return "ModifyEPSBearerContextAccept"
+	case MsgModifyEPSBearerContextReject:
+		return "ModifyEPSBearerContextReject"
+	case MsgDeactivateEPSBearerContextRequest:
+		return "DeactivateEPSBearerContextRequest"
+	case MsgDeactivateEPSBearerContextAccept:
+		return "DeactivateEPSBearerContextAccept"
+	case MsgPDNConnectivityRequest:
+		return "PDNConnectivityRequest"
+	case MsgPDNConnectivityReject:
+		return "PDNConnectivityReject"
+	case MsgPDNDisconnectRequest:
+		return "PDNDisconnectRequest"
+	case MsgPDNDisconnectReject:
+		return "PDNDisconnectReject"
+	case MsgBearerResourceAllocationRequest:
+		return "BearerResourceAllocationRequest"
+	case MsgBearerResourceAllocationReject:
+		return "BearerResourceAllocationReject"
+	case MsgBearerResourceModificationRequest:
+		return "BearerResourceModificationRequest"
+	case MsgBearerResourceModificationReject:
+		return "BearerResourceModificationReject"
+	case MsgESMStatus:
+		return "ESMStatus"
+	case MsgESMInformationRequest:
+		return "ESMInformationRequest"
+	case MsgESMInformationResponse:
+		return "ESMInformationResponse"
+	case MsgNotification:
+		return "Notification"
+	default:
+		return "unknown"
+	}
 }
 
 // Decode decodes an ESM message from the ESM container bytes.

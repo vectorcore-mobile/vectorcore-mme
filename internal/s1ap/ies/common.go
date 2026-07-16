@@ -361,10 +361,17 @@ const (
 	CauseRadioNetworkUserInactivity        uint8 = 20 // user-inactivity=20
 	CauseRadioNetworkHOCancelled           uint8 = 4  // handover-cancelled=4
 	CauseRadioNetworkUnknownTargetID       uint8 = 11 // unknown-targetID=11
+	CauseRadioNetworkUnknownMMEUES1APID    uint8 = 13 // unknown-mme-ue-s1ap-id=13
+	CauseRadioNetworkUnknownENBUES1APID    uint8 = 14 // unknown-enb-ue-s1ap-id=14
+	CauseRadioNetworkUnknownPairUES1APID   uint8 = 15 // unknown-pair-ue-s1ap-id=15
 	CauseNASNormalRelease                  uint8 = 0
 	CauseNASAuthentication                 uint8 = 1
 	CauseNASDetach                         uint8 = 2
 	CauseNASUnspecified                    uint8 = 3
+	CauseProtocolTransferSyntaxError       uint8 = 0
+	CauseProtocolAbstractSyntaxErrorReject uint8 = 1
+	CauseProtocolSemanticError             uint8 = 4
+	CauseProtocolFalselyConstructedMessage uint8 = 5
 	CauseMiscControlProcessingOverload     uint8 = 0
 	CauseMiscUnspecified                   uint8 = 5
 )
@@ -637,6 +644,32 @@ func EncodePagingDRX(drx uint8) []byte {
 	w.WriteBit(0) // no extension
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(drx), 0, 3)
 	return w.Bytes()
+}
+
+// DecodePagingDRX decodes the DefaultPagingDRX IE (ENUMERATED).
+func DecodePagingDRX(data []byte) (uint8, error) {
+	r := aper.NewBitReader(data)
+	ext, err := r.ReadBit()
+	if err != nil {
+		return 0, err
+	}
+	if ext != 0 {
+		return 0, fmt.Errorf("ies: PagingDRX extension not supported")
+	}
+	v, err := aper.DecodeConstrainedWholeNumber(r, 0, 3)
+	if err != nil {
+		return 0, err
+	}
+	for r.Remaining() > 0 {
+		bit, err := r.ReadBit()
+		if err != nil {
+			return 0, err
+		}
+		if bit != 0 {
+			return 0, fmt.Errorf("ies: PagingDRX has non-zero trailing padding")
+		}
+	}
+	return uint8(v), nil
 }
 
 // EncodeRelativeMMECapacity encodes RelativeMMECapacity INTEGER (0..255).

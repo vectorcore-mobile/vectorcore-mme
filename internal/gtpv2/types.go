@@ -3,6 +3,8 @@
 // implemented: Create/Modify/Delete Session.
 package gtpv2
 
+import "errors"
+
 // Message type codes (TS 29.274 Table 6.1-1).
 const (
 	MsgEchoRequest           uint8 = 1
@@ -52,6 +54,7 @@ const (
 	IETypeCompleteRequestMsg uint8 = 116 // TS 29.274 §8.47 (raw NAS PDU)
 	IETypeAPNRestriction     uint8 = 127
 	IETypeSelectionMode      uint8 = 128
+	IETypeULITimestamp       uint8 = 170 // TS 29.274 §8.141 (ULI Timestamp)
 )
 
 // ULI flags (TS 29.274 §8.21, octet 5 bit positions 1=LSB).
@@ -63,22 +66,65 @@ const (
 // Cause values (TS 29.274 Table 8.4-1, selected).
 const (
 	CauseRequestAccepted             uint8 = 16
-	CauseRequestDenied               uint8 = 17
+	CauseRequestAcceptedPartially    uint8 = 17
+	CauseNewPDNTypeDueToNetworkPref  uint8 = 18
+	CauseNewPDNTypeDueToSingleAddr   uint8 = 19
 	CauseContextNotFound             uint8 = 64
 	CauseInvalidMsgFormat            uint8 = 65
 	CauseServiceNotSupported         uint8 = 68
 	CauseMandatoryIEIncorrect        uint8 = 69
 	CauseMandatoryIEMissing          uint8 = 70
-	CauseAllDynamicAddressesOccupied uint8 = 73
+	CauseSystemFailure               uint8 = 72
+	CauseAllDynamicAddressesOccupied uint8 = 84
+	CauseUERefuses                   uint8 = 88
+	CauseRequestRejected             uint8 = 94
 	CauseConditionalIEMissing        uint8 = 103
+
+	// Deprecated alias kept for existing callers that still mean "rejected".
+	CauseRequestDenied uint8 = CauseRequestRejected
 )
+
+var (
+	ErrMandatoryIEMissing   = errors.New("gtpv2: mandatory IE missing")
+	ErrMandatoryIEIncorrect = errors.New("gtpv2: mandatory IE incorrect")
+	ErrConditionalIEMissing = errors.New("gtpv2: conditional IE missing")
+)
+
+func IsAcceptedCause(cause uint8) bool {
+	switch cause {
+	case CauseRequestAccepted,
+		CauseRequestAcceptedPartially,
+		CauseNewPDNTypeDueToNetworkPref,
+		CauseNewPDNTypeDueToSingleAddr:
+		return true
+	default:
+		return false
+	}
+}
+
+func DecodeErrorCause(err error) uint8 {
+	switch {
+	case errors.Is(err, ErrMandatoryIEMissing):
+		return CauseMandatoryIEMissing
+	case errors.Is(err, ErrMandatoryIEIncorrect):
+		return CauseMandatoryIEIncorrect
+	case errors.Is(err, ErrConditionalIEMissing):
+		return CauseConditionalIEMissing
+	default:
+		return CauseInvalidMsgFormat
+	}
+}
 
 func CauseName(cause uint8) string {
 	switch cause {
 	case CauseRequestAccepted:
 		return "Request accepted"
-	case CauseRequestDenied:
-		return "Request denied"
+	case CauseRequestAcceptedPartially:
+		return "Request accepted partially"
+	case CauseNewPDNTypeDueToNetworkPref:
+		return "New PDN type due to network preference"
+	case CauseNewPDNTypeDueToSingleAddr:
+		return "New PDN type due to single address bearer only"
 	case CauseContextNotFound:
 		return "Context not found"
 	case CauseInvalidMsgFormat:
@@ -89,8 +135,14 @@ func CauseName(cause uint8) string {
 		return "Mandatory IE incorrect"
 	case CauseMandatoryIEMissing:
 		return "Mandatory IE missing"
+	case CauseSystemFailure:
+		return "System failure"
 	case CauseAllDynamicAddressesOccupied:
 		return "All dynamic addresses are occupied"
+	case CauseUERefuses:
+		return "UE refuses"
+	case CauseRequestRejected:
+		return "Request rejected"
 	case CauseConditionalIEMissing:
 		return "Conditional IE missing"
 	default:
@@ -143,4 +195,5 @@ const (
 const (
 	FTEIDInstanceSender uint8 = 0 // MME S11 F-TEID in CSReq; eNB S1U in MBReq Bearer Context
 	FTEIDInstanceSGWC   uint8 = 0 // S-GW C-plane F-TEID returned in CSRsp (outer, TS 29.274 Table 7.2.2-1)
+	FTEIDInstanceSGWU   uint8 = 1 // S-GW user-plane F-TEID in bearer context responses
 )

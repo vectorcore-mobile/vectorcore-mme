@@ -82,8 +82,9 @@ type PeerMMEConfig struct {
 
 // S11Config holds the GTPv2-C S11 interface configuration (MME ↔ S-GW).
 type S11Config struct {
-	BindAddress string `yaml:"bind_address"` // local IP for MME S11 socket
-	BindPort    int    `yaml:"bind_port"`    // default 2123
+	BindAddress            string `yaml:"bind_address"`             // local IP for MME S11 socket
+	BindPort               int    `yaml:"bind_port"`                // default 2123
+	RecoveryRestartCounter uint8  `yaml:"recovery_restart_counter"` // GTPv2 Recovery IE value used in Echo Response
 }
 
 type GatewaySelectionConfig struct {

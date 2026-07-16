@@ -45,6 +45,9 @@ func DecodeIEs(b []byte) ([]IE, error) {
 		ies = append(ies, IE{Type: ieType, Instance: instance, Value: val})
 		b = b[length:]
 	}
+	if len(b) != 0 {
+		return nil, fmt.Errorf("gtpv2: trailing %d byte(s) after IE section", len(b))
+	}
 	return ies, nil
 }
 
@@ -81,6 +84,18 @@ func EncodeMSISDN(msisdn string) IE {
 // EncodeRATType encodes the RAT-Type IE.
 func EncodeRATType(rat uint8) IE {
 	return IE{Type: IETypeRATType, Instance: 0, Value: []byte{rat}}
+}
+
+// EncodeIndicationCRSI encodes an Indication IE with only CRSI set.
+// This matches the reference piggybacked Modify Bearer Request used on the IMS path.
+func EncodeIndicationCRSI() IE {
+	return IE{Type: IETypeIndication, Instance: 0, Value: []byte{0x00, 0x10, 0, 0, 0, 0, 0, 0}}
+}
+
+// EncodeIndicationOI encodes an Indication IE with only OI set.
+// This matches the Cisco MME Delete Session Request shape captured on S11.
+func EncodeIndicationOI() IE {
+	return IE{Type: IETypeIndication, Instance: 0, Value: []byte{0x08, 0x00, 0, 0, 0, 0, 0, 0}}
 }
 
 // EncodeServingNetwork encodes the Serving Network IE (3-byte PLMN BCD: MCC+MNC TS 24.008 §10.5.1.13).
@@ -211,16 +226,21 @@ func DecodeFTEID(ie *IE) (*FTEID, error) {
 	}
 	flags := ie.Value[0]
 	ifaceType := flags & 0x3F
-	v4bit := (flags >> 7) & 0x01
+	v4bit := (flags & 0x80) != 0
+	v6bit := (flags & 0x40) != 0
 	teid := binary.BigEndian.Uint32(ie.Value[1:5])
-	var ip net.IP
-	if v4bit == 1 {
-		if len(ie.Value) < 9 {
-			return nil, fmt.Errorf("gtpv2: FTEID too short for IPv4 (%d)", len(ie.Value))
-		}
-		ip = make(net.IP, 4)
-		copy(ip, ie.Value[5:9])
+	if v6bit {
+		return nil, fmt.Errorf("gtpv2: IPv6 FTEID not supported")
 	}
+	if !v4bit {
+		return nil, fmt.Errorf("gtpv2: FTEID missing address flags")
+	}
+	if len(ie.Value) != 9 {
+		return nil, fmt.Errorf("gtpv2: FTEID IPv4 length got %d, want 9", len(ie.Value))
+	}
+	var ip net.IP
+	ip = make(net.IP, 4)
+	copy(ip, ie.Value[5:9])
 	return &FTEID{InterfaceType: ifaceType, TEID: teid, IP: ip}, nil
 }
 
@@ -231,8 +251,8 @@ func EncodeSelectionMode(mode uint8) IE {
 
 // EncodeCause encodes a Cause IE.
 func EncodeCause(cause uint8) IE {
-	// 4 bytes: cause[0], flags[1]=0, offending IE type[2]=0, offending IE instance[3]=0
-	return IE{Type: IETypeCause, Instance: 0, Value: []byte{cause, 0, 0, 0}}
+	// Short form: cause[0], flags[1]=0. Offending IE fields are omitted unless needed.
+	return IE{Type: IETypeCause, Instance: 0, Value: []byte{cause, 0}}
 }
 
 // EncodeRecovery encodes the Recovery IE restart counter.
@@ -289,6 +309,14 @@ func EncodeULI(plmn [3]byte, tac uint16, eci uint32) IE {
 	val[11] = byte(eci >> 8)
 	val[12] = byte(eci)
 	return IE{Type: IETypeULI, Instance: 0, Value: val}
+}
+
+// EncodeULITimestamp encodes the ULI Timestamp IE (TS 29.274 §8.141).
+// The value is a 32-bit NTP timestamp in whole seconds.
+func EncodeULITimestamp(ts uint32) IE {
+	val := make([]byte, 4)
+	binary.BigEndian.PutUint32(val, ts)
+	return IE{Type: IETypeULITimestamp, Instance: 0, Value: val}
 }
 
 // EncodeGrouped wraps a list of IEs into a grouped IE value (for Bearer Context).

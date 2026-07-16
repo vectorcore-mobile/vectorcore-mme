@@ -26,6 +26,8 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 	var globalENBID *ies.GlobalENBID
 	var enbName string
 	var supportedTAs []SupportedTA
+	var supportedTAsPresent bool
+	var defaultPagingDRXPresent bool
 
 	for _, ie := range ieList {
 		switch ie.ID {
@@ -47,12 +49,32 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 			}
 
 		case pdu.IESupportedTAs:
-			supportedTAs = decodeSupportedTAs(ie.Value)
+			decoded, err := decodeSupportedTAsStrict(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: SupportedTAs decode error; accepting S1Setup with empty SupportedTAs for compatibility",
+					zap.Error(err),
+					zap.String("supported_tas_hex", hex.EncodeToString(ie.Value)))
+				supportedTAs = nil
+				supportedTAsPresent = true
+				break
+			}
+			supportedTAs = decoded
+			supportedTAsPresent = true
+		case pdu.IEDefaultPagingDRX:
+			if _, err := ies.DecodePagingDRX(ie.Value); err != nil {
+				log.Error("s1ap: DefaultPagingDRX decode error", zap.Error(err))
+				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
+			defaultPagingDRXPresent = true
 		}
 	}
 
-	if globalENBID == nil {
-		log.Warn("s1ap: S1Setup missing Global-ENB-ID")
+	if globalENBID == nil || !supportedTAsPresent || !defaultPagingDRXPresent {
+		log.Warn("s1ap: S1Setup missing mandatory IE",
+			zap.Bool("global_enb_id_present", globalENBID != nil),
+			zap.Bool("supported_tas_present", supportedTAsPresent),
+			zap.Bool("default_paging_drx_present", defaultPagingDRXPresent))
 		s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, 0)
 		return
 	}
@@ -196,10 +218,80 @@ func (s *Server) sendS1SetupFailure(remoteAddr string, p *pdu.PDU, group ies.Cau
 
 // handleReset handles an S1AP Reset message from an eNB.
 func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
-	s.log.Info("s1ap: Reset received", zap.String("remote", remoteAddr))
+	log := s.log.With(zap.String("remote", remoteAddr), zap.String("procedure", "Reset"))
+	var causePresent bool
+	var resetTypePresent bool
+	for _, ie := range ieList {
+		switch ie.ID {
+		case pdu.IECause:
+			if _, _, err := ies.DecodeCause(ie.Value); err != nil {
+				log.Warn("s1ap: Reset Cause decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
+			causePresent = true
+		case pdu.IEResetType:
+			if err := validateResetType(ie.Value); err != nil {
+				log.Warn("s1ap: Reset ResetType decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
+			resetTypePresent = true
+		}
+	}
+	if !causePresent || !resetTypePresent {
+		log.Warn("s1ap: Reset missing mandatory IE",
+			zap.Bool("cause_present", causePresent),
+			zap.Bool("reset_type_present", resetTypePresent))
+		diagItems := make([]criticalityDiagnosticItem, 0, 2)
+		if !causePresent {
+			diagItems = append(diagItems, criticalityDiagnosticItem{Criticality: aper.CriticalityIgnore, IEID: pdu.IECause, TypeOfError: typeOfErrorMissing})
+		}
+		if !resetTypePresent {
+			diagItems = append(diagItems, criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IEResetType, TypeOfError: typeOfErrorMissing})
+		}
+		s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError, diagItems...)
+		return
+	}
+	log.Info("s1ap: Reset received")
 	// Send Reset Acknowledge
 	resp := pdu.BuildSuccessfulOutcome(pdu.ProcReset, aper.CriticalityReject, nil)
 	s.sendToAddr(remoteAddr, resp)
+}
+
+func validateResetType(data []byte) error {
+	r := aper.NewBitReader(data)
+	ext, err := r.ReadBit()
+	if err != nil {
+		return err
+	}
+	if ext != 0 {
+		return fmt.Errorf("ies: ResetType extension not supported")
+	}
+	choice, err := r.ReadBit()
+	if err != nil {
+		return err
+	}
+	switch choice {
+	case 0:
+		innerExt, err := r.ReadBit()
+		if err != nil {
+			return err
+		}
+		if innerExt != 0 {
+			return fmt.Errorf("ies: ResetAll extension not supported")
+		}
+		if _, err := aper.DecodeConstrainedWholeNumber(r, 0, 0); err != nil {
+			return err
+		}
+	case 1:
+		if r.Remaining() == 0 {
+			return fmt.Errorf("ies: partOfS1-Interface list missing")
+		}
+	default:
+		return fmt.Errorf("ies: unsupported ResetType choice %d", choice)
+	}
+	return nil
 }
 
 // decodeSupportedTAs is a best-effort decoder for the SupportedTAs IE.
@@ -208,7 +300,42 @@ func decodeSupportedTAs(data []byte) []SupportedTA {
 		return tas
 	}
 	tas, _ := decodeSupportedTAsBareItem(data)
+	if len(tas) > 0 {
+		return tas
+	}
+	if tas, ok := decodeSupportedTAsWithItemHeaderPackedTAC(data); ok {
+		return tas
+	}
+	tas, _ = decodeSupportedTAsBareItemPackedTAC(data)
 	return tas
+}
+
+func decodeSupportedTAsStrict(data []byte) ([]SupportedTA, error) {
+	if tas, ok := decodeSupportedTAsWithItemHeader(data); ok {
+		return tas, nil
+	}
+	if tas, ok := decodeSupportedTAsBareItem(data); ok {
+		return tas, nil
+	}
+	if tas, ok := decodeSupportedTAsWithItemHeaderPackedTAC(data); ok {
+		return tas, nil
+	}
+	if tas, ok := decodeSupportedTAsBareItemPackedTAC(data); ok {
+		return tas, nil
+	}
+	if tas := decodeSupportedTAs(data); len(tas) > 0 {
+		valid := true
+		for _, ta := range tas {
+			if len(ta.BroadcastPLMNs) == 0 {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return tas, nil
+		}
+	}
+	return nil, fmt.Errorf("ies: SupportedTAs decode failed")
 }
 
 func decodeSupportedTAsWithItemHeader(data []byte) ([]SupportedTA, bool) {
@@ -252,6 +379,47 @@ func decodeSupportedTAsBareItem(data []byte) ([]SupportedTA, bool) {
 	return out, true
 }
 
+func decodeSupportedTAsWithItemHeaderPackedTAC(data []byte) ([]SupportedTA, bool) {
+	r := aper.NewBitReader(data)
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil || count < 1 {
+		return nil, false
+	}
+	out := make([]SupportedTA, 0, int(count))
+	for i := 0; i < int(count); i++ {
+		ext, err := r.ReadBit()
+		if err != nil || ext != 0 {
+			return nil, false
+		}
+		if _, err := r.ReadBit(); err != nil {
+			return nil, false
+		}
+		ta, err := decodeSupportedTAItemFieldsPackedTAC(r)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, ta)
+	}
+	return out, true
+}
+
+func decodeSupportedTAsBareItemPackedTAC(data []byte) ([]SupportedTA, bool) {
+	r := aper.NewBitReader(data)
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil || count < 1 {
+		return nil, false
+	}
+	out := make([]SupportedTA, 0, int(count))
+	for i := 0; i < int(count); i++ {
+		ta, err := decodeSupportedTAItemFieldsPackedTAC(r)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, ta)
+	}
+	return out, true
+}
+
 func decodeSupportedTAItemFields(r *aper.BitReader) (SupportedTA, error) {
 	tacBytes, err := aper.DecodeOctetString(r, 2, 2)
 	if err != nil {
@@ -262,6 +430,30 @@ func decodeSupportedTAItemFields(r *aper.BitReader) (SupportedTA, error) {
 		return SupportedTA{}, err
 	}
 	ta := SupportedTA{TAC: uint16(tacBytes[0])<<8 | uint16(tacBytes[1])}
+	for i := 0; i < int(plmnCount); i++ {
+		plmn, err := aper.DecodeOctetString(r, 3, 3)
+		if err != nil {
+			return SupportedTA{}, err
+		}
+		mcc, mnc, err := ies.DecodePLMN(plmn)
+		if err != nil {
+			return SupportedTA{}, err
+		}
+		ta.BroadcastPLMNs = append(ta.BroadcastPLMNs, BroadcastPLMN{MCC: mcc, MNC: mnc})
+	}
+	return ta, nil
+}
+
+func decodeSupportedTAItemFieldsPackedTAC(r *aper.BitReader) (SupportedTA, error) {
+	tacBits, err := r.ReadBits(16)
+	if err != nil {
+		return SupportedTA{}, err
+	}
+	plmnCount, err := aper.DecodeConstrainedWholeNumber(r, 1, 6)
+	if err != nil {
+		return SupportedTA{}, err
+	}
+	ta := SupportedTA{TAC: uint16(tacBits)}
 	for i := 0; i < int(plmnCount); i++ {
 		plmn, err := aper.DecodeOctetString(r, 3, 3)
 		if err != nil {
@@ -329,10 +521,19 @@ func (s *Server) SendDownlinkNAS(mmeUEID uint32, nasPDU []byte) error {
 }
 
 // SendInitialContextSetup sends an Initial Context Setup Request to the eNB.
-// When bearer is non-nil the E-RAB list contains a single default bearer item
-// (EBI, SGW S1-U TEID/IP, NAS-PDU). When bearer is nil the list is empty and
-// the NAS-PDU is sent as standalone IE 26 for backward compatibility.
+// The bearer path is mandatory because Rel-16 requires a non-empty
+// E-RABToBeSetupListCtxtSUReq.
 func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *BearerInfo) error {
+	if bearer == nil {
+		return fmt.Errorf("s1ap: InitialContextSetup requires at least one bearer")
+	}
+	return s.SendInitialContextSetupWithBearers(mmeUEID, nasPDU, []BearerInfo{*bearer})
+}
+
+func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byte, bearers []BearerInfo) error {
+	if len(bearers) == 0 {
+		return fmt.Errorf("s1ap: InitialContextSetup requires at least one bearer")
+	}
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
 		return fmt.Errorf("s1ap: UE %d not found", mmeUEID)
@@ -380,8 +581,8 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 	var erabValue []byte
 	var ieList []pdu.ProtocolIE
 
-	if bearer != nil {
-		erabValue = encodeERABList(bearer, nasPDU)
+	if len(bearers) > 0 {
+		erabValue = encodeERABList(bearers, nasPDU)
 		ambrValue := ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)
 		ieList = []pdu.ProtocolIE{
 			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
@@ -390,17 +591,6 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 			{ID: pdu.IEERABToBeSetupListCtxtSUReq, Criticality: aper.CriticalityReject, Value: erabValue},
 			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
 			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
-		}
-	} else {
-		ambrValue := ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)
-		ieList = []pdu.ProtocolIE{
-			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
-			{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbS1APID)},
-			{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ambrValue},
-			{ID: pdu.IEERABToBeSetupListCtxtSUReq, Criticality: aper.CriticalityReject, Value: encodeEmptyERABList()},
-			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
-			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
-			{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityIgnore, Value: ies.EncodeNASPDU(nasPDU)},
 		}
 	}
 
@@ -418,15 +608,16 @@ func (s *Server) SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *
 		zap.String("encoded_ue_security_capabilities_hex", hex.EncodeToString(secCapValue)),
 		zap.String("ics_hex", hex.EncodeToString(msg)),
 	}
-	if bearer != nil {
+	if len(bearers) > 0 {
 		logFields = append(logFields,
 			zap.String("erab_list_hex", hex.EncodeToString(erabValue)),
 			zap.String("erab_item_hex", hex.EncodeToString(firstERABItemValue(erabValue))),
 			zap.String("erab_item_optional_bitmap", fmt.Sprintf("nas_pdu_present=%t ie_extensions_present=false", len(nasPDU) > 0)),
-			zap.String("erab_id_encoded_bits", fmt.Sprintf("integer_extension=0 value=%04b", bearer.EBI&0x0f)),
-			zap.String("qos_encoded_summary", "qci=9 arp_priority=8 preemption_capability=shall-not-trigger preemption_vulnerability=pre-emptable"),
-			zap.String("transport_layer_address", fmt.Sprintf("extension=0 bits=32 ipv4=%s encoded_bitstring=%s", hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)), hex.EncodeToString(firstIPv4Bytes(bearer.SGWU_IP)))),
-			zap.String("gtp_teid_encoded_hex", fmt.Sprintf("%08x", bearer.SGWU_TEID)),
+			zap.Int("erab_item_count", len(bearers)),
+			zap.String("erab_id_encoded_bits", fmt.Sprintf("integer_extension=0 value=%04b", bearers[0].EBI&0x0f)),
+			zap.String("qos_encoded_summary", fmt.Sprintf("qci=%d arp_priority=%d preemption_capability=%t preemption_vulnerability=%t", effectiveBearerQCI(bearers[0]), effectiveBearerARP(bearers[0]), bearers[0].PreemptionCapability, effectivePreemptionVulnerability(bearers[0]))),
+			zap.String("transport_layer_address", fmt.Sprintf("extension=0 bits=32 ipv4=%s encoded_bitstring=%s", hex.EncodeToString(firstIPv4Bytes(bearers[0].SGWU_IP)), hex.EncodeToString(firstIPv4Bytes(bearers[0].SGWU_IP)))),
+			zap.String("gtp_teid_encoded_hex", fmt.Sprintf("%08x", bearers[0].SGWU_TEID)),
 			zap.Int("nas_pdu_len", len(nasPDU)),
 			zap.String("nas_pdu_hex", hex.EncodeToString(nasPDU)),
 		)
@@ -479,14 +670,7 @@ func firstIPv4Bytes(ip []byte) []byte {
 }
 
 // encodeEmptyERABList encodes an empty E-RAB-To-Be-Setup list (count=0).
-func encodeEmptyERABList() []byte {
-	w := aper.NewBitWriter()
-	_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 256)
-	return w.Bytes()
-}
-
-// encodeERABList encodes an E-RABToBeSetupListCtxtSUReq with one item containing
-// the SGW S1-U endpoint and (optionally) a NAS-PDU.
+// encodeERABList encodes an E-RABToBeSetupListCtxtSUReq with one or more items.
 //
 // The outer structure is an inner IE container (IE 52) wrapping an APER-encoded
 // E-RABToBeSetupItemCtxtSUReq SEQUENCE per TS 36.413 §9.2.1.2.
@@ -499,45 +683,64 @@ func encodeEmptyERABList() []byte {
 //	transportLayerAddress BIT STRING (SIZE 1..160,...): ext=0, constrained-len=32, 4-byte IP
 //	GTP-TEID OCTET STRING (SIZE 4): 4 bytes big-endian
 //	nAS-PDU OCTET STRING (unconstrained): length+bytes  [only when present]
-func encodeERABList(b *BearerInfo, nasPDU []byte) []byte {
+//
+// When multiple bearers are encoded, only the first item can carry NAS-PDU and
+// callers should normally pass nil for resume/service-request flows.
+func encodeERABList(bearers []BearerInfo, nasPDU []byte) []byte {
+	ow := aper.NewBitWriter()
+	_ = aper.EncodeConstrainedWholeNumber(ow, int64(len(bearers)), 1, 256)
+	ow.AlignToByte()
+	for i, bearer := range bearers {
+		itemNAS := []byte(nil)
+		if i == 0 && len(nasPDU) > 0 {
+			itemNAS = nasPDU
+		}
+		itemBody := encodeERABItemBody(bearer, itemNAS)
+		innerContainer := pdu.EncodeIEContainer([]pdu.ProtocolIE{
+			{ID: pdu.IEERABToBeSetupItemCtxtSUReq, Criticality: aper.CriticalityReject, Value: itemBody},
+		})
+		if len(innerContainer) >= 2 {
+			innerContainer = innerContainer[2:]
+		}
+		ow.WriteOctets(innerContainer)
+	}
+	return ow.Bytes()
+}
+
+func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 	nasPDUPresent := len(nasPDU) > 0
 
-	// Encode the item SEQUENCE body
 	w := aper.NewBitWriter()
 
-	// Preamble: extension=0, nAS-PDU OPTIONAL present/absent, iE-Extensions=0
 	w.WriteBit(0) // extension marker
 	if nasPDUPresent {
-		w.WriteBit(1) // nAS-PDU OPTIONAL present
+		w.WriteBit(1)
 	} else {
-		w.WriteBit(0) // nAS-PDU OPTIONAL absent
+		w.WriteBit(0)
 	}
-	w.WriteBit(0) // iE-Extensions absent
+	w.WriteBit(0)
 
-	// E-RAB-ID (INTEGER (0..15,...)): extension marker followed by root value.
 	w.WriteBit(0)
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.EBI), 0, 15)
 
-	// E-RABLevelQoSParameters SEQUENCE
 	w.WriteBit(0) // extension marker
-	// AllocationAndRetentionPriority OPTIONAL absent? No — it's mandatory.
-	// gbrQosInformation OPTIONAL absent
 	w.WriteBit(0) // gbrQosInformation absent
 	w.WriteBit(0) // iE-Extensions absent
-	// QCI (0..255)
-	_ = aper.EncodeConstrainedWholeNumber(w, 9, 0, 255)
-	// AllocationAndRetentionPriority SEQUENCE
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerQCI(b)), 0, 255)
 	w.WriteBit(0) // extension marker
 	w.WriteBit(0) // iE-Extensions absent
-	// priorityLevel (0..15)
-	_ = aper.EncodeConstrainedWholeNumber(w, 8, 0, 15)
-	// pre-emptionCapability ENUM (0..1): 0 = shall-not-trigger
-	_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
-	// pre-emptionVulnerability ENUM (0..1): 1 = pre-emptable
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerARP(b)), 0, 15)
+	if b.PreemptionCapability {
+		_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
+	} else {
+		_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
+	}
+	if effectivePreemptionVulnerability(b) {
+		_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
+	} else {
+		_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
+	}
 
-	// transportLayerAddress BIT STRING (SIZE(1..160,...)):
-	// extension=0, length=32 (constrained 1..160)
 	w.WriteBit(0) // no extension
 	_ = aper.EncodeConstrainedWholeNumber(w, 32, 1, 160)
 	w.AlignToByte()
@@ -547,38 +750,38 @@ func encodeERABList(b *BearerInfo, nasPDU []byte) []byte {
 		w.WriteOctets([]byte{0, 0, 0, 0})
 	}
 
-	// GTP-TEID OCTET STRING (SIZE 4) — fixed size, no length prefix
 	w.AlignToByte()
 	w.WriteOctet(byte(b.SGWU_TEID >> 24))
 	w.WriteOctet(byte(b.SGWU_TEID >> 16))
 	w.WriteOctet(byte(b.SGWU_TEID >> 8))
 	w.WriteOctet(byte(b.SGWU_TEID))
 
-	// nAS-PDU OCTET STRING (unconstrained) — only if present
 	if nasPDUPresent {
 		w.AlignToByte()
 		_ = aper.EncodeLength(w, len(nasPDU), 0, -1)
 		w.WriteOctets(nasPDU)
 	}
 
-	itemBody := w.Bytes()
+	return w.Bytes()
+}
 
-	// Wrap the item body as a single-IE inner container (IE 52, criticality=reject).
-	// EncodeIEContainer produces: [count:2B][id:2B][crit:1B][opentype_len][value].
-	// We want just the inner part (no outer count), so we strip the 2-byte count prefix.
-	innerContainer := pdu.EncodeIEContainer([]pdu.ProtocolIE{
-		{ID: pdu.IEERABToBeSetupItemCtxtSUReq, Criticality: aper.CriticalityReject, Value: itemBody},
-	})
-	// Strip the 2-byte count that EncodeIEContainer prepends (count=1 → 0x00 0x01).
-	// The E-RABToBeSetupListCtxtSUReq IE value starts directly with the IE fields.
-	if len(innerContainer) >= 2 {
-		innerContainer = innerContainer[2:]
+func effectiveBearerQCI(b BearerInfo) uint8 {
+	if b.QCI != 0 {
+		return b.QCI
 	}
+	return 9
+}
 
-	// Outer: SEQUENCE OF (count=1, constrained 1..256)
-	ow := aper.NewBitWriter()
-	_ = aper.EncodeConstrainedWholeNumber(ow, 1, 1, 256)
-	ow.AlignToByte()
-	ow.WriteOctets(innerContainer)
-	return ow.Bytes()
+func effectiveBearerARP(b BearerInfo) uint8 {
+	if b.ARPPriority != 0 {
+		return b.ARPPriority
+	}
+	return 8
+}
+
+func effectivePreemptionVulnerability(b BearerInfo) bool {
+	if b.PreemptionVulnerability {
+		return true
+	}
+	return true
 }

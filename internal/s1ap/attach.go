@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -19,6 +20,23 @@ import (
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
+func shouldDeferAttachEMMInformation(ue *uecontext.Context) bool {
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.PendingPDN != nil {
+		return true
+	}
+	if strings.EqualFold(ue.APN, "ims") {
+		return false
+	}
+	for _, apn := range ue.SubscriberAPNs {
+		if strings.EqualFold(apn, "ims") {
+			return true
+		}
+	}
+	return false
+}
+
 // handleInitialUEMessage processes an Initial UE Message from an eNB.
 // It creates a UE context, decodes the NAS payload, and triggers the auth flow.
 func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
@@ -29,6 +47,10 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	var tai *ies.TAI
 	var ecgi *ies.ECGI
 	var rrcCause uint8
+	var enbUEIDDecodeErr bool
+	var taiDecodeErr bool
+	var ecgiDecodeErr bool
+	var rrcCauseDecodeErr bool
 	var mmec uint8
 	var mtmsi uint32
 	var stmsiRaw []byte
@@ -45,10 +67,12 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		case pdu.IEENBS1APID:
 			id, err := ies.DecodeENBUEApID(ie.Value)
 			if err != nil {
+				enbUEIDDecodeErr = true
 				log.Warn("s1ap: InitialUE: ENB UE S1AP ID decode error",
 					zap.Int("open_type_len", len(ie.Value)),
 					zap.String("raw", hex.EncodeToString(ie.Value)),
 					zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
 			enbUEID = id
@@ -69,6 +93,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			if err == nil {
 				tai = &t
 			} else {
+				taiDecodeErr = true
 				log.Warn("s1ap: InitialUE: TAI decode error",
 					zap.String("raw", hex.EncodeToString(ie.Value)),
 					zap.String("tai_value", hex.EncodeToString(taiValue)),
@@ -79,9 +104,21 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			e, err := ies.DecodeECGI(ie.Value)
 			if err == nil {
 				ecgi = &e
+			} else {
+				ecgiDecodeErr = true
+				log.Warn("s1ap: InitialUE: ECGI decode error",
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.Error(err))
 			}
 		case pdu.IERRCEstablishmentCause:
-			rrcCause, _ = ies.DecodeRRCEstablishmentCause(ie.Value)
+			var err error
+			rrcCause, err = ies.DecodeRRCEstablishmentCause(ie.Value)
+			if err != nil {
+				rrcCauseDecodeErr = true
+				log.Warn("s1ap: InitialUE: RRC cause decode error",
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.Error(err))
+			}
 		case pdu.IESTMSI:
 			stmsiRaw = append([]byte(nil), ie.Value...)
 			decodedMMEC, decodedMTMSI, err := ies.DecodeSTMSI(ie.Value)
@@ -102,8 +139,15 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		}
 	}
 
-	if len(nasPDU) == 0 {
-		log.Warn("s1ap: InitialUE: missing NAS PDU")
+	if len(nasPDU) == 0 || tai == nil || ecgi == nil || (rrcCause == 0 && rrcCauseDecodeErr) || taiDecodeErr || ecgiDecodeErr || enbUEIDDecodeErr {
+		log.Warn("s1ap: InitialUE: mandatory IE validation failed",
+			zap.Bool("nas_pdu_present", len(nasPDU) > 0),
+			zap.Bool("tai_present", tai != nil),
+			zap.Bool("ecgi_present", ecgi != nil),
+			zap.Bool("rrc_cause_decode_error", rrcCauseDecodeErr),
+			zap.Bool("tai_decode_error", taiDecodeErr),
+			zap.Bool("ecgi_decode_error", ecgiDecodeErr))
+		s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
 		return
 	}
 
@@ -172,6 +216,10 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	// Plain TAU Request (EIA0 / no security context)
 	if result.MsgType == emm.MsgTrackingAreaUpdateRequest {
 		s.handleIdleTAUMessage(ue, tai, nasPDU)
+		return
+	}
+	if result.MsgType == emm.MsgExtendedServiceRequest {
+		s.handleInitialUEExtendedServiceRequest(ue, tai, result.Inner, nasPDU)
 		return
 	}
 	if result.MsgType == emm.MsgDetachRequest {
@@ -324,6 +372,8 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 	var mmeUEID uint32
 	var enbUEID uint32
 	var nasPDU []byte
+	var tai *ies.TAI
+	var ecgi *ies.ECGI
 
 	for _, ie := range ieList {
 		switch ie.ID {
@@ -331,27 +381,50 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 			id, err := ies.DecodeMMEUEApID(ie.Value)
 			if err != nil {
 				log.Warn("s1ap: UplinkNAS: MME UE S1AP ID decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
 			mmeUEID = id
 		case pdu.IEENBS1APID:
-			id, _ := ies.DecodeENBUEApID(ie.Value)
+			id, err := ies.DecodeENBUEApID(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: UplinkNAS: ENB UE S1AP ID decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, mmeUEID, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
 			enbUEID = id
 		case pdu.IENAS_PDU:
 			nasPDU, _ = ies.DecodeNASPDU(ie.Value)
+		case pdu.IETAI:
+			decodedTAI, err := ies.DecodeTAI(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: UplinkNAS: TAI decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
+			tai = &decodedTAI
+		case pdu.IECGI:
+			decodedECGI, err := ies.DecodeECGI(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: UplinkNAS: ECGI decode error", zap.Error(err))
+				s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				return
+			}
+			ecgi = &decodedECGI
 		}
 	}
 
-	_ = enbUEID
-
-	if len(nasPDU) == 0 {
-		log.Warn("s1ap: UplinkNAS: missing NAS PDU")
+	if len(nasPDU) == 0 || tai == nil || ecgi == nil {
+		log.Warn("s1ap: UplinkNAS: mandatory IE validation failed",
+			zap.Bool("nas_pdu_present", len(nasPDU) > 0),
+			zap.Bool("tai_present", tai != nil),
+			zap.Bool("ecgi_present", ecgi != nil))
+		s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
 		return
 	}
 
-	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	ue, ok := s.findUEForUEAssociatedMessage(remoteAddr, p, mmeUEID, enbUEID)
 	if !ok {
-		log.Warn("s1ap: UplinkNAS: unknown MME UE S1AP ID", zap.Uint32("mme_ue_id", mmeUEID))
 		return
 	}
 
@@ -534,11 +607,64 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	case emm.MsgTrackingAreaUpdateComplete:
 		return s.processTAUComplete(ue, log)
 
+	case emm.MsgExtendedServiceRequest:
+		return s.processExtendedServiceRequest(ue, result.Inner, log)
+
 	default:
 		log.Warn("s1ap: processEMM: unhandled EMM message type", zap.Uint8("msg_type", result.MsgType))
 	}
 	_ = imsi
 	_ = attachStep
+	return nil
+}
+
+func (s *Server) processExtendedServiceRequest(ue *uecontext.Context, body []byte, log *zap.Logger) error {
+	ue.Lock()
+	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+
+	var pendingPromoted bool
+	var pendingAPN string
+	var pendingEBI uint8
+	if ue.PendingPDN != nil &&
+		ue.PendingPDN.APN == "ims" &&
+		!ue.PendingPDN.NASAccepted &&
+		!ue.PendingPDN.DisconnectRequested {
+		pendingPromoted = true
+		pendingAPN = ue.PendingPDN.APN
+		pendingEBI = ue.PendingPDN.DefaultEBI
+	}
+
+	var candidate *uecontext.PDNContext
+	candidateCount := 0
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.NASAccepted || !pdn.ERABEstablished || pdn.ModifyBearerAccepted || pdn.DisconnectRequested {
+			continue
+		}
+		candidate = pdn
+		candidateCount++
+	}
+
+	var promotedEBI uint8
+	var promotedAPN string
+	if candidateCount == 1 && candidate != nil {
+		promotedEBI = candidate.DefaultEBI
+		promotedAPN = candidate.APN
+	}
+	ue.Unlock()
+
+	log.Info("s1ap: Extended Service Request received",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.String("message_body_hex", hex.EncodeToString(body)),
+		zap.Bool("pending_default_bearer_promoted", pendingPromoted),
+		zap.Uint8("pending_promoted_ebi", pendingEBI),
+		zap.String("pending_promoted_apn", pendingAPN),
+		zap.Int("default_bearer_candidates", candidateCount),
+		zap.Bool("default_bearer_promoted", promotedEBI != 0),
+		zap.Uint8("promoted_ebi", promotedEBI),
+		zap.String("promoted_apn", promotedAPN))
+
 	return nil
 }
 
@@ -580,7 +706,6 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	kasme := ue.KASME
 	ueCap := ue.UENetworkCapability
 	msCap := ue.MSNetworkCapability
-	initialAttachRequestNAS := append([]byte(nil), ue.InitialAttachRequestNAS...)
 	mmeUEID := ue.MMEUES1APID
 	enbAddr := ue.ENBGlobalID
 	enbUEID := ue.ENBS1APID
@@ -623,14 +748,10 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	dlCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
-	var hashMME []byte
-	if len(initialAttachRequestNAS) > 0 {
-		hashMME = security.HashMME(initialAttachRequestNAS)
-	}
 	replayedUECap := emm.ReplayedUESecurityCapability(ueCap, msCap)
 
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
-	smcPlain := emm.EncodeSecurityModeCommandWithHashMME(intAlg, encAlg, replayedUECap, hashMME)
+	smcPlain := emm.EncodeSecurityModeCommand(intAlg, encAlg, replayedUECap)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
 	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
@@ -696,11 +817,7 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 		zap.String("ue_security_capability_hex", hex.EncodeToString(ueCap)),
 		zap.String("ms_network_capability_hex", hex.EncodeToString(msCap)),
 		zap.String("replayed_ue_security_capability_hex", hex.EncodeToString(replayedUECap)),
-		zap.String("initial_nas_attach_request_hex", hex.EncodeToString(initialAttachRequestNAS)),
-		zap.String("hash_mme_input_hex", hex.EncodeToString(initialAttachRequestNAS)),
-		zap.String("hash_mme_hex", hex.EncodeToString(hashMME)),
 		zap.String("plain_smc_hex", hex.EncodeToString(smcPlain)),
-		zap.String("plain_smc_hex_with_hash_mme", hex.EncodeToString(smcPlain)),
 		zap.String("nas_mac_input_hex", hex.EncodeToString(smcMACInput)),
 		zap.String("eia2_cmac_input_downlink_hex", hex.EncodeToString(smcEIA2InputDL)),
 		zap.String("eia2_cmac_input_uplink_hex", hex.EncodeToString(smcEIA2InputUL)),
@@ -800,12 +917,14 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	// Send Modify Bearer Request now that UE is registered (TS 23.401 Figure 5.6.1.3-1 step 19).
 	if mbrENBUTEID != 0 && mbrSGWCTEID != 0 && mbrDefaultEBI != 0 {
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWAddress: mbrSGWAddr,
-			SGWC_TEID:  mbrSGWCTEID,
-			EBI:        mbrDefaultEBI,
-			ENBU_TEID:  mbrENBUTEID,
-			ENBU_IP:    mbrENBUIP,
-			RATType:    gtpv2.RATTypeEUTRAN,
+			SGWAddress:            mbrSGWAddr,
+			SGWC_TEID:             mbrSGWCTEID,
+			EBI:                   mbrDefaultEBI,
+			ENBU_TEID:             mbrENBUTEID,
+			ENBU_IP:               mbrENBUIP,
+			RATType:               gtpv2.RATTypeEUTRAN,
+			IncludeIndicationCRSI: true,
+			OmitRATType:           true,
 		}
 		s.log.Info("s1ap: sending S11 Modify Bearer Request",
 			zap.Uint32("mme_ue_id", mmeUEID),
@@ -831,7 +950,13 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	}
 
 	if s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterAttach {
-		s.sendEMMInformation(mmeUEID, "attach", log)
+		if shouldDeferAttachEMMInformation(ue) {
+			log.Info("s1ap: deferring EMM Information after Attach",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.String("reason", "secondary-ims-expected"))
+		} else {
+			s.sendEMMInformation(mmeUEID, "attach", log)
+		}
 	}
 
 	return nil
@@ -940,8 +1065,9 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 		go s.s6a.SendPUR(imsi)
 	}
 
-	// Release S-GW bearer (SGWC_TEID cleared inside to prevent double-send)
-	s.sendDeleteSession(ue)
+	// Release all active PDN sessions. Detach can arrive with multiple active
+	// PDNs (for example internet + IMS), so a single UE-level DSR is not enough.
+	s.sendDeleteSessionsForDetach(ue)
 
 	// Initiate UE context release; metrics.AttachedUEs.Dec() is called in
 	// handleUEContextReleaseComplete once the eNB confirms release, guarded by

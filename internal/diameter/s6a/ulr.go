@@ -65,11 +65,27 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		MIPHomeAgentAddress []datatype.Address `avp:"MIP-Home-Agent-Address"`
 		MIPHomeAgentHost    MIPHomeAgentHost   `avp:"MIP-Home-Agent-Host"`
 	}
+	type AMBR struct {
+		MaxRequestedBandwidthDL uint32 `avp:"Max-Requested-Bandwidth-DL"`
+		MaxRequestedBandwidthUL uint32 `avp:"Max-Requested-Bandwidth-UL"`
+	}
+	type AllocationRetentionPriority struct {
+		PriorityLevel           uint32 `avp:"Priority-Level"`
+		PreemptionCapability    int32  `avp:"Pre-emption-Capability"`
+		PreemptionVulnerability int32  `avp:"Pre-emption-Vulnerability"`
+	}
+	type EPSSubscribedQoSProfile struct {
+		QoSClassIdentifier          int32                       `avp:"QoS-Class-Identifier"`
+		AllocationRetentionPriority AllocationRetentionPriority `avp:"Allocation-Retention-Priority"`
+	}
 	type APNConfig struct {
-		ContextIdentifier   uint32        `avp:"Context-Identifier"`
-		ServiceSelection    string        `avp:"Service-Selection"`
-		MIP6AgentInfo       MIP6AgentInfo `avp:"MIP6-Agent-Info"`
-		PDNGWAllocationType int32         `avp:"PDN-GW-Allocation-Type"`
+		ContextIdentifier       uint32                  `avp:"Context-Identifier"`
+		ServiceSelection        string                  `avp:"Service-Selection"`
+		MIP6AgentInfo           MIP6AgentInfo           `avp:"MIP6-Agent-Info"`
+		PDNGWAllocationType     int32                   `avp:"PDN-GW-Allocation-Type"`
+		PDNType                 int32                   `avp:"PDN-Type"`
+		EPSSubscribedQoSProfile EPSSubscribedQoSProfile `avp:"EPS-Subscribed-QoS-Profile"`
+		AMBR                    AMBR                    `avp:"AMBR"`
 	}
 	type APNProfile struct {
 		ContextIdentifier            uint32      `avp:"Context-Identifier"`
@@ -78,6 +94,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	}
 	type SubscriptionData struct {
 		MSISDN                  datatype.OctetString `avp:"MSISDN"`
+		AMBR                    AMBR                 `avp:"AMBR"`
 		APNConfigurationProfile APNProfile           `avp:"APN-Configuration-Profile"`
 	}
 	type experimentalResult struct {
@@ -126,13 +143,22 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	profile := &gateway.SubscriberProfile{
 		DefaultContextID: ula.SubscriptionData.APNConfigurationProfile.ContextIdentifier,
 		APNs:             make(map[string]gateway.APNConfiguration),
+		UEAMBRDown:       ula.SubscriptionData.AMBR.MaxRequestedBandwidthDL,
+		UEAMBRUp:         ula.SubscriptionData.AMBR.MaxRequestedBandwidthUL,
 	}
 	for _, selected := range ula.SubscriptionData.APNConfigurationProfile.APNConfiguration {
 		cfg := gateway.APNConfiguration{
-			ContextIdentifier:   selected.ContextIdentifier,
-			ServiceSelection:    selected.ServiceSelection,
-			MIPHomeAgentHost:    string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
-			PDNGWAllocationType: &selected.PDNGWAllocationType,
+			ContextIdentifier:       selected.ContextIdentifier,
+			ServiceSelection:        selected.ServiceSelection,
+			MIPHomeAgentHost:        string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
+			PDNGWAllocationType:     &selected.PDNGWAllocationType,
+			PDNType:                 normalizePDNType(selected.PDNType),
+			QCI:                     uint8(selected.EPSSubscribedQoSProfile.QoSClassIdentifier),
+			ARPPriority:             uint8(selected.EPSSubscribedQoSProfile.AllocationRetentionPriority.PriorityLevel),
+			PreemptionCapability:    selected.EPSSubscribedQoSProfile.AllocationRetentionPriority.PreemptionCapability == 0,
+			PreemptionVulnerability: selected.EPSSubscribedQoSProfile.AllocationRetentionPriority.PreemptionVulnerability == 0,
+			APNAMBRDown:             selected.AMBR.MaxRequestedBandwidthDL,
+			APNAMBRUp:               selected.AMBR.MaxRequestedBandwidthUL,
 		}
 		if len(selected.MIP6AgentInfo.MIPHomeAgentAddress) > 0 {
 			cfg.MIPHomeAgentAddress = []byte(selected.MIP6AgentInfo.MIPHomeAgentAddress[0])
@@ -155,8 +181,36 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("msisdn", msisdn),
 		zap.Uint32("default_context_id", profile.DefaultContextID),
+		zap.Uint32("ue_ambr_dl", profile.UEAMBRDown),
+		zap.Uint32("ue_ambr_ul", profile.UEAMBRUp),
 		zap.String("apn", apn),
 		zap.Strings("subscribed_apns", apns))
+	for _, apnName := range apns {
+		cfg, ok := profile.APNs[apnName]
+		if !ok {
+			continue
+		}
+		fields := []zap.Field{
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("apn", cfg.ServiceSelection),
+			zap.Uint32("context_id", cfg.ContextIdentifier),
+			zap.Uint8("pdn_type", cfg.PDNType),
+			zap.Uint8("qci", cfg.QCI),
+			zap.Uint8("arp_priority", cfg.ARPPriority),
+			zap.Bool("preemption_capability", cfg.PreemptionCapability),
+			zap.Bool("preemption_vulnerability", cfg.PreemptionVulnerability),
+			zap.Uint32("apn_ambr_dl", cfg.APNAMBRDown),
+			zap.Uint32("apn_ambr_ul", cfg.APNAMBRUp),
+			zap.String("mip_home_agent_host", cfg.MIPHomeAgentHost),
+		}
+		if cfg.PDNGWAllocationType != nil {
+			fields = append(fields, zap.Int32("pdn_gw_allocation_type", *cfg.PDNGWAllocationType))
+		}
+		if len(cfg.MIPHomeAgentAddress) > 0 {
+			fields = append(fields, zap.String("mip_home_agent_addr", cfg.MIPHomeAgentAddress.String()))
+		}
+		h.log.Info("s6a: ULA APN profile", fields...)
+	}
 	h.nas.HandleULAResultWithSubscriberProfile(mmeUEID, msisdn, profile, nil)
 }
 
@@ -183,4 +237,13 @@ func decodeMSISDN(data []byte) string {
 		}
 	}
 	return string(digits)
+}
+
+func normalizePDNType(v int32) uint8 {
+	switch uint8(v) {
+	case 1, 2, 3:
+		return uint8(v)
+	default:
+		return 1
+	}
 }

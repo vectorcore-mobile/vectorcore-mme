@@ -241,6 +241,7 @@ func TestHandleUEContextReleaseRequestResolvesMMEIDBeforeCommand(t *testing.T) {
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(0)},
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(wantENBID)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCause(ies.CauseGroupNAS, ies.CauseNASNormalRelease)},
 	}
 	raw := pdu.BuildInitiatingMessage(pdu.ProcUEContextReleaseRequest, aper.CriticalityIgnore, ieList)
 	srv.handleMessage(remoteAddr, raw)
@@ -500,7 +501,7 @@ func TestSendInitialContextSetupMapsRealUESecurityCapabilities(t *testing.T) {
 
 func TestERABToBeSetupItemERABIDUsesExtensibleInteger(t *testing.T) {
 	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x802de005, SGWU_IP: []byte{10, 90, 250, 81}}
-	erabItem := firstERABItemValue(encodeERABList(bearer, []byte{0x27, 0x42}))
+	erabItem := firstERABItemValue(encodeERABList([]BearerInfo{*bearer}, []byte{0x27, 0x42}))
 	if len(erabItem) == 0 {
 		t.Fatal("E-RAB item is empty")
 	}
@@ -518,7 +519,7 @@ func TestERABToBeSetupItemERABIDUsesExtensibleInteger(t *testing.T) {
 
 func TestERABToBeSetupItemWithoutNASPDUDecodesERABIDFive(t *testing.T) {
 	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0xc1f44821, SGWU_IP: []byte{10, 90, 250, 59}}
-	erabItem := firstERABItemValue(encodeERABList(bearer, nil))
+	erabItem := firstERABItemValue(encodeERABList([]BearerInfo{*bearer}, nil))
 	if len(erabItem) == 0 {
 		t.Fatal("E-RAB item is empty")
 	}
@@ -745,7 +746,7 @@ func decodeCapturedInitialUEMessage(t *testing.T) *pdu.PDU {
 
 func capturedInitialUEMessagePDU(t *testing.T) []byte {
 	t.Helper()
-	raw, err := hex.DecodeString("000c4054000006000800020001001a0022211705e751810b0741610bf613513400140ac000000502f07000050201d011d191e0004300060013415300010064400800134153001979300086400140006000060280c0000005")
+	raw, err := hex.DecodeString("000c4054000006000800020001001a0022211705e751810b0741610bf613513400140ac000000502f07000050201d011d191e0004300060013513400010064400800135134001979300086400140006000060280c0000005")
 	if err != nil {
 		t.Fatalf("hex DecodeString: %v", err)
 	}

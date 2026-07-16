@@ -13,6 +13,7 @@ import (
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 type normalizedERABSetupRequest struct {
@@ -43,8 +44,8 @@ type normalizedERABSetupItem struct {
 	DecodedWithoutTrailingOctets bool
 }
 
-func TestDecodeCiscoERABSetupRequestMultipleBearers(t *testing.T) {
-	req := decodeCiscoERABSetupRequestFixture(t, "cisco_erab_setup_request_multi.hex")
+func TestDecodePeerERABSetupRequestMultipleBearers(t *testing.T) {
+	req := decodePeerERABSetupRequestFixture(t, "peer_erab_setup_request_multi.hex")
 	if req.ProcedureCode != pdu.ProcERABSetup {
 		t.Fatalf("procedure code got %d, want %d", req.ProcedureCode, pdu.ProcERABSetup)
 	}
@@ -83,10 +84,10 @@ func TestDecodeCiscoERABSetupRequestMultipleBearers(t *testing.T) {
 	}
 }
 
-func TestBuildERABSetupRequestMatchesCiscoDefaultBearerSemantics(t *testing.T) {
-	cisco := decodeCiscoERABSetupRequestFixture(t, "cisco_erab_setup_request_multi.hex")
-	item := cisco.Items[0]
-	builtRaw, _, err := BuildERABSetupRequest(cisco.MMEUES1APID, cisco.ENBUES1APID, nil, []ERABSetupItem{{
+func TestBuildERABSetupRequestMatchesPeerDefaultBearerSemantics(t *testing.T) {
+	peer := decodePeerERABSetupRequestFixture(t, "peer_erab_setup_request_multi.hex")
+	item := peer.Items[0]
+	builtRaw, _, err := BuildERABSetupRequest(peer.MMEUES1APID, peer.ENBUES1APID, nil, []ERABSetupItem{{
 		EBI:                     item.EBI,
 		QCI:                     item.QCI,
 		ARPPriority:             item.ARPPriority,
@@ -107,8 +108,51 @@ func TestBuildERABSetupRequestMatchesCiscoDefaultBearerSemantics(t *testing.T) {
 		t.Fatalf("built item semantics differ:\n got %+v\nwant %+v", built.Items[0], item)
 	}
 	if !bytes.Equal(built.Items[0].RawItemBody, item.RawItemBody) {
-		t.Fatalf("built EBI 6 item body differs from Cisco:\n got %x\nwant %x",
+			t.Fatalf("built EBI 6 item body differs from reference fixture:\n got %x\nwant %x",
 			built.Items[0].RawItemBody, item.RawItemBody)
+	}
+}
+
+func TestBuildERABSetupRequestMatchesPeerDedicatedBearerSemantics(t *testing.T) {
+	peer := decodePeerERABSetupRequestFixture(t, "peer_erab_setup_request_multi.hex")
+	tests := []struct {
+		idx               int
+		qci               uint8
+		rawARP            uint8
+		arpPriority       uint8
+		preemptCapability bool
+		preemptVulnerable bool
+	}{
+		{idx: 1, qci: 2, rawARP: 16, arpPriority: 4, preemptCapability: true, preemptVulnerable: true},
+		{idx: 2, qci: 1, rawARP: 8, arpPriority: 2, preemptCapability: true, preemptVulnerable: true},
+	}
+	for _, tt := range tests {
+		item := peer.Items[tt.idx]
+		builtRaw, _, err := BuildERABSetupRequest(peer.MMEUES1APID, peer.ENBUES1APID, nil, []ERABSetupItem{{
+			EBI:                     item.EBI,
+			QCI:                     item.QCI,
+			ARPPriority:             tt.arpPriority,
+			PreemptionCapability:    tt.preemptCapability,
+			PreemptionVulnerability: tt.preemptVulnerable,
+			BearerQoS:               encodeBearerQoSForTest(tt.qci, tt.rawARP, 128000, 128000, 128000, 128000),
+			SGWS1UIPv4:              net.ParseIP(item.SGWS1UIPv4),
+			SGWS1UTEID:              item.SGWS1UTEID,
+			NASPDU:                  append([]byte(nil), item.NASPDU...),
+		}})
+		if err != nil {
+			t.Fatalf("BuildERABSetupRequest item %d: %v", tt.idx, err)
+		}
+		built := decodeERABSetupRequest(t, builtRaw)
+		if len(built.Items) != 1 {
+			t.Fatalf("built item count got %d, want 1", len(built.Items))
+		}
+		if !sameBearerSemantics(built.Items[0], item) {
+			t.Fatalf("built dedicated item %d semantics differ:\n got %+v\nwant %+v", tt.idx, built.Items[0], item)
+		}
+		if !bytes.Equal(built.Items[0].RawItemBody, item.RawItemBody) {
+			t.Fatalf("built dedicated item %d body differs from reference fixture:\n got %x\nwant %x",
+				tt.idx, built.Items[0].RawItemBody, item.RawItemBody)
+		}
 	}
 }
 
@@ -155,7 +199,7 @@ func TestMalformedCurrentERABSetupFixtureIsRejected(t *testing.T) {
 }
 
 func TestERABSetupUsesCorrectSingleContainerIEID(t *testing.T) {
-	req := decodeCiscoERABSetupRequestFixture(t, "cisco_erab_setup_request_multi.hex")
+	req := decodePeerERABSetupRequestFixture(t, "peer_erab_setup_request_multi.hex")
 	for i, item := range req.Items {
 		if item.SingleContainerIEID != pdu.IEERABToBeSetupItemBearerSUReq {
 			t.Fatalf("item %d IE ID got %d, want %d", i, item.SingleContainerIEID, pdu.IEERABToBeSetupItemBearerSUReq)
@@ -181,11 +225,11 @@ func TestERABSetupGTPTEIDNetworkByteOrder(t *testing.T) {
 	}
 }
 
-func TestDecodeCiscoERABSetupResponseList(t *testing.T) {
-	raw := mustReadHexFixture(t, "cisco_erab_setup_response.hex")
+func TestDecodePeerERABSetupResponseList(t *testing.T) {
+	raw := mustReadHexFixture(t, "peer_erab_setup_response.hex")
 	p, err := pdu.Decode(raw)
 	if err != nil {
-		t.Fatalf("decode Cisco response PDU: %v", err)
+		t.Fatalf("decode peer response PDU: %v", err)
 	}
 	if p.Type != pdu.PDUTypeSuccessfulOutcome || p.ProcedureCode != pdu.ProcERABSetup {
 		t.Fatalf("response got type=%s proc=%d, want successful E-RAB Setup", p.Type, p.ProcedureCode)
@@ -201,7 +245,7 @@ func TestDecodeCiscoERABSetupResponseList(t *testing.T) {
 		}
 	}
 	if len(setupList) == 0 {
-		t.Fatalf("Cisco response missing E-RAB setup list")
+		t.Fatalf("peer response missing E-RAB setup list")
 	}
 	results, err := decodeERABSetupResponseList(setupList)
 	if err != nil {
@@ -227,13 +271,250 @@ func TestDecodeCiscoERABSetupResponseList(t *testing.T) {
 		if got.ENBS1UTEID != tt.teid {
 			t.Fatalf("result %d TEID got %#x, want %#x", tt.idx, got.ENBS1UTEID, tt.teid)
 		}
-		if ip := got.ENBS1UIPv4.String(); ip != "192.168.105.247" {
+		if ip := got.ENBS1UAddr.String(); ip != "192.168.105.247" {
 			t.Fatalf("result %d IP got %s, want 192.168.105.247", tt.idx, ip)
 		}
 	}
 }
 
-func decodeCiscoERABSetupRequestFixture(t *testing.T, name string) normalizedERABSetupRequest {
+func TestDecodeMultiItemERABSetupResponse(t *testing.T) {
+	raw := mustReadHexFixture(t, "peer_erab_setup_response.hex")
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode PDU: %v", err)
+	}
+	ieList, err := decodeProcedureIEsCompat(p.Value)
+	if err != nil {
+		t.Fatalf("decode IE list: %v", err)
+	}
+	resp, _, _, _, _, setupPresent, _, failedPresent, _, err := decodeERABSetupResponse(p, ieList)
+	if err != nil {
+		t.Fatalf("decodeERABSetupResponse: %v", err)
+	}
+	if !setupPresent {
+		t.Fatal("setup list missing")
+	}
+	if failedPresent {
+		t.Fatal("failed list unexpectedly present")
+	}
+	if len(resp.Successful) != 3 {
+		t.Fatalf("successful result count got %d, want 3", len(resp.Successful))
+	}
+}
+
+func TestDecodeERABSetupResponseWithOnlyFailureList(t *testing.T) {
+	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABSetup, aper.CriticalityIgnore, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(40)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(77)},
+		{ID: pdu.IEERABFailedToSetupListBearerSURes, Criticality: aper.CriticalityIgnore, Value: encodeERABFailedToSetupListForTest([]ERABSetupFailure{
+			{EBI: 7, CauseGroup: uint8(ies.CauseGroupRadioNetwork), Cause: uint32(ies.CauseRadioNetworkUnspecified)},
+			{EBI: 8, CauseGroup: uint8(ies.CauseGroupTransport), Cause: 1},
+		})},
+	})
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode PDU: %v", err)
+	}
+	ieList, err := decodeProcedureIEsCompat(p.Value)
+	if err != nil {
+		t.Fatalf("decode IE list: %v", err)
+	}
+	resp, _, _, _, _, setupPresent, _, failedPresent, _, err := decodeERABSetupResponse(p, ieList)
+	if err != nil {
+		t.Fatalf("decodeERABSetupResponse: %v", err)
+	}
+	if setupPresent {
+		t.Fatal("setup list unexpectedly present")
+	}
+	if !failedPresent {
+		t.Fatal("failed list missing")
+	}
+	if len(resp.Successful) != 0 {
+		t.Fatalf("successful result count got %d, want 0", len(resp.Successful))
+	}
+	if len(resp.Failed) != 2 {
+		t.Fatalf("failed result count got %d, want 2", len(resp.Failed))
+	}
+	if resp.Failed[0].EBI != 7 || resp.Failed[1].EBI != 8 {
+		t.Fatalf("failed EBIs got %+v", resp.Failed)
+	}
+}
+
+func TestDecodeERABSetupResponseWithSuccessAndFailureLists(t *testing.T) {
+	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABSetup, aper.CriticalityIgnore, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(40)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(77)},
+		{ID: pdu.IEERABSetupListBearerSURes, Criticality: aper.CriticalityIgnore, Value: encodeERABSetupResponseListForTest([]ERABSetupSuccess{
+			{EBI: 7, ENBS1UAddr: net.ParseIP("192.168.105.247").To4(), ENBS1UTEID: 0xa8b9f5cf},
+		})},
+		{ID: pdu.IEERABFailedToSetupListBearerSURes, Criticality: aper.CriticalityIgnore, Value: encodeERABFailedToSetupListForTest([]ERABSetupFailure{
+			{EBI: 8, CauseGroup: uint8(ies.CauseGroupRadioNetwork), Cause: uint32(ies.CauseRadioNetworkUnspecified)},
+		})},
+	})
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode PDU: %v", err)
+	}
+	ieList, err := decodeProcedureIEsCompat(p.Value)
+	if err != nil {
+		t.Fatalf("decode IE list: %v", err)
+	}
+	resp, _, _, _, _, _, _, _, _, err := decodeERABSetupResponse(p, ieList)
+	if err != nil {
+		t.Fatalf("decodeERABSetupResponse: %v", err)
+	}
+	if len(resp.Successful) != 1 || len(resp.Failed) != 1 {
+		t.Fatalf("got %d successful and %d failed, want 1 and 1", len(resp.Successful), len(resp.Failed))
+	}
+	if resp.Successful[0].EBI != 7 || resp.Failed[0].EBI != 8 {
+		t.Fatalf("decoded response got success=%+v failed=%+v", resp.Successful, resp.Failed)
+	}
+}
+
+func TestConcurrentIMSAndDedicatedERABProceduresCorrelateByEBI(t *testing.T) {
+	ue := uecontext.NewContext(40)
+	ue.S1BindingGeneration = 9
+	ue.PendingERABProcedures["ims"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "ims",
+		ProcedureKind:       "ims_default_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{6: {}},
+		S1BindingGeneration: 9,
+	}
+	ue.PendingERABProcedures["dedicated"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "dedicated",
+		ProcedureKind:       "dedicated_create_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{7: {}, 8: {}},
+		S1BindingGeneration: 9,
+	}
+
+	ue.Lock()
+	proc, reason, ambiguous := matchPendingERABProcedureLocked(ue, map[uint8]struct{}{7: {}, 8: {}})
+	ue.Unlock()
+	if ambiguous {
+		t.Fatal("matcher reported ambiguity for exact dedicated match")
+	}
+	if proc == nil || proc.TransactionID != "dedicated" {
+		t.Fatalf("matched procedure got %+v, want dedicated", proc)
+	}
+	if reason != "exact_expected_ebi_set" {
+		t.Fatalf("match reason got %q, want exact_expected_ebi_set", reason)
+	}
+}
+
+func TestEBI6ResponseDoesNotCompleteEBI7And8Transaction(t *testing.T) {
+	ue := uecontext.NewContext(40)
+	ue.S1BindingGeneration = 9
+	ue.PendingERABProcedures["ims"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "ims",
+		ProcedureKind:       "ims_default_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{6: {}},
+		S1BindingGeneration: 9,
+	}
+	ue.PendingERABProcedures["dedicated"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "dedicated",
+		ProcedureKind:       "dedicated_create_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{7: {}, 8: {}},
+		S1BindingGeneration: 9,
+	}
+
+	ue.Lock()
+	proc, _, _ := matchPendingERABProcedureLocked(ue, map[uint8]struct{}{6: {}})
+	ue.Unlock()
+	if proc == nil || proc.TransactionID != "ims" {
+		t.Fatalf("matched procedure got %+v, want ims", proc)
+	}
+}
+
+func TestEBI7And8ResponseDoesNotCompleteIMSDefaultBearer(t *testing.T) {
+	ue := uecontext.NewContext(40)
+	ue.S1BindingGeneration = 9
+	ue.PendingERABProcedures["ims"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "ims",
+		ProcedureKind:       "ims_default_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{6: {}},
+		S1BindingGeneration: 9,
+	}
+	ue.PendingERABProcedures["dedicated"] = &uecontext.PendingERABProcedure{
+		TransactionID:       "dedicated",
+		ProcedureKind:       "dedicated_create_bearer",
+		ExpectedEBIs:        map[uint8]struct{}{7: {}, 8: {}},
+		S1BindingGeneration: 9,
+	}
+
+	ue.Lock()
+	proc, _, _ := matchPendingERABProcedureLocked(ue, map[uint8]struct{}{7: {}})
+	ue.Unlock()
+	if proc == nil || proc.TransactionID != "dedicated" {
+		t.Fatalf("matched procedure got %+v, want dedicated", proc)
+	}
+}
+
+func encodeERABSetupResponseListForTest(items []ERABSetupSuccess) []byte {
+	w := aper.NewBitWriter()
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(len(items)), 1, 256)
+	w.AlignToByte()
+	for _, item := range items {
+		body := encodeERABSetupResponseItemForTest(item)
+		w.WriteOctets(encodeSingleContainerIEForTest(pdu.IEERABSetupItemBearerSURes, aper.CriticalityIgnore, body))
+	}
+	return w.Bytes()
+}
+
+func encodeERABFailedToSetupListForTest(items []ERABSetupFailure) []byte {
+	w := aper.NewBitWriter()
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(len(items)), 1, 256)
+	w.AlignToByte()
+	for _, item := range items {
+		body := encodeERABFailedToSetupItemForTest(item)
+		w.WriteOctets(encodeSingleContainerIEForTest(0, aper.CriticalityIgnore, body))
+	}
+	return w.Bytes()
+}
+
+func encodeSingleContainerIEForTest(id uint16, crit aper.Criticality, body []byte) []byte {
+	inner := pdu.EncodeIEContainer([]pdu.ProtocolIE{{ID: id, Criticality: crit, Value: body}})
+	return inner[2:]
+}
+
+func encodeERABSetupResponseItemForTest(item ERABSetupSuccess) []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0)
+	w.WriteBit(0)
+	w.WriteBit(0)
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(item.EBI), 0, 15)
+	w.WriteBit(0)
+	_ = aper.EncodeConstrainedWholeNumber(w, 32, 1, 160)
+	w.AlignToByte()
+	w.WriteOctets(item.ENBS1UAddr.To4())
+	w.AlignToByte()
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, item.ENBS1UTEID)
+	w.WriteOctets(b)
+	return w.Bytes()
+}
+
+func encodeERABFailedToSetupItemForTest(item ERABSetupFailure) []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0)
+	w.WriteBit(0)
+	w.WriteBit(0)
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(item.EBI), 0, 15)
+	copyCauseBits(w, ies.EncodeCause(ies.CauseGroup(item.CauseGroup), uint8(item.Cause)))
+	return w.Bytes()
+}
+
+func copyCauseBits(w *aper.BitWriter, encoded []byte) {
+	r := aper.NewBitReader(encoded)
+	for i := 0; i < len(encoded)*8; i++ {
+		bit, err := r.ReadBit()
+		if err != nil {
+			panic(err)
+		}
+		w.WriteBit(bit)
+	}
+}
+
+func decodePeerERABSetupRequestFixture(t *testing.T, name string) normalizedERABSetupRequest {
 	t.Helper()
 	return decodeERABSetupRequest(t, mustReadHexFixture(t, name))
 }
@@ -350,7 +631,7 @@ func decodeERABSetupRequestItem(t *testing.T, data []byte) normalizedERABSetupIt
 	}
 	item.QCI = uint8(qci)
 	if item.GBRQosInformationPresent {
-		decodeCiscoGBRBearerTail(t, data, r.BytesConsumed(), &item)
+		decodePeerGBRBearerTail(t, data, r.BytesConsumed(), &item)
 		return item
 	}
 
@@ -417,11 +698,11 @@ func decodeERABSetupRequestItem(t *testing.T, data []byte) normalizedERABSetupIt
 	return item
 }
 
-func decodeCiscoGBRBearerTail(t *testing.T, data []byte, start int, item *normalizedERABSetupItem) {
+func decodePeerGBRBearerTail(t *testing.T, data []byte, start int, item *normalizedERABSetupItem) {
 	t.Helper()
 	idx := bytes.Index(data[start:], []byte{0x0a, 0x5a, 0xfa, 0x3b})
 	if idx < 0 {
-		t.Fatalf("GBR E-RAB item missing Cisco SGW S1-U IPv4 marker")
+		t.Fatalf("GBR E-RAB item missing peer SGW S1-U IPv4 marker")
 	}
 	ipOff := start + idx
 	if ipOff+4+4+1 > len(data) {
@@ -488,10 +769,10 @@ func mustReadHexFixture(t *testing.T, name string) []byte {
 	return out
 }
 
-func TestReadCiscoFixtureJSONFiles(t *testing.T) {
+func TestReadPeerFixtureJSONFiles(t *testing.T) {
 	for _, name := range []string{
-		"cisco_erab_setup_request_multi.json",
-		"cisco_erab_setup_response.json",
+		"peer_erab_setup_request_multi.json",
+		"peer_erab_setup_response.json",
 	} {
 		if _, err := os.ReadFile("testdata/" + name); err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -500,12 +781,12 @@ func TestReadCiscoFixtureJSONFiles(t *testing.T) {
 }
 
 func Example_erabSetupFirstDivergence() {
-	cisco := mustDecodeHexForExample("0000110080850c0005040f800a5afa3bf187cfec")
+	peer := mustDecodeHexForExample("0000110080850c0005040f800a5afa3bf187cfec")
 	oldVectorCore := mustDecodeHexForExample("0000110055460005210f800a5afa3b570c0dad")
-	fmt.Printf("cisco item body first byte: 0x%02x\n", cisco[6])
+	fmt.Printf("peer item body first byte: 0x%02x\n", peer[6])
 	fmt.Printf("old vectorcore item body first byte: 0x%02x\n", oldVectorCore[5])
 	// Output:
-	// cisco item body first byte: 0x0c
+	// peer item body first byte: 0x0c
 	// old vectorcore item body first byte: 0x46
 }
 
@@ -515,4 +796,24 @@ func mustDecodeHexForExample(s string) []byte {
 		panic(err)
 	}
 	return b
+}
+
+func encodeBearerQoSForTest(qci, arp uint8, mbrUL, mbrDL, gbrUL, gbrDL uint64) []byte {
+	out := make([]byte, 22)
+	out[0] = arp
+	out[1] = qci
+	copy(out[2:7], encodeBearerQoSBitrateForTest(mbrUL))
+	copy(out[7:12], encodeBearerQoSBitrateForTest(mbrDL))
+	copy(out[12:17], encodeBearerQoSBitrateForTest(gbrUL))
+	copy(out[17:22], encodeBearerQoSBitrateForTest(gbrDL))
+	return out
+}
+
+func encodeBearerQoSBitrateForTest(v uint64) []byte {
+	out := make([]byte, 5)
+	for i := 4; i >= 0; i-- {
+		out[i] = byte(v & 0xff)
+		v >>= 8
+	}
+	return out
 }
