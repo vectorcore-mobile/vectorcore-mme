@@ -176,20 +176,6 @@ S-GW and P-GW DNS selections are cached when `gateway_selection.dns.cache.enable
 
 Use `GET /api/v1/oam/dns-cache` to inspect cached query names, services, selected targets, addresses, expiry times, and errors. Use `POST /api/v1/oam/dns-cache/flush` after DNS changes to force the next S-GW/P-GW selection to query DNS again.
 
-## S1AP APER Codec Notes
-
-VectorCore currently uses a hand-written APER codec for the implemented S1AP subset. S1AP message builders should construct typed IE values through shared helpers in `internal/s1ap/ies` and `internal/s1ap/pdu`; do not manually splice nested ASN.1 CHOICE or SEQUENCE byte strings.
-
-The UE S1AP ID helpers follow TS 36.413 constraints:
-
-- `MME-UE-S1AP-ID ::= INTEGER (0..4294967295)`
-- `ENB-UE-S1AP-ID ::= INTEGER (0..16777215)`
-- `UE-S1AP-IDs` is a CHOICE; the `uE-S1AP-ID-pair` arm is packed immediately after the CHOICE selector with no byte alignment between the selector and the selected SEQUENCE.
-
-Large constrained whole numbers use the APER constrained length determinant followed by byte alignment and the minimal non-negative-binary-integer value octets. The decoder is length-safe and accepts the Ericsson-observed padded eNB UE ID open-type form `00 00 00 01` for interop, while the encoder emits the canonical APER form.
-
-`InitialContextSetupRequest` encodes `UESecurityCapabilities` as the TS 36.413 S1AP structure, not by copying NAS capability octets directly. The NAS EEA/EIA bitmaps from the Attach Request are mapped into the high bits of the 16-bit S1AP `encryptionAlgorithms` and `integrityProtectionAlgorithms` BIT STRINGs with the S1AP spare bit clear.
-
 Run S1AP codec tests with:
 
 ```bash
@@ -233,18 +219,6 @@ During TAU with GUTI reallocation, such as inter-MME TAU or an explicitly enable
 On startup, the MME generates a new restart epoch and marks older recovery records as `STALE_AFTER_RESTART`. It does not load database rows as active UE contexts.
 
 When the S1-MME SCTP association closes, eNodeBs release UE-associated S1AP context tied to that MME. After an MME restart, UEs must return through normal LTE procedures such as Attach, TAU, Service Request, or Detach. The MME may use the recovery DB to map old GUTI to IMSI, correlate previous APN/session data, and clean stale SGW sessions, but it always creates new live in-memory S1/NAS context.
-
-### EPS Detach
-
-ECM-IDLE is not EPS detach. A UE released for radio inactivity remains `EMM-REGISTERED` and can later resume by Service Request.
-
-For UE-originated EPS detach, including detach from ECM-IDLE, the UE may send NAS `DETACH REQUEST` (`0x45`) inside S1AP `InitialUEMessage` because there is no active UE-associated S1 signalling context. The MME resolves the existing UE by S-TMSI/GUTI, verifies NAS security with the stored EPS security context, decodes the Detach Type, and starts S11 Delete Session.
-
-Switch-off detach suppresses NAS Detach Accept. Non-switch-off detach sends Detach Accept protected with the active NAS security context. After successful core-side teardown the active UE/session/bearer state is removed from memory and recovery records are marked detached/inactive.
-
-Do not remove an `EMM-REGISTERED` UE merely because its S1/RRC context was released or because RF connectivity disappeared. Explicit detach and implicit detach are separate procedures.
-
-The live UE API exposes this distinction. `s1_connected=false` with `EMM-REGISTERED` / `ECM-IDLE` means the UE is registered but not currently on a UE-associated S1 connection. `last_release_cause` records the most recent S1 release reason, for example `radio-connection-with-ue-lost`.
 
 ### Recovery API
 
