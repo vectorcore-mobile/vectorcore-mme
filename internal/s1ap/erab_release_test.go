@@ -56,6 +56,37 @@ func TestBuildERABReleaseRequestUsesNASNormalReleaseCause(t *testing.T) {
 	t.Fatal("E-RABToBeReleasedList IE missing")
 }
 
+func TestERABReleaseCompleteWrongPairSendsErrorIndication(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.10.9.2:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.ENBS1APID = 1
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(2)},
+		{ID: pdu.IEERABReleaseListERABRelComp, Criticality: aper.CriticalityIgnore, Value: encodeERABReleaseResponseListForTest([]uint8{9})},
+	}
+
+	srv.handleERABReleaseComplete(addr, &pdu.PDU{
+		Type:          pdu.PDUTypeSuccessfulOutcome,
+		ProcedureCode: pdu.ProcERABRelease,
+		Criticality:   aper.CriticalityIgnore,
+	}, nil, ieList)
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnknownPairUES1APID)
+}
+
 func decodeReleaseRequestItemsForTest(data []byte) ([]erabReleaseRequestItemForTest, error) {
 	r := aper.NewBitReader(data)
 	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)

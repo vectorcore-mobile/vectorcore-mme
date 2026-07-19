@@ -48,14 +48,29 @@ func (s *Server) validateInboundProcedureIEs(remoteAddr string, p *pdu.PDU, ieLi
 	if p.Type != pdu.PDUTypeInitiatingMessage {
 		return false
 	}
-	cause := ies.CauseProtocolSemanticError
+	fatalIssues := make([]procedureValidationIssue, 0, len(issues))
+	notifyOnlyIssues := make([]procedureValidationIssue, 0, len(issues))
 	for _, issue := range issues {
+		if issue.Kind == "unknown-ie-notify" {
+			notifyOnlyIssues = append(notifyOnlyIssues, issue)
+			continue
+		}
+		fatalIssues = append(fatalIssues, issue)
+	}
+	if len(notifyOnlyIssues) > 0 {
+		s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolAbstractSyntaxErrorIgnoreAndNotify, validationIssuesToDiagnostics(notifyOnlyIssues)...)
+	}
+	if len(fatalIssues) == 0 {
+		return true
+	}
+	cause := ies.CauseProtocolSemanticError
+	for _, issue := range fatalIssues {
 		if issue.Kind == "duplicate-ie" || issue.Kind == "out-of-order-ie" {
 			cause = ies.CauseProtocolFalselyConstructedMessage
 			break
 		}
 	}
-	s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, cause, validationIssuesToDiagnostics(issues)...)
+	s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, cause, validationIssuesToDiagnostics(fatalIssues)...)
 	return false
 }
 
@@ -83,6 +98,14 @@ func validateProcedureIEs(procCode uint8, pduType pdu.PDUType, ieList []pdu.Prot
 					IEID:     ie.ID,
 					Name:     fmt.Sprintf("unknown-%d", ie.ID),
 					Expected: aper.CriticalityReject,
+					Actual:   ie.Criticality,
+				})
+			} else if ie.Criticality == aper.CriticalityNotify {
+				issues = append(issues, procedureValidationIssue{
+					Kind:     "unknown-ie-notify",
+					IEID:     ie.ID,
+					Name:     fmt.Sprintf("unknown-%d", ie.ID),
+					Expected: aper.CriticalityNotify,
 					Actual:   ie.Criticality,
 				})
 			}

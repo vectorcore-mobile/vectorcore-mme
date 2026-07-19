@@ -10,15 +10,19 @@ type TAURequest struct {
 	OldGUTI             *GUTI // nil if identity is not a GUTI
 	UENetworkCapability []byte
 	LastVisitedTAI      *TAI
+	EPSBearerStatus     *EPSBearerContextStatus
 }
 
 // TAUAcceptParams holds the semantic inputs for a TAU Accept encoder.
 type TAUAcceptParams struct {
 	UpdateResult             uint8
 	T3412                    uint8
+	T3402                    *uint8
+	T3423                    *uint8
 	TAIList                  []TAI
 	IncludeGUTI              bool
 	GUTI                     *GUTI
+	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
 }
 
@@ -28,7 +32,68 @@ type TAUAccept struct {
 	T3412                    *uint8
 	TAIList                  []TAI
 	GUTI                     *GUTI
+	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
+}
+
+// EPSBearerContextStatus captures the active EPS bearer bitmap communicated in
+// TAU and related NAS procedures. Bits 5..15 of Bitmap correspond to EBI 5..15.
+type EPSBearerContextStatus struct {
+	Bitmap uint16
+}
+
+func (s *EPSBearerContextStatus) HasEBI(ebi uint8) bool {
+	if s == nil || ebi > 15 {
+		return false
+	}
+	return s.Bitmap&(1<<ebi) != 0
+}
+
+func (s *EPSBearerContextStatus) ActiveEBIs() []uint8 {
+	if s == nil {
+		return nil
+	}
+	out := make([]uint8, 0, 11)
+	for ebi := uint8(5); ebi <= 15; ebi++ {
+		if s.HasEBI(ebi) {
+			out = append(out, ebi)
+		}
+	}
+	return out
+}
+
+func DecodeEPSBearerContextStatus(data []byte) (*EPSBearerContextStatus, error) {
+	if len(data) != 2 {
+		return nil, fmt.Errorf("emm: EPS bearer context status invalid length %d", len(data))
+	}
+	var bitmap uint16
+	for ebi := uint8(5); ebi <= 7; ebi++ {
+		if data[0]&(1<<ebi) != 0 {
+			bitmap |= 1 << ebi
+		}
+	}
+	for ebi := uint8(8); ebi <= 15; ebi++ {
+		if data[1]&(1<<(ebi-8)) != 0 {
+			bitmap |= 1 << ebi
+		}
+	}
+	return &EPSBearerContextStatus{Bitmap: bitmap}, nil
+}
+
+func EncodeEPSBearerContextStatus(status EPSBearerContextStatus) []byte {
+	var octet1 byte
+	var octet2 byte
+	for ebi := uint8(5); ebi <= 7; ebi++ {
+		if status.Bitmap&(1<<ebi) != 0 {
+			octet1 |= 1 << ebi
+		}
+	}
+	for ebi := uint8(8); ebi <= 15; ebi++ {
+		if status.Bitmap&(1<<ebi) != 0 {
+			octet2 |= 1 << (ebi - 8)
+		}
+	}
+	return []byte{octet1, octet2}
 }
 
 // EPS update type values (TS 24.301 §9.9.3.21).
@@ -90,8 +155,15 @@ func DecodeTAURequest(data []byte) (*TAURequest, error) {
 		}
 	}
 
-	// LV: UE network capability (mandatory per spec, but tolerate missing)
+	// UE network capability. Some encodings carry this as a bare LV immediately
+	// after the mobile identity; others include the explicit IEI 0x58 first.
 	if offset < len(data) {
+		if data[offset] == 0x58 {
+			offset++
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Request truncated at UE network capability length")
+			}
+		}
 		capLen := int(data[offset])
 		offset++
 		if offset+capLen <= len(data) {
@@ -108,6 +180,12 @@ func DecodeTAURequest(data []byte) (*TAURequest, error) {
 			break
 		}
 		switch iei {
+		case 0x00:
+			// Some UEs insert a spare/zero octet between optional IEs in TAU Request.
+			// Treat it as ignorable filler instead of trying to parse the following
+			// byte as a TLV length, which would skip valid trailing IEs such as 0x57
+			// EPS bearer context status.
+			continue
 		case 0x52: // Last visited registered TAI
 			if offset+5 <= len(data) {
 				tai, err := DecodeTAI(data[offset : offset+5])
@@ -115,6 +193,20 @@ func DecodeTAURequest(data []byte) (*TAURequest, error) {
 					r.LastVisitedTAI = &tai
 				}
 				offset += 5
+			}
+		case 0x5c: // DRX parameter (fixed-length TV IE)
+			if offset < len(data) {
+				offset++
+			}
+		case 0x57: // EPS bearer context status
+			ieLen := int(data[offset])
+			offset++
+			if offset+ieLen <= len(data) {
+				status, err := DecodeEPSBearerContextStatus(data[offset : offset+ieLen])
+				if err == nil {
+					r.EPSBearerStatus = status
+				}
+				offset += ieLen
 			}
 		default:
 			if iei&0x80 != 0 {
@@ -172,6 +264,20 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 	if params.IncludeGUTI && params.GUTI != nil {
 		b = append(b, 0x50)
 		b = append(b, params.GUTI.Encode()...)
+	}
+
+	if params.EPSBearerStatus != nil {
+		value := EncodeEPSBearerContextStatus(*params.EPSBearerStatus)
+		b = append(b, 0x57, byte(len(value)))
+		b = append(b, value...)
+	}
+
+	if params.T3402 != nil {
+		b = append(b, 0x17, *params.T3402)
+	}
+
+	if params.T3423 != nil {
+		b = append(b, 0x59, *params.T3423)
 	}
 
 	if params.EPSNetworkFeatureSupport != nil {
@@ -236,6 +342,31 @@ func DecodeTAUAccept(data []byte) (*TAUAccept, error) {
 			}
 			out.GUTI = guti
 			offset += 1 + l
+		case 0x57: // EPS bearer context status
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated EPS bearer context status length")
+			}
+			l := int(data[offset])
+			offset++
+			if offset+l > len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated EPS bearer context status")
+			}
+			status, err := DecodeEPSBearerContextStatus(data[offset : offset+l])
+			if err != nil {
+				return nil, err
+			}
+			out.EPSBearerStatus = status
+			offset += l
+		case 0x17: // T3402 value
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated T3402")
+			}
+			offset++
+		case 0x59: // T3423 value
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated T3423")
+			}
+			offset++
 		case 0x64: // EPS network feature support
 			if offset >= len(data) {
 				return nil, fmt.Errorf("emm: TAU Accept truncated EPS network feature support length")
@@ -260,29 +391,78 @@ func decodeTAIList(data []byte) ([]TAI, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
-	if len(data) < 6 {
-		return nil, fmt.Errorf("emm: TAI list too short: %d bytes", len(data))
+	taiList := make([]TAI, 0, maxTAIListElements)
+	for offset := 0; offset < len(data); {
+		if len(data)-offset < 6 {
+			return nil, fmt.Errorf("emm: TAI list too short: %d bytes", len(data)-offset)
+		}
+		header := data[offset]
+		offset++
+		listType := (header >> 5) & 0x03
+		count := int(header&0x1F) + 1
+
+		switch listType {
+		case taiListTypeOnePLMNNonConsecutive:
+			expected := 3 + 2*count
+			if len(data)-offset < expected {
+				return nil, fmt.Errorf("emm: TAI list length got %d want at least %d", len(data)-offset, expected)
+			}
+			var plmn [3]byte
+			copy(plmn[:], data[offset:offset+3])
+			offset += 3
+			for i := 0; i < count; i++ {
+				if len(taiList) == maxTAIListElements {
+					return taiList, nil
+				}
+				taiList = append(taiList, TAI{
+					PLMN: plmn,
+					TAC:  uint16(data[offset])<<8 | uint16(data[offset+1]),
+				})
+				offset += 2
+			}
+		case taiListTypeOnePLMNConsecutive:
+			expected := 5
+			if len(data)-offset < expected {
+				return nil, fmt.Errorf("emm: TAI list length got %d want at least %d", len(data)-offset, expected)
+			}
+			var plmn [3]byte
+			copy(plmn[:], data[offset:offset+3])
+			offset += 3
+			firstTAC := uint16(data[offset])<<8 | uint16(data[offset+1])
+			offset += 2
+			for i := 0; i < count; i++ {
+				if len(taiList) == maxTAIListElements {
+					return taiList, nil
+				}
+				taiList = append(taiList, TAI{
+					PLMN: plmn,
+					TAC:  firstTAC + uint16(i),
+				})
+			}
+		case taiListTypeDifferentPLMNs:
+			expected := 5 * count
+			if len(data)-offset < expected {
+				return nil, fmt.Errorf("emm: TAI list length got %d want at least %d", len(data)-offset, expected)
+			}
+			for i := 0; i < count; i++ {
+				if len(taiList) == maxTAIListElements {
+					return taiList, nil
+				}
+				var plmn [3]byte
+				copy(plmn[:], data[offset:offset+3])
+				offset += 3
+				taiList = append(taiList, TAI{
+					PLMN: plmn,
+					TAC:  uint16(data[offset])<<8 | uint16(data[offset+1]),
+				})
+				offset += 2
+			}
+		default:
+			return nil, fmt.Errorf("emm: unsupported TAI list type %d", listType)
+		}
 	}
-	header := data[0]
-	listType := (header >> 5) & 0x03
-	count := int(header&0x1F) + 1
-	if listType != 0 {
-		return nil, fmt.Errorf("emm: unsupported TAI list type %d", listType)
-	}
-	expected := 1 + 3 + 2*count
-	if len(data) != expected {
-		return nil, fmt.Errorf("emm: TAI list length got %d want %d", len(data), expected)
-	}
-	var plmn [3]byte
-	copy(plmn[:], data[1:4])
-	taiList := make([]TAI, 0, count)
-	offset := 4
-	for i := 0; i < count; i++ {
-		taiList = append(taiList, TAI{
-			PLMN: plmn,
-			TAC:  uint16(data[offset])<<8 | uint16(data[offset+1]),
-		})
-		offset += 2
+	if len(taiList) == 0 {
+		return nil, fmt.Errorf("emm: empty TAI list")
 	}
 	return taiList, nil
 }

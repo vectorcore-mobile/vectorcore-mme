@@ -232,6 +232,17 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseInsufficientResources, log)
 	}
 	ebi := allocateDefaultBearerIDLocked(ue)
+	pendingReservationID := pendingPDNReservationID(ue, req.ProcedureTransactionID, requestedAPN)
+	if ebi != 0 {
+		if ue.EBIReservations == nil {
+			ue.EBIReservations = make(map[uint8]uecontext.EBIReservation)
+		}
+		ue.EBIReservations[ebi] = uecontext.EBIReservation{
+			EBI:           ebi,
+			TransactionID: pendingReservationID,
+			ReservedAt:    time.Now(),
+		}
+	}
 	ue.Unlock()
 
 	log.Info("s1ap: PDN Connectivity Request received",
@@ -246,6 +257,13 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 
 	if !authorized || requestedAPN == "" {
 		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseMissingOrUnknownAPN, log)
+	}
+	if missing := validateSubscriberAPNPolicy(&apnCfg); len(missing) != 0 {
+		log.Warn("s1ap: incomplete subscriber APN policy, rejecting PDN Connectivity Request",
+			zap.String("requested_apn", requestedAPN),
+			zap.Uint8("pti", req.ProcedureTransactionID),
+			zap.Strings("missing_fields", missing))
+		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
 	}
 	if ebi == 0 {
 		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseInsufficientResources, log)
@@ -281,22 +299,22 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	}
 
 	pdn := &uecontext.PDNContext{
-		APN:                    requestedAPN,
-		ProcedureTransactionID: req.ProcedureTransactionID,
-		PDNType:                req.PDNType,
-		DefaultEBI:             ebi,
-		LocalS11TEID:           localTEID,
-		SGWAddress:             sgwAddr,
-		UEPCO:                  append([]byte(nil), req.PCO...),
-		State:                  "csr-sent",
+		APN:                     requestedAPN,
+		ProcedureTransactionID:  req.ProcedureTransactionID,
+		PDNType:                 req.PDNType,
+		DefaultEBI:              ebi,
+		QCI:                     apnCfg.QCI,
+		ARPPriority:             apnCfg.ARPPriority,
+		PreemptionCapability:    apnCfg.PreemptionCapability,
+		PreemptionVulnerability: apnCfg.PreemptionVulnerability,
+		LocalS11TEID:            localTEID,
+		SGWAddress:              sgwAddr,
+		UEPCO:                   append([]byte(nil), req.PCO...),
+		State:                   "csr-sent",
 	}
 	ue.Lock()
 	ue.PendingPDN = pdn
 	ue.Unlock()
-	pdnType := subscriberPDNType(&apnCfg, req.PDNType)
-	bearerQCI := subscriberBearerQCI(&apnCfg, requestedAPN)
-	arpPriority, preemptionCapability, preemptionVulnerability := subscriberARPProfile(&apnCfg)
-	uplinkAMBR, downlinkAMBR := subscriberAPNAMBR(&apnCfg)
 
 	csr := &gtpv2.CreateSessionRequest{
 		SGWAddress:              sgwAddr,
@@ -312,20 +330,21 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		ULITAC:                  ulitac,
 		ULIECI:                  ecgieci,
 		PCO:                     req.PCO,
-		PDNType:                 pdnType,
+		PDNType:                 apnCfg.PDNType,
 		DefaultEBI:              ebi,
-		BearerQCI:               bearerQCI,
-		BearerPriorityLevel:     arpPriority,
-		PreemptionCapability:    preemptionCapability,
-		PreemptionVulnerability: preemptionVulnerability,
-		UplinkAMBRKbps:          uplinkAMBR,
-		DownlinkAMBRKbps:        downlinkAMBR,
+		BearerQCI:               apnCfg.QCI,
+		BearerPriorityLevel:     apnCfg.ARPPriority,
+		PreemptionCapability:    apnCfg.PreemptionCapability,
+		PreemptionVulnerability: apnCfg.PreemptionVulnerability,
+		UplinkAMBRKbps:          apnCfg.APNAMBRUp,
+		DownlinkAMBRKbps:        apnCfg.APNAMBRDown,
 	}
 	if err := s.s11.SendCSR(mmeID, csr); err != nil {
 		ue.Lock()
 		if ue.PendingPDN == pdn {
 			ue.PendingPDN = nil
 		}
+		releasePendingPDNReservationLocked(ue, pdn)
 		ue.Unlock()
 		log.Warn("s1ap: IMS PDN SendCSR failed", zap.Error(err))
 		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
@@ -369,6 +388,7 @@ func (s *Server) handleESMInformationResponse(ue *uecontext.Context, resp *esm.E
 		req.PCO = append([]byte(nil), resp.PCO...)
 	}
 	ue.PendingPDN = nil
+	releasePendingPDNReservationLocked(ue, pending)
 	ue.Unlock()
 
 	log.Info("s1ap: ESM Information Response received; resuming PDN Connectivity",
@@ -547,6 +567,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 		if ue.PendingPDN == pdn {
 			ue.PendingPDN = nil
 		}
+		releasePendingPDNReservationLocked(ue, pdn)
 		ue.Unlock()
 		_ = s.sendESMReject(ue, pti, esm.ESMCauseRequestRejectedUnspecified, log)
 		return
@@ -560,15 +581,37 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 		if ue.PendingPDN == pdn {
 			ue.PendingPDN = nil
 		}
+		releasePendingPDNReservationLocked(ue, pdn)
 		ue.Unlock()
 		_ = s.sendESMReject(ue, pti, esm.ESMCauseRequestRejectedBySGW, log)
 		return
 	}
+	if resp.EBI == 0 {
+		log.Warn("s1ap: IMS CSRsp accepted without valid bearer EBI",
+			zap.String("apn", apn))
+		ue.Lock()
+		if ue.PendingPDN == pdn {
+			ue.PendingPDN = nil
+		}
+		releasePendingPDNReservationLocked(ue, pdn)
+		ue.Unlock()
+		_ = s.sendESMReject(ue, pti, esm.ESMCauseRequestRejectedUnspecified, log)
+		return
+	}
 
 	ue.Lock()
-	if resp.EBI != 0 {
-		pdn.DefaultEBI = resp.EBI
+	if pdn.DefaultEBI != resp.EBI {
+		releasePendingPDNReservationLocked(ue, pdn)
+		if ue.EBIReservations == nil {
+			ue.EBIReservations = make(map[uint8]uecontext.EBIReservation)
+		}
+		ue.EBIReservations[resp.EBI] = uecontext.EBIReservation{
+			EBI:           resp.EBI,
+			TransactionID: pendingPDNReservationID(ue, pdn.ProcedureTransactionID, pdn.APN),
+			ReservedAt:    time.Now(),
+		}
 	}
+	pdn.DefaultEBI = resp.EBI
 	pdn.SGWC_TEID = resp.SGWC_TEID
 	pdn.SGWC_IP = append(net.IP(nil), resp.SGWC_IP...)
 	pdn.SGWU_TEID = resp.SGWU_TEID
@@ -576,11 +619,14 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	pdn.UEIPv4 = append(net.IP(nil), resp.UEIPv4...)
 	pdn.PGWPCO = append([]byte(nil), resp.PCO...)
 	pdn.State = "activating"
+	pdn.SessionCreatedAt = time.Now()
+	pdn.LastSuccessfulS11Procedure = "create-session-response"
 	if ue.PDNs == nil {
 		ue.PDNs = make(map[string]*uecontext.PDNContext)
 	}
 	ue.PDNs[pdn.APN] = pdn
 	ue.PendingPDN = nil
+	releasePendingPDNReservationLocked(ue, pdn)
 	ue.Unlock()
 
 	esmAPN := s.apnForNAS(pdn.APN)
@@ -596,10 +642,10 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	imsERABTxID := fmt.Sprintf("ims-erab-%d-%d", ue.MMEUES1APID, pdn.DefaultEBI)
 	if err := s.SendERABSetupRequestTracked(ue.MMEUES1APID, []ERABSetupItem{{
 		EBI:                     pdn.DefaultEBI,
-		QCI:                     5,
-		ARPPriority:             8,
-		PreemptionCapability:    false,
-		PreemptionVulnerability: true,
+		QCI:                     pdn.QCI,
+		ARPPriority:             pdn.ARPPriority,
+		PreemptionCapability:    pdn.PreemptionCapability,
+		PreemptionVulnerability: pdn.PreemptionVulnerability,
 		SGWS1UIPv4:              pdn.SGWU_IP,
 		SGWS1UTEID:              pdn.SGWU_TEID,
 		NASPDU:                  protected,
@@ -710,6 +756,9 @@ func allocateDefaultBearerIDLocked(ue *uecontext.Context) uint8 {
 			used[pdn.DefaultEBI] = true
 		}
 	}
+	if ue.PendingPDN != nil && ue.PendingPDN.DefaultEBI != 0 {
+		used[ue.PendingPDN.DefaultEBI] = true
+	}
 	for ebi := range ue.DedicatedBearers {
 		if ebi != 0 {
 			used[ebi] = true
@@ -733,6 +782,24 @@ func allocateDefaultBearerIDLocked(ue *uecontext.Context) uint8 {
 		}
 	}
 	return 0
+}
+
+func pendingPDNReservationID(ue *uecontext.Context, pti uint8, apn string) string {
+	return fmt.Sprintf("pending-pdn-%d-%d-%s", ue.MMEUES1APID, pti, apn)
+}
+
+func releasePendingPDNReservationLocked(ue *uecontext.Context, pdn *uecontext.PDNContext) {
+	if ue == nil || pdn == nil || pdn.DefaultEBI == 0 {
+		return
+	}
+	res, ok := ue.EBIReservations[pdn.DefaultEBI]
+	if !ok {
+		return
+	}
+	if res.TransactionID != pendingPDNReservationID(ue, pdn.ProcedureTransactionID, pdn.APN) {
+		return
+	}
+	delete(ue.EBIReservations, pdn.DefaultEBI)
 }
 
 func findPDNByLinkedEBILocked(ue *uecontext.Context, linkedEBI uint8) *uecontext.PDNContext {

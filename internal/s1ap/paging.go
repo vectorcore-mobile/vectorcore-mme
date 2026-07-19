@@ -25,6 +25,8 @@ var (
 	ErrNotRegistered    = errors.New("UE not in EMM-REGISTERED state")
 	ErrAlreadyConnected = errors.New("UE is already ECM-CONNECTED")
 	ErrAlreadyPaging    = errors.New("paging already in progress")
+	ErrNoPagingIdentity = errors.New("UE has no valid paging identity")
+	ErrNoPagingTAI      = errors.New("UE has no valid paging TAI")
 	ErrNoENB            = errors.New("no eNB available to page")
 )
 
@@ -51,6 +53,14 @@ func (s *Server) PageUE(imsi string) error {
 	if ecmState != emm.ECMIdle {
 		metrics.PagingTotal.WithLabelValues("not_idle").Inc()
 		return ErrAlreadyConnected
+	}
+	if guti == nil {
+		metrics.PagingTotal.WithLabelValues("no_identity").Inc()
+		return ErrNoPagingIdentity
+	}
+	if tai == nil {
+		metrics.PagingTotal.WithLabelValues("no_tai").Inc()
+		return ErrNoPagingTAI
 	}
 
 	ue.Lock()
@@ -150,26 +160,18 @@ func (s *Server) sendPaging(enbAddr string, ue *uecontext.Context, log *zap.Logg
 	idxValue := ies.EncodeUEIdentityIndexValue(imsi)
 
 	// UE-PagingID: CHOICE s-TMSI (MMEC + M-TMSI from GUTI)
-	var pagingIDValue []byte
-	if guti != nil {
-		pagingIDValue = ies.EncodeUEPagingIDSTMSI(guti.MMEC, guti.MTMSI)
-	} else {
-		// No GUTI yet — use a zero S-TMSI as a fallback; real deployments always have GUTI.
-		pagingIDValue = ies.EncodeUEPagingIDSTMSI(0, 0)
+	pagingIDValue := ies.EncodeUEPagingIDSTMSI(guti.MMEC, guti.MTMSI)
+	taiListValue := ies.EncodePagingTAIList([]emm.TAI{*tai})
+	if taiListValue == nil {
+		log.Warn("s1ap: paging skipped because TAI list encoding failed", zap.String("enb", enbAddr))
+		return
 	}
 
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEUEIdentityIndexValue, Criticality: aper.CriticalityReject, Value: idxValue},
 		{ID: pdu.IEUEPagingID, Criticality: aper.CriticalityReject, Value: pagingIDValue},
-	}
-	// TAIList is OPTIONAL (TS 36.413 §9.1.7.1). Omit when unknown — eNB then pages all cells.
-	if tai != nil {
-		taiListValue := ies.EncodePagingTAIList([]emm.TAI{*tai})
-		if taiListValue != nil {
-			ieList = append(ieList, pdu.ProtocolIE{
-				ID: pdu.IEPagingTAIList, Criticality: aper.CriticalityIgnore, Value: taiListValue,
-			})
-		}
+		{ID: pdu.IECNDomain, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCNDomain(0)},
+		{ID: pdu.IEPagingTAIList, Criticality: aper.CriticalityIgnore, Value: taiListValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcPaging, aper.CriticalityIgnore, ieList)
 

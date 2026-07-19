@@ -25,6 +25,7 @@ func TestEncodeAttachAcceptIncludesEPSNetworkFeatureSupport(t *testing.T) {
 	features := &emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true}
 	got := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
 		AttachResult:             emm.AttachTypeCombinedEPSAndIMSI,
+		T3412:                    0x49,
 		TAIList:                  []emm.TAI{tai},
 		ESMContainer:             esm,
 		EPSNetworkFeatureSupport: features,
@@ -157,6 +158,14 @@ func TestSecurityModeCommandWithHashMME(t *testing.T) {
 	want := mustHex(t, "075d220002f0704f084caba3d8e98b6958")
 	if !bytes.Equal(smc, want) {
 		t.Fatalf("SMC with HashMME: got %x, want %x", smc, want)
+	}
+}
+
+func TestSecurityModeCommandWithExplicitKSI(t *testing.T) {
+	smc := emm.EncodeSecurityModeCommandWithKSIAndHashMME(2, 2, 5, []byte{0xf0, 0x70}, nil)
+	want := mustHex(t, "075d220502f070")
+	if !bytes.Equal(smc, want) {
+		t.Fatalf("SMC with explicit KSI: got %x, want %x", smc, want)
 	}
 }
 

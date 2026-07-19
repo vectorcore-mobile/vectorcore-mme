@@ -6,13 +6,19 @@ import "fmt"
 // intAlgID and encAlgID are the selected EIA/EEA algorithm IDs (0..7).
 // ueSecCap is the replayed UE security capability IE value.
 func EncodeSecurityModeCommand(intAlgID, encAlgID uint8, ueSecCap []byte) []byte {
-	return EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID, ueSecCap, nil)
+	return EncodeSecurityModeCommandWithKSIAndHashMME(intAlgID, encAlgID, 0, ueSecCap, nil)
 }
 
 // EncodeSecurityModeCommandWithHashMME encodes a NAS Security Mode Command and
 // appends HashMME when provided. hashMME must be the 8-byte value from
 // TS 33.401 Annex I.2; the IE is encoded as IEI 0x4f, length 0x08, value.
 func EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID uint8, ueSecCap, hashMME []byte) []byte {
+	return EncodeSecurityModeCommandWithKSIAndHashMME(intAlgID, encAlgID, 0, ueSecCap, hashMME)
+}
+
+// EncodeSecurityModeCommandWithKSIAndHashMME encodes a NAS Security Mode Command with
+// an explicit native NAS key set identifier and optional HashMME IE.
+func EncodeSecurityModeCommandWithKSIAndHashMME(intAlgID, encAlgID, nasKSI uint8, ueSecCap, hashMME []byte) []byte {
 	b := make([]byte, 0, 32)
 	b = append(b, PDEPSMobilityMgmt|SecurityHeaderPlain<<4)
 	b = append(b, MsgSecurityModeCommand)
@@ -22,7 +28,7 @@ func EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID uint8, ueSecCap, ha
 	b = append(b, (encAlgID&0x07)<<4|(intAlgID&0x07))
 
 	// NAS key set identifier (bits 3:0 = KSI, bits 7:4 = spare)
-	b = append(b, 0x00) // KSI=0 (native)
+	b = append(b, nasKSI&0x07)
 
 	// Replayed UE security capabilities (mandatory)
 	b = append(b, byte(len(ueSecCap)))

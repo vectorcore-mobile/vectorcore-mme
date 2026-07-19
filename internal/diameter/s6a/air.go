@@ -29,21 +29,7 @@ func (h *Handlers) SendAIR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 	sid := h.newSessionID(imsi)
 	h.pendingAIR.Store(sid, mmeUEID)
 
-	m := diam.NewRequest(diam.AuthenticationInformation, appIDS6a, dict.Default)
-	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sid))
-	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
-	m.NewAVP(avp.DestinationHost, avp.Mbit, 0, datatype.DiameterIdentity(hssHost))
-	m.NewAVP(avp.DestinationRealm, avp.Mbit, 0, datatype.DiameterIdentity(hssRealm))
-	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
-	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1)) // NO_STATE_MAINTAINED
-	m.NewAVP(avp.VisitedPLMNID, avp.Vbit|avp.Mbit, vendor3GPP, datatype.OctetString(plmn[:]))
-	m.NewAVP(avp.RequestedEUTRANAuthenticationInfo, avp.Vbit|avp.Mbit, vendor3GPP, &diam.GroupedAVP{
-		AVP: []*diam.AVP{
-			diam.NewAVP(avp.NumberOfRequestedVectors, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Unsigned32(1)),
-			diam.NewAVP(avp.ImmediateResponsePreferred, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Unsigned32(1)),
-		},
-	})
+	m := h.buildAIR(sid, imsi, plmn, hssHost, hssRealm)
 
 	if _, err := m.WriteTo(conn); err != nil {
 		h.pendingAIR.Delete(sid)
@@ -56,6 +42,24 @@ func (h *Handlers) SendAIR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("visited_plmn_id_hex", hex.EncodeToString(plmn[:])))
 	return nil
+}
+
+func (h *Handlers) buildAIR(sessionID, imsi string, plmn [3]byte, destHost, destRealm string) *diam.Message {
+	m := diam.NewRequest(diam.AuthenticationInformation, appIDS6a, dict.Default)
+	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sessionID))
+	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
+	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	h.addDestinationRouting(m, destHost, destRealm)
+	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
+	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1)) // NO_STATE_MAINTAINED
+	m.NewAVP(avp.VisitedPLMNID, avp.Vbit|avp.Mbit, vendor3GPP, datatype.OctetString(plmn[:]))
+	m.NewAVP(avp.RequestedEUTRANAuthenticationInfo, avp.Vbit|avp.Mbit, vendor3GPP, &diam.GroupedAVP{
+		AVP: []*diam.AVP{
+			diam.NewAVP(avp.NumberOfRequestedVectors, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Unsigned32(h.cfg.AIR.RequestedVectors)),
+			diam.NewAVP(avp.ImmediateResponsePreferred, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Unsigned32(boolToUint32(h.cfg.AIR.ImmediateResponsePreferred))),
+		},
+	})
+	return m
 }
 
 // handleAIA processes an Authentication-Information-Answer from the HSS.

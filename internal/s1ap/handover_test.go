@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
@@ -49,8 +50,8 @@ func setupTwoENBServer(s11 S11Client) (*Server, chan []byte, chan []byte) {
 	srcCh := make(chan []byte, 16)
 	tgtCh := make(chan []byte, 16)
 
-	srcEnb := &ENBContext{RemoteAddr: srcAddr, GlobalENBID: roundTripGlobalENBID(srcGlobalID)}
-	tgtEnb := &ENBContext{RemoteAddr: tgtAddr, GlobalENBID: roundTripGlobalENBID(tgtGlobalID)}
+	srcEnb := &ENBContext{RemoteAddr: srcAddr, GlobalENBID: roundTripGlobalENBID(srcGlobalID), SetupComplete: true}
+	tgtEnb := &ENBContext{RemoteAddr: tgtAddr, GlobalENBID: roundTripGlobalENBID(tgtGlobalID), SetupComplete: true}
 	srv.enbs.Store(srcAddr, srcEnb)
 	srv.enbs.Store(tgtAddr, tgtEnb)
 	srv.sends.Store(srcAddr, (chan<- []byte)(srcCh))
@@ -75,6 +76,21 @@ func makeHOUE(srv *Server) *uecontext.Context {
 	ue.ENBU_TEID = 0xDEAD0001
 	ue.ENBU_IP = net.ParseIP("10.0.0.1").To4()
 	ue.UEIPv4 = net.ParseIP("10.1.2.100").To4()
+	ue.APN = "internet"
+	ue.UEAMBRDown = 1530000
+	ue.UEAMBRUp = 3850000
+	ue.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 gtpv2.PDNTypeIPv4,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: true,
+			APNAMBRDown:             512,
+			APNAMBRUp:               384,
+		},
+	}
 	ue.KASME = bytes.Repeat([]byte{0x11}, 32)
 	ue.KNASint = make([]byte, 16)
 	ue.KNASenc = make([]byte, 16)
@@ -195,6 +211,45 @@ func waitMsg(ch chan []byte, timeout time.Duration) ([]byte, bool) {
 		return b, true
 	case <-time.After(timeout):
 		return nil, false
+	}
+}
+
+func decodeHandoverRequestERABItem(t *testing.T, data []byte) normalizedERABSetupItem {
+	t.Helper()
+	itemBytes := firstERABItemValue(data)
+	if len(itemBytes) == 0 {
+		t.Fatal("decoded HO E-RAB item is empty")
+	}
+	r := aper.NewBitReader(itemBytes)
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode HO extension bit: %v", err)
+	}
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode HO data forwarding presence: %v", err)
+	}
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode HO IE extension presence: %v", err)
+	}
+	ebi, err := aper.DecodeConstrainedWholeNumber(r, 0, 15)
+	if err != nil {
+		t.Fatalf("decode HO E-RAB ID: %v", err)
+	}
+	if ext, err := r.ReadBit(); err != nil || ext != 0 {
+		t.Fatalf("decode HO QoS extension got %d err=%v, want 0 nil", ext, err)
+	}
+	if _, err := r.ReadBit(); err != nil {
+		t.Fatalf("decode HO GBR presence: %v", err)
+	}
+	if ieExt, err := r.ReadBit(); err != nil || ieExt != 0 {
+		t.Fatalf("decode HO QoS IE extensions got %d err=%v, want 0 nil", ieExt, err)
+	}
+	qci, err := aper.DecodeConstrainedWholeNumber(r, 0, 255)
+	if err != nil {
+		t.Fatalf("decode HO QCI: %v", err)
+	}
+	return normalizedERABSetupItem{
+		EBI: uint8(ebi),
+		QCI: uint8(qci),
 	}
 }
 
@@ -490,13 +545,32 @@ func TestHandover_SuccessfulFlow(t *testing.T) {
 	// Verify SecurityContext IE is present.
 	ieList, _ := pdu.DecodeIEContainer(p.Value)
 	hasSecCtx := false
+	var gotAMBR []byte
+	var gotERABList []byte
 	for _, ie := range ieList {
 		if ie.ID == pdu.IESecurityContext {
 			hasSecCtx = true
 		}
+		if ie.ID == pdu.IEUEAggregateMaxBitrate {
+			gotAMBR = ie.Value
+		}
+		if ie.ID == pdu.IEERABToBeSetupListHOReq {
+			gotERABList = ie.Value
+		}
 	}
 	if !hasSecCtx {
 		t.Error("HO Request missing SecurityContext IE")
+	}
+	wantAMBR := ies.EncodeUEAggregateMaxBitrate(1530000, 3850000)
+	if !bytes.Equal(gotAMBR, wantAMBR) {
+		t.Fatalf("HO Request UE AMBR got %x, want %x", gotAMBR, wantAMBR)
+	}
+	erabItem := decodeHandoverRequestERABItem(t, gotERABList)
+	if got, want := erabItem.EBI, uint8(5); got != want {
+		t.Fatalf("HO Request EBI got %d, want %d", got, want)
+	}
+	if got, want := erabItem.QCI, uint8(9); got != want {
+		t.Fatalf("HO Request QCI got %d, want %d", got, want)
 	}
 
 	// Verify UE is in HOStatePreparing.

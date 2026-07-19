@@ -29,12 +29,22 @@ func (s *Server) handleENBConfigurationUpdate(remoteAddr string, p *pdu.PDU, ieL
 			name, err := aper.DecodeVisibleStringExt(r, 1, 150)
 			if err != nil {
 				log.Warn("s1ap: ENBConfigurationUpdate eNBname decode error", zap.Error(err))
-				s.sendENBConfigurationUpdateFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				s.sendENBConfigurationUpdateFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage,
+					criticalityDiagnosticItem{Criticality: aper.CriticalityIgnore, IEID: pdu.IEeNBname, TypeOfError: typeOfErrorNotUnderstood},
+				)
 				return
 			}
 			enbName = name
 		case pdu.IESupportedTAs:
-			supportedTAs = decodeSupportedTAs(ie.Value)
+			decoded, err := decodeSupportedTAsStrict(ie.Value)
+			if err != nil {
+				log.Warn("s1ap: ENBConfigurationUpdate SupportedTAs decode error", zap.Error(err))
+				s.sendENBConfigurationUpdateFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage,
+					criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IESupportedTAs, TypeOfError: typeOfErrorNotUnderstood},
+				)
+				return
+			}
+			supportedTAs = decoded
 			supportedTAsPresent = true
 		}
 	}
@@ -102,19 +112,24 @@ func (s *Server) handleENBConfigurationUpdate(remoteAddr string, p *pdu.PDU, ieL
 	metrics.S1APMessagesTotal.WithLabelValues("ENBConfigurationUpdate", "inbound", "success").Inc()
 }
 
-func (s *Server) sendENBConfigurationUpdateFailure(remoteAddr string, trigger *pdu.PDU, group ies.CauseGroup, cause uint8) {
+func (s *Server) sendENBConfigurationUpdateFailure(remoteAddr string, trigger *pdu.PDU, group ies.CauseGroup, cause uint8, items ...criticalityDiagnosticItem) {
 	ieList := []pdu.ProtocolIE{
 		{
 			ID:          pdu.IECause,
 			Criticality: aper.CriticalityIgnore,
 			Value:       ies.EncodeCause(group, cause),
 		},
+		{
+			ID:          pdu.IETimeToWait,
+			Criticality: aper.CriticalityIgnore,
+			Value:       ies.EncodeTimeToWait(ies.TimeToWaitV10s),
+		},
 	}
-	if trigger != nil {
+	if trigger != nil && len(items) > 0 {
 		ieList = append(ieList, pdu.ProtocolIE{
 			ID:          pdu.IECriticalityDiagnostics,
 			Criticality: aper.CriticalityIgnore,
-			Value:       encodeCriticalityDiagnostics(trigger.ProcedureCode, trigger.Type, trigger.Criticality, nil),
+			Value:       encodeCriticalityDiagnostics(trigger.ProcedureCode, trigger.Type, trigger.Criticality, items),
 		})
 	}
 	msg := pdu.BuildUnsuccessfulOutcome(pdu.ProcENBConfigurationUpdate, aper.CriticalityReject, ieList)

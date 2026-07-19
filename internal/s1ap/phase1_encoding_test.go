@@ -11,8 +11,10 @@ import (
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 func TestSendDownlinkNASTransportEncodesRel16IEs(t *testing.T) {
@@ -279,6 +281,8 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 	ue.DLNASCount = 1
 	ue.PDNRequestPTI = 1
 	ue.APN = "internet"
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
 	ue.Unlock()
 
 	pgwPCO := []byte{0x80, 0x00, 0x0d, 0x04, 0x01, 0x01, 0x01, 0x01}
@@ -368,6 +372,97 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 	}
 }
 
+func TestHandleCSRResultAttachAcceptUsesNASPLMNEncodingForTAIList(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.nfCfg.MCC = "311"
+	srv.nfCfg.MNC = "435"
+	const remoteAddr = "192.0.2.11:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 1
+	applyS1APLocationToUELocked(ue, &ies.TAI{MCC: "311", MNC: "435", TAC: 1}, nil)
+	ue.Lock()
+	ue.KASME = make([]byte, 32)
+	ue.KNASint = make([]byte, 16)
+	ue.KNASenc = make([]byte, 16)
+	ue.IntAlg = 0
+	ue.EncAlg = 0
+	ue.DLNASCount = 1
+	ue.PDNRequestPTI = 1
+	ue.APN = "internet"
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.Unlock()
+
+	srv.HandleCSRResult(ue.MMEUES1APID, &gtpv2.CreateSessionResponse{
+		Cause:     gtpv2.CauseRequestAccepted,
+		SGWC_TEID: 0x100,
+		SGWC_IP:   net.ParseIP("10.0.0.2"),
+		SGWU_TEID: 0x200,
+		SGWU_IP:   net.ParseIP("10.0.0.3"),
+		UEIPv4:    net.ParseIP("10.45.0.10"),
+		EBI:       5,
+	}, nil)
+
+	msg := readCapturedPDU(t, ch)
+	nasPDU := decodeNASPDUFromInitialContextSetup(t, msg)
+	plain := nasPDU[6:]
+	taiListLen := int(plain[4])
+	if len(plain) < 5+taiListLen {
+		t.Fatalf("Attach Accept TAI list truncated: %x", plain)
+	}
+	taiList := plain[5 : 5+taiListLen]
+	wantPLMN := mustPLMN(t, "311", "435")
+	if got := taiList[1:4]; !bytes.Equal(got, wantPLMN) {
+		t.Fatalf("Attach Accept TAI PLMN got %x, want %x", got, wantPLMN)
+	}
+}
+
+func mustPLMN(t *testing.T, mcc, mnc string) []byte {
+	t.Helper()
+	plmn, err := security.EncodePLMN(mcc, mnc)
+	if err != nil {
+		t.Fatalf("EncodePLMN(%s,%s): %v", mcc, mnc, err)
+	}
+	return plmn
+}
+
+func TestHandleCSRResultRejectsAcceptedResponseWithoutBearerEBI(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.11:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 2
+	ue.Lock()
+	ue.AttachStep = uecontext.AttachStepWaitingCSRsp
+	ue.Unlock()
+
+	srv.HandleCSRResult(ue.MMEUES1APID, &gtpv2.CreateSessionResponse{
+		Cause:     gtpv2.CauseRequestAccepted,
+		SGWC_TEID: 0x100,
+		SGWC_IP:   net.ParseIP("10.0.0.2"),
+		SGWU_TEID: 0x200,
+		SGWU_IP:   net.ParseIP("10.0.0.3"),
+		UEIPv4:    net.ParseIP("10.45.0.10"),
+		EBI:       0,
+	}, nil)
+
+	msg := readCapturedPDU(t, ch)
+	nasPDU := decodeNASPDUFromPDU(t, msg)
+	if got, want := nasPDU[0], uint8(emm.PDEPSMobilityMgmt); got != want {
+		t.Fatalf("NAS PD got %#x, want %#x", got, want)
+	}
+	if got, want := nasPDU[1], uint8(emm.MsgAttachReject); got != want {
+		t.Fatalf("NAS msg type got %#x, want %#x", got, want)
+	}
+	if got, want := nasPDU[2], uint8(emm.CauseNetworkFailure); got != want {
+		t.Fatalf("EMM cause got %#x, want %#x", got, want)
+	}
+	if _, ok := srv.ueManager.GetByMMEID(ue.MMEUES1APID); ok {
+		t.Fatal("UE still present after accepted CSRsp without bearer EBI")
+	}
+}
+
 func TestDecodeInitialContextSetupResponseERABSetupVector(t *testing.T) {
 	raw, err := hex.DecodeString("000032400a0a1fc0a8692200000001")
 	if err != nil {
@@ -395,6 +490,8 @@ func TestSendInitialContextSetupEncodesRel16IEs(t *testing.T) {
 	ue := allocateTestUE(srv, remoteAddr, 0, true)
 	ue.ENBS1APID = 0x010203
 	ue.KASME = make([]byte, 32)
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
 
 	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
 	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
@@ -475,6 +572,8 @@ func TestSendInitialContextSetupMapsRealUESecurityCapabilities(t *testing.T) {
 	ue.ENBS1APID = 268208
 	ue.KASME = make([]byte, 32)
 	ue.UENetworkCapability = []byte{0xf0, 0xf0, 0xe0, 0xe0, 0x1d}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
 
 	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0xf09d607c, SGWU_IP: []byte{10, 90, 250, 59}}
 	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
@@ -496,6 +595,74 @@ func TestSendInitialContextSetupMapsRealUESecurityCapabilities(t *testing.T) {
 	want := []byte{0x1c, 0x00, 0x0e, 0x00, 0x00}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("UESecurityCapabilities got %x, want Open5GS-style S1AP encoding %x", got, want)
+	}
+}
+
+func TestSendInitialContextSetupIncludesUERadioCapabilityWhenPresent(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.20:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010204
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0}
+	ue.UERadioCapability = []byte{0xde, 0xad, 0xbe, 0xef}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+
+	var got []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEUERadioCapability {
+			got = ie.Value
+			break
+		}
+	}
+	if !bytes.Equal(got, ies.EncodeUERadioCapability([]byte{0xde, 0xad, 0xbe, 0xef})) {
+		t.Fatalf("UE-RadioCapability got %x", got)
+	}
+}
+
+func TestSendInitialContextSetupIncludesUERadioCapabilityForResumeICS(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.21:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010205
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0}
+	ue.UERadioCapability = []byte{0xde, 0xad, 0xbe, 0xef}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, nil, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+
+	var got []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEUERadioCapability {
+			got = ie.Value
+			break
+		}
+	}
+	if !bytes.Equal(got, ies.EncodeUERadioCapability([]byte{0xde, 0xad, 0xbe, 0xef})) {
+		t.Fatalf("UE-RadioCapability got %x", got)
 	}
 }
 
@@ -533,7 +700,7 @@ func TestERABToBeSetupItemWithoutNASPDUDecodesERABIDFive(t *testing.T) {
 	if id != 5 {
 		t.Fatalf("E-RAB-ID got %d, want 5", id)
 	}
-	want := "050009210f800a5afa3bc1f44821"
+	want := "050009200f800a5afa3bc1f44821"
 	if got := hex.EncodeToString(erabItem); got != want {
 		t.Fatalf("E-RAB item without NAS got %s, want %s", got, want)
 	}
@@ -664,12 +831,20 @@ func decodeNASPDUFromInitialContextSetup(t *testing.T, msg *pdu.PDU) []byte {
 			continue
 		}
 		item := firstERABItemValue(ie.Value)
-		prefix := []byte{emm.PDEPSMobilityMgmt | (emm.SecurityHeaderIntegrityProtected << 4), 0, 0, 0, 0, 1, emm.PDEPSMobilityMgmt, emm.MsgAttachAccept}
-		idx := bytes.Index(item, prefix)
-		if idx < 0 {
-			t.Fatalf("Attach Accept NAS-PDU prefix not found in E-RAB item: %x", item)
+		plainPrefixes := [][]byte{
+			{emm.PDEPSMobilityMgmt, emm.MsgAttachAccept},
+			{emm.PDEPSMobilityMgmt, emm.MsgTrackingAreaUpdateAccept},
 		}
-		return append([]byte(nil), item[idx:]...)
+		for _, prefix := range plainPrefixes {
+			if idx := bytes.Index(item, prefix); idx >= 0 {
+				start := idx
+				if idx >= 6 && item[idx-6]>>4 == emm.SecurityHeaderIntegrityProtected {
+					start = idx - 6
+				}
+				return append([]byte(nil), item[start:]...)
+			}
+		}
+		t.Fatalf("expected NAS-PDU not found in E-RAB item: %x", item)
 	}
 	t.Fatal("missing E-RABToBeSetupListCtxtSUReq IE")
 	return nil

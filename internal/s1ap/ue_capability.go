@@ -76,7 +76,7 @@ func (s *Server) handleUECapabilityInfoIndication(remoteAddr string, p *pdu.PDU,
 		return
 	}
 
-	s.log.Info("s1ap: UECapabilityInfoIndication received", fields...)
+	s.log.Debug("s1ap: UECapabilityInfoIndication received", fields...)
 }
 
 func (s *Server) findUEByS1APIDs(remoteAddr string, mmeUEID, enbUEID uint32) (*uecontext.Context, bool) {

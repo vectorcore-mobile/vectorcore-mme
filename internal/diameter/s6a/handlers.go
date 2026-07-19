@@ -26,10 +26,6 @@ const (
 	vendor3GPP    = 10415
 	appIDS6a      = diam.TGPP_S6A_APP_ID
 	ratTypeEUTRAN = 1004
-
-	// ULR-Flags: S6a/S6d-Indicator only (bit 2 = 0x02, per TS 29.272 §7.3.7).
-	// Do NOT set Skip-Subscriber-Data (bit 5 = 0x10) on initial attach.
-	ulrFlags = 0x02
 )
 
 // ResultHandler is the callback interface that s1ap.Server implements.
@@ -120,6 +116,20 @@ func (h *Handlers) retryDelay() time.Duration {
 		return h.cfg.RetryDelay
 	}
 	return 5 * time.Second
+}
+
+func (h *Handlers) addDestinationRouting(m *diam.Message, host, realm string) {
+	if h.cfg.Routing.SendDestinationHost && host != "" {
+		m.NewAVP(avp.DestinationHost, avp.Mbit, 0, datatype.DiameterIdentity(host))
+	}
+	m.NewAVP(avp.DestinationRealm, avp.Mbit, 0, datatype.DiameterIdentity(realm))
+}
+
+func boolToUint32(v bool) uint32 {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // buildMux constructs the sm.StateMachine and registers all S6a message handlers.

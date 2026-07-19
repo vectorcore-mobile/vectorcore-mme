@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -20,8 +21,10 @@ import (
 // Implementations must be safe to call from any goroutine.
 type ResultHandler interface {
 	HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionResponse, err error)
-	HandleMBRResult(mmeUEID uint32, err error)
+	HandleMBRResult(mmeUEID uint32, correlationID string, resp *gtpv2.ModifyBearerResponse, err error)
 	HandleDSRResult(mmeUEID uint32, linkedEBI uint8, err error)
+	HandleRABRResult(mmeUEID uint32, result *gtpv2.ReleaseAccessBearersResult, err error)
+	HandleDownlinkDataNotification(peer string, req *gtpv2.DownlinkDataNotification)
 	HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerRequest)
 	HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerRequest)
 	HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerRequest)
@@ -29,8 +32,18 @@ type ResultHandler interface {
 
 // pending is stored in the correlation maps.
 type pending struct {
-	mmeUEID   uint32
-	linkedEBI uint8
+	mmeUEID       uint32
+	linkedEBI     uint8
+	correlationID string
+	peer          string
+	requestTEID   uint32
+	mmeS11TEID    uint32
+	apn           string
+	defaultEBI    uint8
+	sessionState  string
+	lastS11Proc   string
+	transactionID string
+	sentAt        time.Time
 }
 
 // Client is the S11 GTPv2-C UDP client. One per MME process.
@@ -44,6 +57,7 @@ type Client struct {
 	pendingCSR sync.Map // seqNum uint32 → pending
 	pendingMBR sync.Map // seqNum uint32 → pending
 	pendingDSR sync.Map // seqNum uint32 → pending
+	pendingRAB sync.Map // seqNum uint32 → pending
 }
 
 // NewClient creates a Client. Call SetHandler before Start to wire up the result callbacks.
@@ -100,7 +114,7 @@ func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error 
 		c.log.Debug("s11: CSR encoded",
 			zap.Uint32("mme_ue_id", mmeUEID),
 			zap.Uint32("seq", seq),
-			zap.String("csr_hex", hex.EncodeToString(buf)),
+			zap.Int("csr_len", len(buf)),
 			zap.Strings("csr_ie_list", ieListSummary(msg.IEs)),
 			zap.Strings("csr_ie_details", gtpv2.DetailedIESummary(msg.IEs)))
 	}
@@ -110,7 +124,7 @@ func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error 
 		metrics.S11MessagesTotal.WithLabelValues("csr", "send_error").Inc()
 		return err
 	}
-	c.log.Info("s11: CSR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("seq", seq))
+	c.log.Debug("s11: CSR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("seq", seq))
 	metrics.S11MessagesTotal.WithLabelValues("csr", "sent").Inc()
 	return nil
 }
@@ -124,22 +138,20 @@ func (c *Client) SendMBR(mmeUEID uint32, req *gtpv2.ModifyBearerRequest) error {
 			zap.Uint32("mme_ue_id", mmeUEID),
 			zap.Uint32("seq", seq),
 			zap.Uint32("sgwc_teid", req.SGWC_TEID),
-			zap.String("sgwc_teid_hex", fmt.Sprintf("0x%08x", req.SGWC_TEID)),
 			zap.Uint8("ebi", req.EBI),
 			zap.Uint32("enb_s1u_teid", req.ENBU_TEID),
-			zap.String("enb_s1u_teid_hex", fmt.Sprintf("0x%08x", req.ENBU_TEID)),
 			zap.String("enb_s1u_ipv4", req.ENBU_IP.String()),
-			zap.String("mbr_hex", hex.EncodeToString(buf)),
+			zap.Int("mbr_len", len(buf)),
 			zap.Strings("mbr_ie_list", ieListSummary(msg.IEs)),
 			zap.Strings("mbr_ie_details", gtpv2.DetailedIESummary(msg.IEs)))
 	}
-	c.pendingMBR.Store(seq, pending{mmeUEID: mmeUEID})
+	c.pendingMBR.Store(seq, pending{mmeUEID: mmeUEID, correlationID: req.CorrelationID})
 	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingMBR.Delete(seq)
 		metrics.S11MessagesTotal.WithLabelValues("mbr", "send_error").Inc()
 		return err
 	}
-	c.log.Info("s11: MBR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("seq", seq))
+	c.log.Debug("s11: MBR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("seq", seq))
 	metrics.S11MessagesTotal.WithLabelValues("mbr", "sent").Inc()
 	return nil
 }
@@ -159,8 +171,57 @@ func (c *Client) SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error 
 	return nil
 }
 
+// SendRABR sends a Release Access Bearers Request.
+func (c *Client) SendRABR(mmeUEID uint32, req *gtpv2.ReleaseAccessBearersRequest) (uint32, error) {
+	seq := c.nextSeq()
+	buf := req.Encode(seq)
+	sentAt := time.Now()
+	c.pendingRAB.Store(seq, pending{
+		mmeUEID:       mmeUEID,
+		peer:          req.SGWAddress,
+		requestTEID:   req.SGWC_TEID,
+		mmeS11TEID:    req.MMES11TEID,
+		apn:           req.APN,
+		defaultEBI:    req.DefaultEBI,
+		sessionState:  req.SessionState,
+		lastS11Proc:   req.LastS11Procedure,
+		transactionID: req.TransactionID,
+		sentAt:        sentAt,
+	})
+	if err := c.send(buf, req.SGWAddress); err != nil {
+		c.pendingRAB.Delete(seq)
+		metrics.S11MessagesTotal.WithLabelValues("rabr", "send_error").Inc()
+		return 0, err
+	}
+	c.log.Info("s11: RABR sent",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("event", "rabr_sent"),
+		zap.String("peer", req.SGWAddress),
+		zap.String("apn", req.APN),
+		zap.Uint8("default_ebi", req.DefaultEBI),
+		zap.Uint32("mme_s11_teid", req.MMES11TEID),
+		zap.Uint32("sgw_s11_teid", req.SGWC_TEID),
+		zap.Uint32("sequence", seq),
+		zap.Uint8("originating_node", req.OriginatingNode),
+		zap.String("session_state", req.SessionState),
+		zap.String("last_s11_procedure", req.LastS11Procedure),
+		zap.String("transaction_id", req.TransactionID))
+	metrics.S11MessagesTotal.WithLabelValues("rabr", "sent").Inc()
+	return seq, nil
+}
+
 func (c *Client) SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer, meta *gtpv2.CreateBearerResponseMeta) error {
 	buf := gtpv2.EncodeCreateBearerResponseWithMeta(teid, seq, cause, bearers, meta)
+	return c.sendResponse(buf, peer)
+}
+
+func (c *Client) SendDDNAck(peer string, teid uint32, seq uint32, cause uint8, delayValue *uint8) error {
+	buf := gtpv2.EncodeDownlinkDataNotificationAck(teid, seq, cause, delayValue)
+	return c.sendResponse(buf, peer)
+}
+
+func (c *Client) SendDDNFailureIndication(peer string, teid uint32, seq uint32, cause uint8, imsi string) error {
+	buf := gtpv2.EncodeDownlinkDataNotificationFailureIndication(teid, seq, cause, imsi)
 	return c.sendResponse(buf, peer)
 }
 
@@ -182,7 +243,7 @@ func (c *Client) SendCreateBearerResponseWithPiggybackMBR(peer string, teid uint
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("create_bearer_seq", seq),
 		zap.Uint32("mbr_seq", mbrSeq),
-		zap.String("mbr_hex", hex.EncodeToString(mbrRaw)))
+		zap.Int("mbr_len", len(mbrRaw)))
 	metrics.S11MessagesTotal.WithLabelValues("mbr", "sent").Inc()
 	return mbrSeq, nil
 }
@@ -282,10 +343,10 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 		if causeDetails == nil {
 			causeDetails = &gtpv2.CauseDetails{}
 		}
-		c.log.Info("s11: CSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
+		c.log.Debug("s11: CSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
 			zap.Uint8("cause", resp.Cause),
 			zap.String("cause_name", gtpv2.CauseName(resp.Cause)),
-			zap.String("raw_csrsp_hex", hex.EncodeToString(pkt)),
+			zap.Int("raw_csrsp_len", len(pkt)),
 			zap.Strings("csrsp_ie_list", ieListSummary(msg.IEs)),
 			zap.Strings("csrsp_ie_details", gtpv2.DetailedIESummary(msg.IEs)),
 			zap.Uint8("cause_flags", causeDetails.Flags),
@@ -308,21 +369,20 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 		resp, decErr := gtpv2.DecodeModifyBearerResponse(msg)
 		if decErr != nil {
 			metrics.S11MessagesTotal.WithLabelValues("mbr", "decode_error").Inc()
-			c.handler.HandleMBRResult(p.mmeUEID, decErr)
+			c.handler.HandleMBRResult(p.mmeUEID, p.correlationID, nil, decErr)
 			return
 		}
-		c.log.Info("s11: MBRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
+		c.log.Debug("s11: MBRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
 			zap.Uint8("cause", resp.Cause),
 			zap.String("cause_name", gtpv2.CauseName(resp.Cause)),
-			zap.Uint8("ebi", resp.EBI),
-			zap.Uint8("bearer_cause", resp.BearerCause),
-			zap.Uint32("sgwu_teid", resp.SGWU_TEID))
-		if resp.Cause == gtpv2.CauseRequestAccepted {
+			zap.Int("modified_bearers", len(resp.ModifiedBearers)),
+			zap.Int("removed_bearers", len(resp.RemovedBearers)))
+		if resp.Cause == gtpv2.CauseRequestAccepted || resp.Cause == gtpv2.CauseRequestAcceptedPartially {
 			metrics.S11MessagesTotal.WithLabelValues("mbr", "accepted").Inc()
-			c.handler.HandleMBRResult(p.mmeUEID, nil)
+			c.handler.HandleMBRResult(p.mmeUEID, p.correlationID, resp, nil)
 		} else {
 			metrics.S11MessagesTotal.WithLabelValues("mbr", "rejected").Inc()
-			c.handler.HandleMBRResult(p.mmeUEID,
+			c.handler.HandleMBRResult(p.mmeUEID, p.correlationID, resp,
 				fmt.Errorf("s11: MBRsp cause %d", resp.Cause))
 		}
 
@@ -354,7 +414,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 				zap.Uint32(fmt.Sprintf("bearer_%d_sgw_s1u_teid", i), b.SGWS1UTEID),
 				zap.String(fmt.Sprintf("bearer_%d_tft_hex", i), hex.EncodeToString(b.TFT)))
 		}
-		c.log.Info("s11: Create Bearer Request received", fields...)
+		c.log.Debug("s11: Create Bearer Request received", fields...)
 		if c.handler == nil {
 			resp := gtpv2.EncodeCreateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
 			_, _ = c.conn.WriteToUDP(resp, remote)
@@ -362,6 +422,54 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 			return
 		}
 		c.handler.HandleCreateBearerRequest(remote.String(), req)
+
+	case gtpv2.MsgDownlinkDataNotification:
+		req, decErr := gtpv2.DecodeDownlinkDataNotification(msg)
+		if decErr != nil {
+			c.log.Warn("s11: Downlink Data Notification decode error",
+				zap.String("remote", remote.String()),
+				zap.Uint32("seq", msg.SeqNum),
+				zap.Uint32("teid", msg.TEID),
+				zap.String("raw_hex", hex.EncodeToString(pkt)),
+				zap.Error(decErr))
+			if c.handler != nil {
+				c.handler.HandleDownlinkDataNotification(remote.String(), &gtpv2.DownlinkDataNotification{
+					TEID:   msg.TEID,
+					SeqNum: msg.SeqNum,
+				})
+			}
+			return
+		}
+		fields := []zap.Field{
+			zap.String("remote", remote.String()),
+			zap.Uint32("seq", req.SeqNum),
+			zap.Uint32("teid", req.TEID),
+		}
+		if req.EBI != nil {
+			fields = append(fields, zap.Uint8("ebi", *req.EBI))
+		}
+		if req.ARP != nil {
+			fields = append(fields, zap.Uint8("arp", *req.ARP))
+		}
+		if req.IMSI != "" {
+			fields = append(fields, zap.String("imsi", req.IMSI))
+		}
+		if req.SenderFTEID != nil {
+			fields = append(fields,
+				zap.Uint32("sender_fteid_teid", req.SenderFTEID.TEID),
+				zap.String("sender_fteid_ip", req.SenderFTEID.IP.String()))
+		}
+		if req.DelayValue != nil {
+			fields = append(fields, zap.Uint8("delay_value", *req.DelayValue))
+		}
+		fields = append(fields,
+			zap.Bool("paging_service_info_present", len(req.PagingServiceInfo) > 0),
+			zap.Int("unknown_ie_count", len(req.LowPriorityRawIEs)+len(req.AdditionalEBIRawIE)))
+		c.log.Info("s11: Downlink Data Notification received", fields...)
+		metrics.S11MessagesTotal.WithLabelValues("ddn", "received").Inc()
+		if c.handler != nil {
+			c.handler.HandleDownlinkDataNotification(remote.String(), req)
+		}
 
 	case gtpv2.MsgUpdateBearerRequest:
 		req, decErr := gtpv2.DecodeUpdateBearerRequest(msg)
@@ -388,7 +496,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 				zap.Uint8(fmt.Sprintf("bearer_%d_qci", i), b.QCI),
 				zap.String(fmt.Sprintf("bearer_%d_tft_hex", i), hex.EncodeToString(b.TFT)))
 		}
-		c.log.Info("s11: Update Bearer Request received", fields...)
+		c.log.Debug("s11: Update Bearer Request received", fields...)
 		if c.handler == nil {
 			resp := gtpv2.EncodeUpdateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
 			_, _ = c.conn.WriteToUDP(resp, remote)
@@ -410,7 +518,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			return
 		}
-		c.log.Info("s11: Delete Bearer Request received",
+		c.log.Debug("s11: Delete Bearer Request received",
 			zap.String("remote", remote.String()),
 			zap.Uint32("seq", req.SeqNum),
 			zap.Uint32("teid", req.TEID),
@@ -436,7 +544,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 			c.handler.HandleDSRResult(p.mmeUEID, p.linkedEBI, decErr)
 			return
 		}
-		c.log.Info("s11: DSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
+		c.log.Debug("s11: DSRsp received", zap.Uint32("mme_ue_id", p.mmeUEID),
 			zap.Uint8("linked_ebi", p.linkedEBI),
 			zap.Uint8("cause", cause), zap.String("cause_name", gtpv2.CauseName(cause)))
 		metrics.S11MessagesTotal.WithLabelValues("dsr", "received").Inc()
@@ -445,6 +553,54 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 			return
 		}
 		c.handler.HandleDSRResult(p.mmeUEID, p.linkedEBI, nil)
+
+	case gtpv2.MsgReleaseAccessBearersResponse:
+		v, ok := c.pendingRAB.LoadAndDelete(msg.SeqNum)
+		if !ok {
+			c.log.Warn("s11: RABRsp for unknown seq", zap.Uint32("seq", msg.SeqNum))
+			return
+		}
+		p := v.(pending)
+		resp, decErr := gtpv2.DecodeReleaseAccessBearersResponse(msg)
+		if decErr != nil {
+			metrics.S11MessagesTotal.WithLabelValues("rabr", "decode_error").Inc()
+			c.handler.HandleRABRResult(p.mmeUEID, nil, decErr)
+			return
+		}
+		result := &gtpv2.ReleaseAccessBearersResult{
+			Peer:                       remote.String(),
+			SeqNum:                     msg.SeqNum,
+			RequestedSGWCTEID:          p.requestTEID,
+			RequestedMMES11TEID:        p.mmeS11TEID,
+			ResponseHeaderTEID:         msg.TEID,
+			APN:                        p.apn,
+			DefaultEBI:                 p.defaultEBI,
+			SessionState:               p.sessionState,
+			LastSuccessfulS11Procedure: p.lastS11Proc,
+			TransactionID:              p.transactionID,
+			SentAt:                     p.sentAt,
+			Elapsed:                    time.Since(p.sentAt),
+			Cause:                      resp.Cause,
+		}
+		c.log.Info("s11: RABRsp received",
+			zap.Uint32("mme_ue_id", p.mmeUEID),
+			zap.String("event", "rabr_response"),
+			zap.String("peer", remote.String()),
+			zap.String("apn", p.apn),
+			zap.Uint8("default_ebi", p.defaultEBI),
+			zap.Uint32("sequence", msg.SeqNum),
+			zap.Uint32("requested_sgw_s11_teid", p.requestTEID),
+			zap.Uint32("response_header_teid", msg.TEID),
+			zap.Uint8("cause", resp.Cause),
+			zap.String("cause_name", gtpv2.CauseName(resp.Cause)),
+			zap.Int64("elapsed_ms", result.Elapsed.Milliseconds()))
+		if resp.Cause == gtpv2.CauseRequestAccepted {
+			metrics.S11MessagesTotal.WithLabelValues("rabr", "accepted").Inc()
+			c.handler.HandleRABRResult(p.mmeUEID, result, nil)
+			return
+		}
+		metrics.S11MessagesTotal.WithLabelValues("rabr", "rejected").Inc()
+		c.handler.HandleRABRResult(p.mmeUEID, result, fmt.Errorf("s11: RABRsp cause %d", resp.Cause))
 
 	default:
 		c.log.Debug("s11: unexpected message type", zap.Uint8("type", msg.Type))

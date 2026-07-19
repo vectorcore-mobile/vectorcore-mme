@@ -37,6 +37,36 @@ func shouldDeferAttachEMMInformation(ue *uecontext.Context) bool {
 	return false
 }
 
+func applyS1APLocationToUELocked(ue *uecontext.Context, tai *ies.TAI, ecgi *ies.ECGI) {
+	if tai != nil {
+		ue.TAI = emmTAIFromS1AP(tai)
+	}
+	if ecgi != nil {
+		if plmn, err := encodeNASPLMN(ecgi.MCC, ecgi.MNC); err == nil {
+			ue.ECGIPLMN = plmn
+		}
+		ue.ECGIECI = ecgi.ECGI
+	}
+}
+
+func normalizeInitialUEOrUplinkTAIValue(data []byte) []byte {
+	// Some eNBs encode TAI as the APER SEQUENCE payload with an extra leading
+	// octet for "ext=0, iE-Extensions absent=0" before the semantic PLMN[3]+TAC[2].
+	if len(data) == 6 && data[0] == 0x00 {
+		return data[1:]
+	}
+	return data
+}
+
+func normalizeInitialUEOrUplinkECGIValue(data []byte) []byte {
+	// Some eNBs encode ECGI as the APER SEQUENCE payload with an extra leading
+	// octet for "ext=0, iE-Extensions absent=0" before the semantic PLMN[3]+ECGI[4].
+	if len(data) == 8 && data[0] == 0x00 {
+		return data[1:]
+	}
+	return data
+}
+
 // handleInitialUEMessage processes an Initial UE Message from an eNB.
 // It creates a UE context, decodes the NAS payload, and triggers the auth flow.
 func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
@@ -80,15 +110,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		case pdu.IENAS_PDU:
 			nasPDU, _ = ies.DecodeNASPDU(ie.Value)
 		case pdu.IETAI:
-			taiValue := ie.Value
-
-			// InitialUEMessage TAI open type may include the APER SEQUENCE prefix:
-			// ext=0 and iE-Extensions absent=0, aligned to one byte.
-			// The semantic TAI value is PLMN[3] + TAC[2].
-			if len(taiValue) == 6 && taiValue[0] == 0x00 {
-				taiValue = taiValue[1:]
-			}
-
+			taiValue := normalizeInitialUEOrUplinkTAIValue(ie.Value)
 			t, err := ies.DecodeTAI(taiValue)
 			if err == nil {
 				tai = &t
@@ -101,13 +123,15 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 				)
 			}
 		case pdu.IECGI:
-			e, err := ies.DecodeECGI(ie.Value)
+			ecgiValue := normalizeInitialUEOrUplinkECGIValue(ie.Value)
+			e, err := ies.DecodeECGI(ecgiValue)
 			if err == nil {
 				ecgi = &e
 			} else {
 				ecgiDecodeErr = true
 				log.Warn("s1ap: InitialUE: ECGI decode error",
 					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.String("ecgi_value", hex.EncodeToString(ecgiValue)),
 					zap.Error(err))
 			}
 		case pdu.IERRCEstablishmentCause:
@@ -160,21 +184,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.ENBGlobalID = remoteAddr
 	ue.S1BindingGeneration++
 	ue.S1BindingState = uecontext.S1BindingActive
-	if tai != nil {
-		plmnBytes, _ := ies.EncodePLMN(tai.MCC, tai.MNC)
-		emmTAI := emm.TAI{TAC: tai.TAC}
-		if len(plmnBytes) == 3 {
-			copy(emmTAI.PLMN[:], plmnBytes)
-		}
-		ue.TAI = &emmTAI
-	}
-	if ecgi != nil {
-		plmnBytes, _ := ies.EncodePLMN(ecgi.MCC, ecgi.MNC)
-		if len(plmnBytes) == 3 {
-			copy(ue.ECGIPLMN[:], plmnBytes)
-		}
-		ue.ECGIECI = ecgi.ECGI
-	}
+	applyS1APLocationToUELocked(ue, tai, ecgi)
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
 
@@ -188,18 +198,34 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		// Decoding failed: check if this is a security-protected TAU Request
 		// (MAC verification requires the real UE keys, found only after GUTI lookup).
 		secHdr, _, _ := emm.DecodeSecurityHeader(nasPDU)
+		log.Debug("s1ap: InitialUE NAS dispatch fallback",
+			zap.Uint8("security_header_type", secHdr),
+			zap.String("nas_hex", hex.EncodeToString(nasPDU)),
+			zap.Bool("stmsi_present", stmsiPresent),
+			zap.Uint8("stmsi_mmec", mmec),
+			zap.Uint32("stmsi_mtmsi", mtmsi),
+			zap.String("stmsi_mtmsi_hex", fmt.Sprintf("0x%08x", mtmsi)),
+			zap.Error(err))
 		if secHdr == emm.SecurityHeaderIntegrityProtected ||
 			secHdr == emm.SecurityHeaderIntegrityAndCipher {
 			_, _, innerNAS, peekErr := emm.ParseSecurityProtected(nasPDU)
 			if peekErr == nil {
 				innerMsgType, _, _ := emm.ParsePlainNASMessage(innerNAS)
+				log.Debug("s1ap: InitialUE protected NAS inner dispatch",
+					zap.Uint8("security_header_type", secHdr),
+					zap.Uint8("inner_message_type", innerMsgType),
+					zap.String("inner_nas_hex", hex.EncodeToString(innerNAS)))
 				if innerMsgType == emm.MsgTrackingAreaUpdateRequest {
+					log.Debug("s1ap: InitialUE selected idle TAU handler",
+						zap.String("selection_reason", "protected_inner_tau_request"))
 					s.handleIdleTAUMessage(ue, tai, nasPDU)
 					return
 				}
 			}
 		}
 		if secHdr == emm.SecurityHeaderServiceRequest {
+			log.Debug("s1ap: InitialUE selected Service Request handler",
+				zap.String("selection_reason", "service_request_security_header"))
 			s.handleServiceRequest(ue, mmec, mtmsi, stmsiRaw, stmsiPresent, tai, nasPDU)
 			return
 		}
@@ -215,10 +241,15 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 
 	// Plain TAU Request (EIA0 / no security context)
 	if result.MsgType == emm.MsgTrackingAreaUpdateRequest {
+		log.Debug("s1ap: InitialUE selected idle TAU handler",
+			zap.String("selection_reason", "plain_tau_request"),
+			zap.Uint8("plain_message_type", result.MsgType))
 		s.handleIdleTAUMessage(ue, tai, nasPDU)
 		return
 	}
 	if result.MsgType == emm.MsgExtendedServiceRequest {
+		log.Debug("s1ap: InitialUE selected Extended Service Request handler",
+			zap.Uint8("plain_message_type", result.MsgType))
 		s.handleInitialUEExtendedServiceRequest(ue, tai, result.Inner, nasPDU)
 		return
 	}
@@ -271,9 +302,8 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		ue.PCO = append([]byte(nil), pco...)
 		ue.Unlock()
 		log.Debug("s1ap: decoded Attach Request ESM container",
-			zap.String("esm_container_hex", hex.EncodeToString(ar.ESMContainer)),
-			zap.String("pdn_connectivity_request_hex", hex.EncodeToString(ar.ESMContainer)),
-			zap.String("pco_from_ue_hex", hex.EncodeToString(pco)))
+			zap.Int("esm_container_len", len(ar.ESMContainer)),
+			zap.Int("pco_len", len(pco)))
 	}
 
 	// Resolve IMSI only when it is explicitly present. A GUTI match is a
@@ -396,17 +426,25 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 		case pdu.IENAS_PDU:
 			nasPDU, _ = ies.DecodeNASPDU(ie.Value)
 		case pdu.IETAI:
-			decodedTAI, err := ies.DecodeTAI(ie.Value)
+			taiValue := normalizeInitialUEOrUplinkTAIValue(ie.Value)
+			decodedTAI, err := ies.DecodeTAI(taiValue)
 			if err != nil {
-				log.Warn("s1ap: UplinkNAS: TAI decode error", zap.Error(err))
+				log.Warn("s1ap: UplinkNAS: TAI decode error",
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.String("tai_value", hex.EncodeToString(taiValue)),
+					zap.Error(err))
 				s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
 			tai = &decodedTAI
 		case pdu.IECGI:
-			decodedECGI, err := ies.DecodeECGI(ie.Value)
+			ecgiValue := normalizeInitialUEOrUplinkECGIValue(ie.Value)
+			decodedECGI, err := ies.DecodeECGI(ecgiValue)
 			if err != nil {
-				log.Warn("s1ap: UplinkNAS: ECGI decode error", zap.Error(err))
+				log.Warn("s1ap: UplinkNAS: ECGI decode error",
+					zap.String("raw", hex.EncodeToString(ie.Value)),
+					zap.String("ecgi_value", hex.EncodeToString(ecgiValue)),
+					zap.Error(err))
 				s.sendErrorIndication(remoteAddr, p, mmeUEID, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
@@ -427,6 +465,10 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 	if !ok {
 		return
 	}
+
+	ue.Lock()
+	applyS1APLocationToUELocked(ue, tai, ecgi)
+	ue.Unlock()
 
 	metrics.S1APMessagesTotal.WithLabelValues("UplinkNASTransport", "inbound", "ok").Inc()
 
@@ -709,7 +751,11 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	mmeUEID := ue.MMEUES1APID
 	enbAddr := ue.ENBGlobalID
 	enbUEID := ue.ENBS1APID
+	nasKSI := ue.NASKSI
 	ue.Unlock()
+	if nasKSI > 6 {
+		nasKSI = 0
+	}
 
 	if !security.VerifyRES(xres, ar.RES) {
 		log.Warn("s1ap: Authentication Response: RES mismatch", zap.Uint32("mme_ue_id", mmeUEID))
@@ -751,36 +797,19 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	replayedUECap := emm.ReplayedUESecurityCapability(ueCap, msCap)
 
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
-	smcPlain := emm.EncodeSecurityModeCommand(intAlg, encAlg, replayedUECap)
+	smcPlain := emm.EncodeSecurityModeCommandWithKSIAndHashMME(intAlg, encAlg, nasKSI, replayedUECap, nil)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
 	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
 		return fmt.Errorf("processAuthResponse: encode SMC: %w", err)
 	}
 	smcSeq := uint8(dlCount & 0xff)
-	smcMACInput := make([]byte, 1+len(smcPlain))
-	smcMACInput[0] = smcSeq
-	copy(smcMACInput[1:], smcPlain)
-	smcEIA2InputDL := security.EIA2CMACInput(dlCount, 0, 1, smcMACInput)
-	smcEIA2InputUL := security.EIA2CMACInput(dlCount, 0, 0, smcMACInput)
-	var smcMACDownlinkCandidate, smcMACUplinkCandidate []byte
-	var smcMACFirst16Candidate, smcMACLast16Candidate []byte
-	var smcEIA2Details *security.EIA2CMACDetails
 	var nasKeyMaterial *security.NASKeyMaterial
 	if intAlg == security.AlgIDEIA2 {
-		smcMACDownlinkCandidate, _ = security.ComputeNASMAC(intAlg, knasInt, dlCount, 0, 1, smcMACInput)
-		smcMACUplinkCandidate, _ = security.ComputeNASMAC(intAlg, knasInt, dlCount, 0, 0, smcMACInput)
-		smcEIA2Details, _ = security.ComputeEIA2CMACDetails(knasInt, dlCount, 0, 1, smcMACInput)
 		nasKeyMaterial, _ = security.DeriveNASKeyMaterial(kasme, intAlg, encAlg)
-		if nasKeyMaterial != nil && len(nasKeyMaterial.IntOut) == 32 {
-			smcMACFirst16Candidate, _ = security.ComputeNASMAC(intAlg, nasKeyMaterial.IntOut[:16], dlCount, 0, 1, smcMACInput)
-			smcMACLast16Candidate, _ = security.ComputeNASMAC(intAlg, nasKeyMaterial.IntOut[16:], dlCount, 0, 1, smcMACInput)
-		}
 	}
-	var intS, encS, intOut, encOut, intFirst16, intLast16, encFirst16, encLast16 []byte
+	var intOut, encOut, intFirst16, intLast16, encFirst16, encLast16 []byte
 	if nasKeyMaterial != nil {
-		intS = nasKeyMaterial.IntS
-		encS = nasKeyMaterial.EncS
 		intOut = nasKeyMaterial.IntOut
 		encOut = nasKeyMaterial.EncOut
 		if len(intOut) == 32 {
@@ -802,10 +831,9 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 		zap.Uint8("protocol_discriminator", smcProtected[0]&0x0f),
 		zap.Uint8("selected_int_alg", intAlg),
 		zap.Uint8("selected_enc_alg", encAlg),
+		zap.Uint8("nas_ksi", nasKSI),
 		zap.Int("kasme_len", len(kasme)),
 		zap.String("kasme_sha256_prefix", keyFingerprint(kasme)),
-		zap.String("nas_int_kdf_s_hex", hex.EncodeToString(intS)),
-		zap.String("nas_enc_kdf_s_hex", hex.EncodeToString(encS)),
 		zap.String("nas_int_kdf_out_sha256_prefix", keyFingerprint(intOut)),
 		zap.String("nas_int_kdf_first16_sha256_prefix", keyFingerprint(intFirst16)),
 		zap.String("nas_int_kdf_last16_sha256_prefix", keyFingerprint(intLast16)),
@@ -814,24 +842,9 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 		zap.String("nas_enc_kdf_last16_sha256_prefix", keyFingerprint(encLast16)),
 		zap.String("knas_int_sha256_prefix", keyFingerprint(knasInt)),
 		zap.String("knas_enc_sha256_prefix", keyFingerprint(knasEnc)),
-		zap.String("ue_security_capability_hex", hex.EncodeToString(ueCap)),
-		zap.String("ms_network_capability_hex", hex.EncodeToString(msCap)),
-		zap.String("replayed_ue_security_capability_hex", hex.EncodeToString(replayedUECap)),
-		zap.String("plain_smc_hex", hex.EncodeToString(smcPlain)),
-		zap.String("nas_mac_input_hex", hex.EncodeToString(smcMACInput)),
-		zap.String("eia2_cmac_input_downlink_hex", hex.EncodeToString(smcEIA2InputDL)),
-		zap.String("eia2_cmac_input_uplink_hex", hex.EncodeToString(smcEIA2InputUL)),
-		zap.String("eia2_mac_downlink_candidate_hex", hex.EncodeToString(smcMACDownlinkCandidate)),
-		zap.String("eia2_mac_uplink_candidate_hex", hex.EncodeToString(smcMACUplinkCandidate)),
-		zap.String("eia2_mac_first16_knasint_candidate_hex", hex.EncodeToString(smcMACFirst16Candidate)),
-		zap.String("eia2_mac_last16_knasint_candidate_hex", hex.EncodeToString(smcMACLast16Candidate)),
-		zap.String("aes_cmac_full_16_hex", hex.EncodeToString(eia2DetailsFull(smcEIA2Details))),
-		zap.String("aes_cmac_first4_hex", hex.EncodeToString(eia2DetailsFirst4(smcEIA2Details))),
-		zap.String("aes_cmac_last4_hex", hex.EncodeToString(eia2DetailsLast4(smcEIA2Details))),
-		zap.String("aes_cmac_reversed_first4_hex", hex.EncodeToString(eia2DetailsReversedFirst4(smcEIA2Details))),
-		zap.String("aes_cmac_reversed_last4_hex", hex.EncodeToString(eia2DetailsReversedLast4(smcEIA2Details))),
-		zap.String("computed_mac_hex", hex.EncodeToString(smcProtected[1:5])),
-		zap.String("protected_smc_hex", hex.EncodeToString(smcProtected)))
+		zap.Int("ue_security_capability_len", len(ueCap)),
+		zap.Int("ms_network_capability_len", len(msCap)),
+		zap.Int("protected_smc_len", len(smcProtected)))
 
 	s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, smcProtected)
 	ue.Lock()
@@ -874,6 +887,19 @@ func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap
 func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *zap.Logger) error {
 	ue.Lock()
 	expectedEBI := ue.DefaultEBI
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.DefaultEBI != expectedEBI {
+			continue
+		}
+		pdn.NASAccepted = true
+		if pdn.ERABEstablished {
+			if pdn.ModifyBearerAccepted {
+				pdn.State = "active"
+			} else {
+				pdn.State = "access-established"
+			}
+		}
+	}
 	ue.SetEMMState(emm.StateRegistered)
 	ue.SetECMState(emm.ECMConnected)
 	ue.AttachStep = uecontext.AttachStepNone
@@ -895,16 +921,14 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 			zap.String("attach_complete_body_hex", hex.EncodeToString(body)))
 	} else if accept, err := esm.DecodeActivateDefaultEPSBearerContextAccept(attachComplete.ESMContainer); err != nil {
 		log.Warn("s1ap: Attach Complete ESM accept decode failed",
-			zap.Error(err),
-			zap.String("esm_container_hex", hex.EncodeToString(attachComplete.ESMContainer)))
+			zap.Error(err))
 	} else {
 		log.Info("s1ap: Activate Default EPS Bearer Context Accept received",
 			zap.Uint8("ebi", accept.EPSBearerID),
 			zap.Uint8("expected_ebi", expectedEBI),
 			zap.Uint8("procedure_transaction_id", accept.ProcedureTransactionID),
 			zap.Int("pco_len", len(accept.PCO)),
-			zap.String("pco_hex", hex.EncodeToString(accept.PCO)),
-			zap.String("esm_container_hex", hex.EncodeToString(attachComplete.ESMContainer)))
+			zap.Int("esm_container_len", len(attachComplete.ESMContainer)))
 	}
 
 	metrics.AttachedUEs.Inc()
@@ -916,6 +940,19 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 
 	// Send Modify Bearer Request now that UE is registered (TS 23.401 Figure 5.6.1.3-1 step 19).
 	if mbrENBUTEID != 0 && mbrSGWCTEID != 0 && mbrDefaultEBI != 0 {
+		ue.Lock()
+		for _, pdn := range ue.PDNs {
+			if pdn == nil || pdn.DefaultEBI != mbrDefaultEBI {
+				continue
+			}
+			pdn.ModifyBearerSent = true
+			pdn.ModifyBearerAccepted = false
+			pdn.ModifyBearerFailed = false
+			if pdn.NASAccepted && pdn.ERABEstablished {
+				pdn.State = "modify-bearer-pending"
+			}
+		}
+		ue.Unlock()
 		mbr := &gtpv2.ModifyBearerRequest{
 			SGWAddress:            mbrSGWAddr,
 			SGWC_TEID:             mbrSGWCTEID,
@@ -931,9 +968,7 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 			zap.Uint8("ebi", mbrDefaultEBI),
 			zap.String("sgw_s11_addr", mbrSGWAddr),
 			zap.Uint32("sgwc_teid", mbrSGWCTEID),
-			zap.String("sgwc_teid_hex", fmt.Sprintf("0x%08x", mbrSGWCTEID)),
 			zap.Uint32("enb_s1u_teid", mbrENBUTEID),
-			zap.String("enb_s1u_teid_hex", fmt.Sprintf("0x%08x", mbrENBUTEID)),
 			zap.String("enb_s1u_ipv4", mbrENBUIP.String()))
 		go func() {
 			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {

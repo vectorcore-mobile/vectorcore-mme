@@ -1,18 +1,61 @@
 package s6a
 
-import "testing"
+import (
+	"testing"
 
-func TestDecodeMSISDNPureTBCD(t *testing.T) {
-	// 16752012880 encoded as TBCD: 61 57 02 21 88 F0.
-	got := decodeMSISDN([]byte{0x61, 0x57, 0x02, 0x21, 0x88, 0xF0})
-	if got != "16752012880" {
-		t.Fatalf("decodeMSISDN() = %q, want %q", got, "16752012880")
+	"github.com/fiorix/go-diameter/v4/diam/avp"
+	"github.com/fiorix/go-diameter/v4/diam/datatype"
+	"go.uber.org/zap"
+
+	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/uecontext"
+)
+
+func TestBuildULRUsesConfiguredFlags(t *testing.T) {
+	h := NewHandlers(
+		config.S6aConfig{
+			Routing: config.S6aRoutingConfig{SendDestinationHost: true},
+			ULR:     config.S6aULRConfig{Flags: 18},
+		},
+		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
+		uecontext.NewManager(),
+		nil,
+		zap.NewNop(),
+	)
+
+	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "hss.remote.net", "remote.net")
+
+	flagsAVP := findAVP(msg, avp.ULRFlags)
+	if flagsAVP == nil {
+		t.Fatal("ULR-Flags missing")
+	}
+	if got := uint32(flagsAVP.Data.(datatype.Unsigned32)); got != 18 {
+		t.Fatalf("ULR-Flags got %d, want 18", got)
 	}
 }
 
-func TestDecodeMSISDNEvenDigits(t *testing.T) {
-	got := decodeMSISDN([]byte{0x21, 0x43, 0x65, 0x87})
-	if got != "12345678" {
-		t.Fatalf("decodeMSISDN() = %q, want %q", got, "12345678")
+func TestBuildULROmitsDestinationHostWhenDisabled(t *testing.T) {
+	h := NewHandlers(
+		config.S6aConfig{
+			Routing: config.S6aRoutingConfig{SendDestinationHost: false},
+			ULR:     config.S6aULRConfig{Flags: 2},
+		},
+		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
+		uecontext.NewManager(),
+		nil,
+		zap.NewNop(),
+	)
+
+	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "hss.remote.net", "remote.net")
+
+	if findAVP(msg, avp.DestinationHost) != nil {
+		t.Fatal("Destination-Host present, want omitted")
+	}
+	realmAVP := findAVP(msg, avp.DestinationRealm)
+	if realmAVP == nil {
+		t.Fatal("Destination-Realm missing")
+	}
+	if got := string(realmAVP.Data.(datatype.DiameterIdentity)); got != "remote.net" {
+		t.Fatalf("Destination-Realm got %q, want %q", got, "remote.net")
 	}
 }

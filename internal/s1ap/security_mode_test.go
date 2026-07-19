@@ -159,6 +159,39 @@ func TestProcessAuthResponseSecurityModeCommandNormalizesRealUECapability(t *tes
 	}
 }
 
+func TestProcessAuthResponseSecurityModeCommandUsesStoredNASKSI(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.secCfg = config.SecurityConfig{
+		IntegrityAlgorithms: []string{"EIA2"},
+		CipheringAlgorithms: []string{"EEA2"},
+	}
+	const remoteAddr = "192.0.2.10:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 1
+
+	xres := []byte{0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0}
+	kasme := mustHexForS1AP(t, "ed5ad878b984563b23b013fc9ba344f827a2ac0b27398ff8ee4030f297a1f4b6")
+	ue.Lock()
+	ue.XRES = append([]byte(nil), xres...)
+	ue.KASME = append([]byte(nil), kasme...)
+	ue.UENetworkCapability = []byte{0xf0, 0x70}
+	ue.NASKSI = 5
+	ue.Unlock()
+
+	body := append([]byte{byte(len(xres))}, xres...)
+	if err := srv.processAuthResponse(ue, body, srv.log.With(zap.String("test", "smc-nas-ksi"))); err != nil {
+		t.Fatalf("processAuthResponse: %v", err)
+	}
+
+	msg := readCapturedPDU(t, ch)
+	nasPDU := decodeNASPDUFromPDU(t, msg)
+	wantPlain := []byte{0x07, emm.MsgSecurityModeCommand, 0x22, 0x05, 0x02, 0xf0, 0x70}
+	if !bytes.Equal(nasPDU[6:], wantPlain) {
+		t.Fatalf("plain SMC: got %x, want %x", nasPDU[6:], wantPlain)
+	}
+}
+
 func TestProcessAuthResponseProtectedAttachFiveByteReplayNoHashMME(t *testing.T) {
 	srv := newTAUTestServer()
 	srv.secCfg = config.SecurityConfig{

@@ -7,23 +7,28 @@ import "errors"
 
 // Message type codes (TS 29.274 Table 6.1-1).
 const (
-	MsgEchoRequest           uint8 = 1
-	MsgEchoResponse          uint8 = 2
-	MsgCreateSessionRequest  uint8 = 32
-	MsgCreateSessionResponse uint8 = 33
-	MsgModifyBearerRequest   uint8 = 34
-	MsgModifyBearerResponse  uint8 = 35
-	MsgDeleteSessionRequest  uint8 = 36
-	MsgDeleteSessionResponse uint8 = 37
-	MsgCreateBearerRequest   uint8 = 95
-	MsgCreateBearerResponse  uint8 = 96
-	MsgUpdateBearerRequest   uint8 = 97
-	MsgUpdateBearerResponse  uint8 = 98
-	MsgDeleteBearerRequest   uint8 = 99
-	MsgDeleteBearerResponse  uint8 = 100
-	MsgContextRequest        uint8 = 130
-	MsgContextResponse       uint8 = 131
-	MsgContextAcknowledge    uint8 = 132
+	MsgEchoRequest                  uint8 = 1
+	MsgEchoResponse                 uint8 = 2
+	MsgCreateSessionRequest         uint8 = 32
+	MsgCreateSessionResponse        uint8 = 33
+	MsgModifyBearerRequest          uint8 = 34
+	MsgModifyBearerResponse         uint8 = 35
+	MsgDeleteSessionRequest         uint8 = 36
+	MsgDeleteSessionResponse        uint8 = 37
+	MsgCreateBearerRequest          uint8 = 95
+	MsgCreateBearerResponse         uint8 = 96
+	MsgUpdateBearerRequest          uint8 = 97
+	MsgUpdateBearerResponse         uint8 = 98
+	MsgDeleteBearerRequest          uint8 = 99
+	MsgDeleteBearerResponse         uint8 = 100
+	MsgDownlinkDataNotification     uint8 = 176
+	MsgDownlinkDataNotificationAck  uint8 = 177
+	MsgDownlinkDataNotificationFail uint8 = 178
+	MsgReleaseAccessBearersRequest  uint8 = 170
+	MsgReleaseAccessBearersResponse uint8 = 171
+	MsgContextRequest               uint8 = 130
+	MsgContextResponse              uint8 = 131
+	MsgContextAcknowledge           uint8 = 132
 )
 
 // IE type codes (TS 29.274 Table 8.1-1, selected subset).
@@ -45,6 +50,7 @@ const (
 	IETypeServingNetwork     uint8 = 83
 	IETypeTFT                uint8 = 84
 	IETypeFTEID              uint8 = 87
+	IETypeDelayValue         uint8 = 92
 	IETypeBearerContext      uint8 = 93
 	IETypeChargingChars      uint8 = 95
 	IETypePDNType            uint8 = 99
@@ -54,7 +60,13 @@ const (
 	IETypeCompleteRequestMsg uint8 = 116 // TS 29.274 §8.47 (raw NAS PDU)
 	IETypeAPNRestriction     uint8 = 127
 	IETypeSelectionMode      uint8 = 128
+	IETypeNodeType           uint8 = 135
+	IETypeThrottling         uint8 = 154
+	IETypeARP                uint8 = 155
+	IETypeEPCTimer           uint8 = 156
 	IETypeULITimestamp       uint8 = 170 // TS 29.274 §8.141 (ULI Timestamp)
+	IETypePagingSvcInfo      uint8 = 186
+	IETypeIntegerNumber      uint8 = 187
 )
 
 // ULI flags (TS 29.274 §8.21, octet 5 bit positions 1=LSB).
@@ -76,9 +88,11 @@ const (
 	CauseMandatoryIEMissing          uint8 = 70
 	CauseSystemFailure               uint8 = 72
 	CauseAllDynamicAddressesOccupied uint8 = 84
+	CauseUnableToPageUE              uint8 = 90
 	CauseUERefuses                   uint8 = 88
 	CauseRequestRejected             uint8 = 94
 	CauseConditionalIEMissing        uint8 = 103
+	CauseUEAlreadyReattached         uint8 = 115
 
 	// Deprecated alias kept for existing callers that still mean "rejected".
 	CauseRequestDenied uint8 = CauseRequestRejected
@@ -139,12 +153,16 @@ func CauseName(cause uint8) string {
 		return "System failure"
 	case CauseAllDynamicAddressesOccupied:
 		return "All dynamic addresses are occupied"
+	case CauseUnableToPageUE:
+		return "Unable to page UE"
 	case CauseUERefuses:
 		return "UE refuses"
 	case CauseRequestRejected:
 		return "Request rejected"
 	case CauseConditionalIEMissing:
 		return "Conditional IE missing"
+	case CauseUEAlreadyReattached:
+		return "UE already re-attached"
 	default:
 		return "unknown"
 	}
@@ -196,4 +214,9 @@ const (
 	FTEIDInstanceSender uint8 = 0 // MME S11 F-TEID in CSReq; eNB S1U in MBReq Bearer Context
 	FTEIDInstanceSGWC   uint8 = 0 // S-GW C-plane F-TEID returned in CSRsp (outer, TS 29.274 Table 7.2.2-1)
 	FTEIDInstanceSGWU   uint8 = 1 // S-GW user-plane F-TEID in bearer context responses
+)
+
+const (
+	NodeTypeMME  uint8 = 0
+	NodeTypeSGSN uint8 = 1
 )

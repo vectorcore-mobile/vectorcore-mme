@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"sort"
 
 	"go.uber.org/zap"
 
@@ -15,7 +16,14 @@ import (
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
+
+type pathSwitchBearer struct {
+	EBI  uint8
+	TEID uint32
+	IP   net.IP
+}
 
 // handlePathSwitchRequest handles S1AP Path Switch Request from a target eNB.
 // This is the MME-side of an X2 handover: the UE has already moved to the target eNB
@@ -61,7 +69,6 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 	emmState := ue.EMMState
 	sgwcTEID := ue.SGWC_TEID
 	sgwAddr := ue.SGWAddress
-	defaultEBI := ue.DefaultEBI
 	ue.Unlock()
 
 	if emmState != emm.StateRegistered {
@@ -70,23 +77,37 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		s.sendPathSwitchFailure(remoteAddr, mmeUEID, enbUEID)
 		return
 	}
-	if sgwcTEID == 0 || defaultEBI == 0 {
+	if sgwcTEID == 0 {
 		log.Warn("s1ap: PathSwitch: no active bearer")
 		metrics.PathSwitchTotal.WithLabelValues("no_bearer").Inc()
 		s.sendPathSwitchFailure(remoteAddr, mmeUEID, enbUEID)
 		return
 	}
 
-	// Decode new eNB S1-U F-TEID from E-RABToBeSwitchedInUplinkList.
-	newEBI, newTEID, newIP, err := decodePathSwitchERABs(uplinkListValue)
+	// Decode the full uplink E-RAB list and build the bearer updates to send on S11.
+	uplinkBearers, err := decodePathSwitchERABList(uplinkListValue)
 	if err != nil {
 		log.Warn("s1ap: PathSwitch: E-RAB decode failed", zap.Error(err))
 		metrics.PathSwitchTotal.WithLabelValues("decode_error").Inc()
 		s.sendPathSwitchFailure(remoteAddr, mmeUEID, enbUEID)
 		return
 	}
+	if len(uplinkBearers) == 0 {
+		log.Warn("s1ap: PathSwitch: no uplink bearers provided")
+		metrics.PathSwitchTotal.WithLabelValues("decode_error").Inc()
+		s.sendPathSwitchFailure(remoteAddr, mmeUEID, enbUEID)
+		return
+	}
 
-	log = log.With(zap.Uint8("ebi", newEBI), zap.Uint32("new_teid", newTEID), zap.Stringer("new_ip", newIP))
+	mbrBearers, bearerErr := pathSwitchMBRBearersLocked(ue, uplinkBearers)
+	if bearerErr != nil {
+		log.Warn("s1ap: PathSwitch: invalid bearer list", zap.Error(bearerErr))
+		metrics.PathSwitchTotal.WithLabelValues("no_bearer").Inc()
+		s.sendPathSwitchFailure(remoteAddr, mmeUEID, enbUEID)
+		return
+	}
+
+	log = log.With(zap.Int("bearer_count", len(mbrBearers)))
 	log.Info("s1ap: PathSwitch: sending Modify Bearer Request")
 
 	// Kick off MBR + Ack/Failure in a goroutine so we don't block the SCTP receive loop.
@@ -94,9 +115,7 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		mbr := &gtpv2.ModifyBearerRequest{
 			SGWAddress: sgwAddr,
 			SGWC_TEID:  sgwcTEID,
-			EBI:        defaultEBI,
-			ENBU_TEID:  newTEID,
-			ENBU_IP:    newIP,
+			Bearers:    mbrBearers,
 			RATType:    gtpv2.RATTypeEUTRAN,
 		}
 		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
@@ -110,8 +129,7 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		ue.Lock()
 		ue.ENBS1APID = enbUEID
 		ue.ENBGlobalID = remoteAddr
-		ue.ENBU_TEID = newTEID
-		ue.ENBU_IP = append(net.IP(nil), newIP...)
+		applyPathSwitchBearersLocked(ue, uplinkBearers)
 		ue.SetECMState(emm.ECMConnected)
 
 		// Pre-compute next NH for the subsequent handover (TS 33.401 §A.4).
@@ -140,6 +158,78 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 	}()
 }
 
+func pathSwitchMBRBearersLocked(ue *uecontext.Context, requested []pathSwitchBearer) ([]gtpv2.ModifyBearer, error) {
+	ue.Lock()
+	defer ue.Unlock()
+
+	if len(requested) == 0 {
+		return nil, fmt.Errorf("path switch E-RAB: empty bearer list")
+	}
+
+	known := make(map[uint8]struct{}, len(ue.PDNs)+len(ue.DedicatedBearers)+1)
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.DefaultEBI == 0 || !pdn.ERABEstablished || pdn.ModifyBearerFailed {
+			continue
+		}
+		known[pdn.DefaultEBI] = struct{}{}
+	}
+	if ue.DefaultEBI != 0 && ue.SGWU_TEID != 0 && len(ue.SGWU_IP) != 0 {
+		known[ue.DefaultEBI] = struct{}{}
+	}
+	for _, bearer := range ue.DedicatedBearers {
+		if bearer == nil || bearer.AssignedEBI == 0 || !bearer.ERABEstablished || bearer.SGWS1UTEID == 0 || len(bearer.SGWS1UIP) == 0 {
+			continue
+		}
+		known[bearer.AssignedEBI] = struct{}{}
+	}
+
+	seen := make(map[uint8]struct{}, len(requested))
+	out := make([]gtpv2.ModifyBearer, 0, len(requested))
+	for _, bearer := range requested {
+		if bearer.TEID == 0 || len(bearer.IP) == 0 {
+			return nil, fmt.Errorf("path switch E-RAB: missing transport for EBI %d", bearer.EBI)
+		}
+		if _, ok := seen[bearer.EBI]; ok {
+			return nil, fmt.Errorf("path switch E-RAB: duplicate EBI %d", bearer.EBI)
+		}
+		if _, ok := known[bearer.EBI]; !ok {
+			return nil, fmt.Errorf("path switch E-RAB: unknown EBI %d", bearer.EBI)
+		}
+		seen[bearer.EBI] = struct{}{}
+		out = append(out, gtpv2.ModifyBearer{
+			EBI:       bearer.EBI,
+			ENBU_TEID: bearer.TEID,
+			ENBU_IP:   append(net.IP(nil), bearer.IP...),
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].EBI < out[j].EBI })
+	return out, nil
+}
+
+func applyPathSwitchBearersLocked(ue *uecontext.Context, bearers []pathSwitchBearer) {
+	for _, bearer := range bearers {
+		if ue.DefaultEBI == bearer.EBI {
+			ue.ENBU_TEID = bearer.TEID
+			ue.ENBU_IP = append(net.IP(nil), bearer.IP...)
+		}
+		for _, pdn := range ue.PDNs {
+			if pdn == nil || pdn.DefaultEBI != bearer.EBI {
+				continue
+			}
+			pdn.ENBU_TEID = bearer.TEID
+			pdn.ENBU_IP = append(net.IP(nil), bearer.IP...)
+		}
+		for _, dedicated := range ue.DedicatedBearers {
+			if dedicated == nil || dedicated.AssignedEBI != bearer.EBI {
+				continue
+			}
+			dedicated.ENBS1UTEID = bearer.TEID
+			dedicated.ENBS1UIP = append(net.IP(nil), bearer.IP...)
+		}
+	}
+}
+
 // decodePathSwitchERABs parses the E-RABToBeSwitchedInUplinkList IE value
 // to extract the first item's E-RAB-ID, eNB S1-U TEID, and IP address.
 //
@@ -151,96 +241,114 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 //	  ext=0(1b), iE-Extensions optional bit(1b), align,
 //	  E-RAB-ID(0..15, 4b), transportLayerAddress BIT STRING (1..160,...), GTP-TEID(4B)
 func decodePathSwitchERABs(data []byte) (ebi uint8, teid uint32, ip net.IP, err error) {
+	bearers, err := decodePathSwitchERABList(data)
+	if err != nil {
+		return 0, 0, nil, err
+	}
+	first := bearers[0]
+	return first.EBI, first.TEID, first.IP, nil
+}
+
+func decodePathSwitchERABList(data []byte) ([]pathSwitchBearer, error) {
 	if len(data) < 2 {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: too short")
+		return nil, fmt.Errorf("path switch E-RAB: too short")
 	}
 	r := aper.NewBitReader(data)
 
 	count, decErr := aper.DecodeConstrainedWholeNumber(r, 1, 256)
 	if decErr != nil || count == 0 {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: bad count")
+		return nil, fmt.Errorf("path switch E-RAB: bad count")
 	}
 	r.AlignToByte()
 
-	// Read IE wrapper (accept any item IE ID — different eNB implementations may vary).
-	_, decErr = aper.DecodeConstrainedWholeNumber(r, 0, 65535) // item IE ID (ignored)
-	if decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: IE ID decode failed")
-	}
-	_, decErr = aper.DecodeCriticality(r)
-	if decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: criticality decode failed")
-	}
-	itemBytes, decErr := aper.ReadOpenType(r)
-	if decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: open type read failed")
+	bearers := make([]pathSwitchBearer, 0, count)
+	for idx := int64(0); idx < count; idx++ {
+		// Read IE wrapper (accept any item IE ID — different eNB implementations may vary).
+		_, decErr = aper.DecodeConstrainedWholeNumber(r, 0, 65535) // item IE ID (ignored)
+		if decErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: IE ID decode failed")
+		}
+		_, decErr = aper.DecodeCriticality(r)
+		if decErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: criticality decode failed")
+		}
+		itemBytes, openErr := aper.ReadOpenType(r)
+		if openErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: open type read failed")
+		}
+
+		// Decode inner E-RABToBeSwitchedInUplinkItem SEQUENCE.
+		ir := aper.NewBitReader(itemBytes)
+		if _, decErr = ir.ReadBit(); decErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: inner ext bit")
+		}
+		if _, decErr = ir.ReadBit(); decErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: inner opt bit")
+		}
+		erabID, idErr := aper.DecodeConstrainedWholeNumber(ir, 0, 15)
+		if idErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: E-RAB-ID decode failed")
+		}
+
+		extBit, bitErr := ir.ReadBit()
+		if bitErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: transport address ext decode failed")
+		}
+		var addrBits int64
+		if extBit == 0 {
+			addrBits, decErr = aper.DecodeConstrainedWholeNumber(ir, 1, 160)
+		} else {
+			addrBits, decErr = aper.DecodeConstrainedWholeNumber(ir, 0, 65535)
+		}
+		if decErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: transport address length decode failed")
+		}
+		ir.AlignToByte()
+		numBytes := int((addrBits + 7) / 8)
+		addrBytes, decErr := ir.ReadOctets(numBytes)
+		if decErr != nil || numBytes < 4 {
+			return nil, fmt.Errorf("path switch E-RAB: transport address decode failed")
+		}
+		parsedIP := net.IP(addrBytes[:4]).To4()
+		if parsedIP == nil {
+			return nil, fmt.Errorf("path switch E-RAB: invalid IPv4 transport address")
+		}
+
+		ir.AlignToByte()
+		teidBytes, teidErr := ir.ReadOctets(4)
+		if teidErr != nil {
+			return nil, fmt.Errorf("path switch E-RAB: GTP-TEID decode failed")
+		}
+
+		bearers = append(bearers, pathSwitchBearer{
+			EBI:  uint8(erabID),
+			TEID: binary.BigEndian.Uint32(teidBytes),
+			IP:   parsedIP,
+		})
 	}
 
-	// Decode inner E-RABToBeSwitchedInUplinkItem SEQUENCE.
-	ir := aper.NewBitReader(itemBytes)
-	// Extension marker
-	if _, decErr = ir.ReadBit(); decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: inner ext bit")
-	}
-	// iE-Extensions optional bit
-	if _, decErr = ir.ReadBit(); decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: inner opt bit")
-	}
-	// E-RAB-ID (0..15) — immediately follows option bits with no alignment
-	erabID, decErr := aper.DecodeConstrainedWholeNumber(ir, 0, 15)
-	if decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: E-RAB-ID decode failed")
-	}
-
-	// transportLayerAddress BIT STRING (1..160,...): ext bit, constrained length, align, bytes.
-	extBit, _ := ir.ReadBit()
-	var addrBits int64
-	if extBit == 0 {
-		addrBits, _ = aper.DecodeConstrainedWholeNumber(ir, 1, 160)
-	} else {
-		addrBits, _ = aper.DecodeConstrainedWholeNumber(ir, 0, 65535)
-	}
-	ir.AlignToByte()
-	numBytes := int((addrBits + 7) / 8)
-	addrBytes, decErr := ir.ReadOctets(numBytes)
-	if decErr != nil || numBytes < 4 {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: transport address decode failed")
-	}
-	parsedIP := net.IP(addrBytes[:4]).To4()
-
-	// GTP-TEID OCTET STRING (SIZE 4) — fixed, no length prefix.
-	ir.AlignToByte()
-	teidBytes, decErr := ir.ReadOctets(4)
-	if decErr != nil {
-		return 0, 0, nil, fmt.Errorf("path switch E-RAB: GTP-TEID decode failed")
-	}
-	parsedTEID := binary.BigEndian.Uint32(teidBytes)
-
-	return uint8(erabID), parsedTEID, parsedIP, nil
+	return bearers, nil
 }
 
 // encodeSecurityContextIE encodes the SecurityContext IE value for Path Switch Ack.
 //
 // SecurityContext SEQUENCE (TS 36.413):
 //
-//	extension bit (0), iE-Extensions optional bit (0), align,
-//	nextHopChainingCount INTEGER(0..7) [3 bits], align,
-//	nextHopParameter BIT STRING SIZE(256) [32 bytes]
+//	extension bit (0), iE-Extensions optional bit (0),
+//	nextHopChainingCount INTEGER(0..7) [3 bits],
+//	nextHopParameter BIT STRING SIZE(256) [32 bytes / 256 bits, not byte-aligned here]
 func encodeSecurityContextIE(nh []byte, ncc uint8) []byte {
 	w := aper.NewBitWriter()
 	w.WriteBit(0) // extension marker
 	w.WriteBit(0) // iE-Extensions absent
-	// nextHopChainingCount: INTEGER (0..7), 3 bits, MSB first
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(ncc), 0, 7)
-	w.AlignToByte()
-	// nextHopParameter: BIT STRING SIZE(256) — fixed length, no length prefix, 32 bytes
-	if len(nh) >= 32 {
-		w.WriteOctets(nh[:32])
-	} else {
-		// Pad with zeros if NH is short (should not happen in normal operation)
-		padded := make([]byte, 32)
-		copy(padded, nh)
-		w.WriteOctets(padded)
+	// nextHopParameter follows immediately after the 3-bit NCC with no byte alignment.
+	var padded [32]byte
+	copy(padded[:], nh)
+	for _, b := range padded {
+		for bit := 7; bit >= 0; bit-- {
+			w.WriteBit((b >> bit) & 1)
+		}
 	}
 	return w.Bytes()
 }

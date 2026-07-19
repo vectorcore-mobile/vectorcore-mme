@@ -8,11 +8,12 @@ import (
 
 // ENBContext holds per-eNB S1AP state.
 type ENBContext struct {
-	mu           sync.Mutex
-	GlobalENBID  ies.GlobalENBID
-	ENBName      string
-	SupportedTAs []SupportedTA
-	RemoteAddr   string
+	mu            sync.Mutex
+	GlobalENBID   ies.GlobalENBID
+	ENBName       string
+	SupportedTAs  []SupportedTA
+	RemoteAddr    string
+	SetupComplete bool
 }
 
 // SupportedTA represents a Tracking Area supported by an eNB.

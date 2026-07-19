@@ -39,6 +39,15 @@ type S11Client interface {
 	SendDSR(mmeUEID uint32, req *gtpv2.DeleteSessionRequest) error
 }
 
+type S11DDNResponder interface {
+	SendDDNAck(peer string, teid uint32, seq uint32, cause uint8, delayValue *uint8) error
+	SendDDNFailureIndication(peer string, teid uint32, seq uint32, cause uint8, imsi string) error
+}
+
+type S11RABClient interface {
+	SendRABR(mmeUEID uint32, req *gtpv2.ReleaseAccessBearersRequest) (uint32, error)
+}
+
 type S11BearerResponder interface {
 	SendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer, meta *gtpv2.CreateBearerResponseMeta) error
 	SendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer, meta *gtpv2.UpdateBearerResponseMeta) error
@@ -56,6 +65,7 @@ type BearerInfo struct {
 	ARPPriority             uint8
 	PreemptionCapability    bool
 	PreemptionVulnerability bool
+	BearerQoS               []byte
 	SGWU_TEID               uint32
 	SGWU_IP                 []byte // 4-byte IPv4
 }
@@ -73,6 +83,15 @@ type NoopS11Client struct{}
 func (NoopS11Client) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
 func (NoopS11Client) SendMBR(_ uint32, _ *gtpv2.ModifyBearerRequest) error  { return nil }
 func (NoopS11Client) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
+func (NoopS11Client) SendDDNAck(_ string, _ uint32, _ uint32, _ uint8, _ *uint8) error {
+	return nil
+}
+func (NoopS11Client) SendDDNFailureIndication(_ string, _ uint32, _ uint32, _ uint8, _ string) error {
+	return nil
+}
+func (NoopS11Client) SendRABR(_ uint32, _ *gtpv2.ReleaseAccessBearersRequest) (uint32, error) {
+	return 0, nil
+}
 func (NoopS11Client) SendCreateBearerResponse(_ string, _ uint32, _ uint32, _ uint8, _ []gtpv2.CreateBearerBearer, _ *gtpv2.CreateBearerResponseMeta) error {
 	return nil
 }
@@ -113,6 +132,7 @@ type Server struct {
 	secCfg       config.SecurityConfig
 	s10Cfg       config.S10Config
 	nasCfg       config.NASConfig
+	pagingCfg    config.PagingConfig
 	operCfg      config.OperatorConfig
 	store        repository.Repository
 	ueManager    *uecontext.Manager
@@ -131,6 +151,7 @@ type Server struct {
 	sends sync.Map // string (remoteAddr) → chan<- []byte
 
 	completedCreateBearerResponses sync.Map // string bearerTxKey -> *cachedCreateBearerResponse
+	pendingERABModificationInds    sync.Map // string correlationID -> *pendingERABModificationIndication
 }
 
 // NewServer creates a new S1AP Server.
@@ -140,6 +161,7 @@ func NewServer(
 	secCfg config.SecurityConfig,
 	s10Cfg config.S10Config,
 	nasCfg config.NASConfig,
+	pagingCfg config.PagingConfig,
 	operCfg config.OperatorConfig,
 	store repository.Repository,
 	ueManager *uecontext.Manager,
@@ -161,6 +183,7 @@ func NewServer(
 		secCfg:       secCfg,
 		s10Cfg:       s10Cfg,
 		nasCfg:       nasCfg,
+		pagingCfg:    pagingCfg,
 		operCfg:      operCfg,
 		store:        store,
 		ueManager:    ueManager,
@@ -214,6 +237,12 @@ func (s *Server) handleMessage(remoteAddr string, data []byte) {
 		return
 	}
 
+	if !s.allowInboundProcedure(remoteAddr, p) {
+		return
+	}
+
+	s.logInboundPDU(remoteAddr, p)
+
 	switch p.Type {
 	case pdu.PDUTypeInitiatingMessage:
 		s.dispatchInitiating(remoteAddr, p)
@@ -224,6 +253,144 @@ func (s *Server) handleMessage(remoteAddr string, data []byte) {
 	default:
 		s.log.Warn("s1ap: unknown PDU type", zap.Uint8("type", uint8(p.Type)))
 	}
+}
+
+func (s *Server) logInboundPDU(remoteAddr string, p *pdu.PDU) {
+	if p == nil {
+		return
+	}
+	s.log.Debug("s1ap: inbound eNB PDU",
+		zap.String("remote", remoteAddr),
+		zap.String("pdu_type", p.Type.String()),
+		zap.Uint8("procedure_code", p.ProcedureCode),
+		zap.String("procedure_name", s1apProcedureName(p.ProcedureCode)),
+		zap.String("criticality", p.Criticality.String()))
+}
+
+func s1apProcedureName(code uint8) string {
+	switch code {
+	case pdu.ProcHandoverPreparation:
+		return "HandoverPreparation"
+	case pdu.ProcHandoverResourceAllocation:
+		return "HandoverResourceAllocation"
+	case pdu.ProcPathSwitchRequest:
+		return "PathSwitchRequest"
+	case pdu.ProcERABSetup:
+		return "ERABSetup"
+	case pdu.ProcERABModify:
+		return "ERABModify"
+	case pdu.ProcERABRelease:
+		return "ERABRelease"
+	case pdu.ProcInitialContextSetup:
+		return "InitialContextSetup"
+	case pdu.ProcPaging:
+		return "Paging"
+	case pdu.ProcDownlinkNASTransport:
+		return "DownlinkNASTransport"
+	case pdu.ProcInitialUEMessage:
+		return "InitialUEMessage"
+	case pdu.ProcUplinkNASTransport:
+		return "UplinkNASTransport"
+	case pdu.ProcReset:
+		return "Reset"
+	case pdu.ProcErrorIndication:
+		return "ErrorIndication"
+	case pdu.ProcNASNonDeliveryIndication:
+		return "NASNonDeliveryIndication"
+	case pdu.ProcS1Setup:
+		return "S1Setup"
+	case pdu.ProcUEContextReleaseRequest:
+		return "UEContextReleaseRequest"
+	case pdu.ProcDownlinkS1CDMA:
+		return "DownlinkS1CDMA"
+	case pdu.ProcUplinkS1CDMA:
+		return "UplinkS1CDMA"
+	case pdu.ProcUEContextModification:
+		return "UEContextModification"
+	case pdu.ProcUECapabilityInfoIndication:
+		return "UECapabilityInfoIndication"
+	case pdu.ProcUEContextRelease:
+		return "UEContextRelease"
+	case pdu.ProcENBStatusTransfer:
+		return "ENBStatusTransfer"
+	case pdu.ProcMMEStatusTransfer:
+		return "MMEStatusTransfer"
+	case pdu.ProcDeactivateTrace:
+		return "DeactivateTrace"
+	case pdu.ProcTraceStart:
+		return "TraceStart"
+	case pdu.ProcTraceFailureIndication:
+		return "TraceFailureIndication"
+	case pdu.ProcENBConfigurationUpdate:
+		return "ENBConfigurationUpdate"
+	case pdu.ProcMMEConfigurationUpdate:
+		return "MMEConfigurationUpdate"
+	case pdu.ProcLocationReportingControl:
+		return "LocationReportingControl"
+	case pdu.ProcLocationReportFailure:
+		return "LocationReportFailure"
+	case pdu.ProcLocationReport:
+		return "LocationReport"
+	case pdu.ProcOverloadStart:
+		return "OverloadStart"
+	case pdu.ProcOverloadStop:
+		return "OverloadStop"
+	case pdu.ProcWriteReplaceWarning:
+		return "WriteReplaceWarning"
+	case pdu.ProcENBDirectInformationTransfer:
+		return "ENBDirectInformationTransfer"
+	case pdu.ProcMMEDirectInformationTransfer:
+		return "MMEDirectInformationTransfer"
+	case pdu.ProcPrivateMessage:
+		return "PrivateMessage"
+	case pdu.ProcENBConfigurationTransfer:
+		return "ENBConfigurationTransfer"
+	case pdu.ProcMMEConfigurationTransfer:
+		return "MMEConfigurationTransfer"
+	case pdu.ProcCellTrafficTrace:
+		return "CellTrafficTrace"
+	case pdu.ProcKill:
+		return "Kill"
+	case pdu.ProcPWSRestartIndication:
+		return "PWSRestartIndication"
+	case pdu.ProcERABModificationIndication:
+		return "ERABModificationIndication"
+	case pdu.ProcHandoverNotification:
+		return "HandoverNotification"
+	case pdu.ProcHandoverCancel:
+		return "HandoverCancel"
+	case pdu.ProcERABReleaseIndication:
+		return "ERABReleaseIndication"
+	default:
+		return "unknown"
+	}
+}
+
+func (s *Server) allowInboundProcedure(remoteAddr string, p *pdu.PDU) bool {
+	if p == nil {
+		return false
+	}
+	if p.Type == pdu.PDUTypeInitiatingMessage && p.ProcedureCode == pdu.ProcS1Setup {
+		return true
+	}
+	v, ok := s.enbs.Load(remoteAddr)
+	if !ok {
+		s.log.Warn("s1ap: dropping procedure before S1Setup",
+			zap.String("remote", remoteAddr),
+			zap.Uint8("procedure_code", p.ProcedureCode),
+			zap.String("pdu_type", p.Type.String()),
+			zap.String("reason", "missing_enb_context"))
+		return false
+	}
+	enb, ok := v.(*ENBContext)
+	if !ok || enb == nil || !enb.SetupComplete {
+		s.log.Warn("s1ap: dropping procedure before S1Setup completion",
+			zap.String("remote", remoteAddr),
+			zap.Uint8("procedure_code", p.ProcedureCode),
+			zap.String("pdu_type", p.Type.String()))
+		return false
+	}
+	return true
 }
 
 func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
@@ -251,6 +418,8 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleUECapabilityInfoIndication(remoteAddr, p, ies)
 	case pdu.ProcErrorIndication:
 		s.handleErrorIndication(remoteAddr, p, ies)
+	case pdu.ProcERABModificationIndication:
+		s.handleERABModificationIndication(remoteAddr, p, ies)
 	case pdu.ProcReset:
 		s.handleReset(remoteAddr, p, ies)
 	case pdu.ProcENBConfigurationUpdate:
@@ -259,6 +428,10 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleHandoverRequired(remoteAddr, p, ies)
 	case pdu.ProcHandoverNotification:
 		s.handleHandoverNotify(remoteAddr, p, ies)
+	case pdu.ProcPWSRestartIndication:
+		s.log.Debug("s1ap: PWS Restart Indication received but PWS/SBc-AP is not implemented",
+			zap.String("remote", remoteAddr),
+			zap.Uint8("code", p.ProcedureCode))
 	default:
 		s.log.Warn("s1ap: unhandled initiating procedure",
 			zap.Uint8("code", p.ProcedureCode),
@@ -280,6 +453,8 @@ func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU, raw []byte) {
 		s.handleInitialContextSetupResponse(remoteAddr, p, ies)
 	case pdu.ProcERABSetup:
 		s.handleERABSetupResponse(remoteAddr, p, raw, ies)
+	case pdu.ProcERABModify:
+		s.handleERABModifyResponse(remoteAddr, p, raw, ies)
 	case pdu.ProcERABRelease:
 		s.handleERABReleaseComplete(remoteAddr, p, raw, ies)
 	case pdu.ProcUEContextRelease:
@@ -314,6 +489,8 @@ func (s *Server) dispatchUnsuccessful(remoteAddr string, p *pdu.PDU, raw []byte)
 			zap.String("pdu_choice", p.Type.String()),
 			zap.String("criticality", p.Criticality.String()),
 			zap.String("raw_s1ap_hex", hex.EncodeToString(raw)))
+	case pdu.ProcERABModify:
+		s.handleERABModifyFailure(remoteAddr, p, ies)
 	case pdu.ProcHandoverResourceAllocation:
 		s.handleHandoverRequestFailure(remoteAddr, p, ies)
 	case pdu.ProcUEContextModification:
@@ -361,6 +538,10 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 			enbUEID := ue.ENBS1APID
 			imsi := ue.IMSI
 			apn := ue.APN
+			if isResumeICSAttachStep(ue.AttachStep) {
+				ue.AttachStep = uecontext.AttachStepNone
+				ue.SetEMMState(emm.StateRegistered)
+			}
 			ue.SetECMState(emm.ECMIdle)
 			ue.ENBS1APID = 0
 			ue.ENBGlobalID = ""

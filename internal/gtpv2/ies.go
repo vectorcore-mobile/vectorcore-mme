@@ -249,6 +249,40 @@ func EncodeSelectionMode(mode uint8) IE {
 	return IE{Type: IETypeSelectionMode, Instance: 0, Value: []byte{mode & 0x03}}
 }
 
+// EncodeARP encodes the Allocation/Retention Priority IE value.
+func EncodeARP(arp uint8) IE {
+	return IE{Type: IETypeARP, Instance: 0, Value: []byte{arp}}
+}
+
+func DecodeARP(ie *IE) (uint8, error) {
+	if ie == nil || len(ie.Value) < 1 {
+		return 0, fmt.Errorf("gtpv2: nil or empty ARP IE")
+	}
+	return ie.Value[0], nil
+}
+
+func EncodeDelayValue(v uint8) IE {
+	return IE{Type: IETypeDelayValue, Instance: 0, Value: []byte{v}}
+}
+
+func DecodeDelayValue(ie *IE) (uint8, error) {
+	if ie == nil || len(ie.Value) < 1 {
+		return 0, fmt.Errorf("gtpv2: nil or empty Delay Value IE")
+	}
+	return ie.Value[0], nil
+}
+
+func EncodePagingServiceInfo(v []byte) IE {
+	out := make([]byte, len(v))
+	copy(out, v)
+	return IE{Type: IETypePagingSvcInfo, Instance: 0, Value: out}
+}
+
+// EncodeNodeType encodes the Node Type IE (TS 29.274 §8.65).
+func EncodeNodeType(nodeType uint8) IE {
+	return IE{Type: IETypeNodeType, Instance: 0, Value: []byte{nodeType}}
+}
+
 // EncodeCause encodes a Cause IE.
 func EncodeCause(cause uint8) IE {
 	// Short form: cause[0], flags[1]=0. Offending IE fields are omitted unless needed.

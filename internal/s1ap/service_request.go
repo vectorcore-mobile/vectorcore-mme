@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,6 +18,29 @@ import (
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
+
+const serviceRequestReleaseWaitTimeout = 500 * time.Millisecond
+
+type resumeBearerSelectionRecord struct {
+	EBI                    uint8  `json:"ebi"`
+	BearerType             string `json:"bearer_type"`
+	LinkedEBI              uint8  `json:"linked_ebi"`
+	APN                    string `json:"apn"`
+	QCI                    uint8  `json:"qci"`
+	ARPPriority            uint8  `json:"arp"`
+	State                  string `json:"state"`
+	NASAccepted            bool   `json:"nas_accepted"`
+	ERABEstablished        bool   `json:"erab_established"`
+	ModifyBearerSent       bool   `json:"modify_bearer_sent"`
+	ModifyBearerAccepted   bool   `json:"modify_bearer_accepted"`
+	SGWS1UIP               string `json:"sgw_s1u_ip"`
+	SGWS1UTEID             uint32 `json:"sgw_s1u_teid"`
+	PreviousENBS1UTEID     uint32 `json:"previous_enb_s1u_teid"`
+	PendingTransactionType string `json:"pending_transaction_type"`
+	PendingTransactionID   string `json:"pending_transaction_id"`
+	SelectedForResume      bool   `json:"selected_for_resume"`
+	SelectionReason        string `json:"selection_reason"`
+}
 
 // handleServiceRequest handles a NAS Service Request arriving via Initial UE Message
 // (ECM-IDLE UE re-establishing S1 connectivity).
@@ -109,6 +133,7 @@ func (s *Server) handleServiceRequest(
 	releaseENBID := realUE.S1ReleaseENBID
 	realMmeUEID := realUE.MMEUES1APID
 	imsi := realUE.IMSI
+	attachStep := realUE.AttachStep
 	realUE.Unlock()
 
 	log = log.With(zap.Uint32("mme_ue_id", realMmeUEID))
@@ -123,16 +148,19 @@ func (s *Server) handleServiceRequest(
 		zap.String("sgw_s1u_teid_hex", fmt.Sprintf("0x%08x", sgwUTEID)),
 		zap.String("sgw_s1u_ipv4", sgwUIP.String()),
 		zap.Uint32("ul_nas_count", ulCount),
+		zap.Uint8("attach_step", attachStep),
 		zap.Bool("s1_release_pending", releasePending),
 		zap.Uint32("s1_release_enb_ue_id", releaseENBID))
 
+	resumePending := attachStep == uecontext.AttachStepWaitingICSRespSR
+
 	// Validate UE state.
-	if emmState != emm.StateRegistered {
+	if emmState != emm.StateRegistered && !resumePending {
 		log.Warn("s1ap: ServiceRequest: UE not in Registered state", zap.Stringer("state", emmState))
 		reject(emm.CauseImplicitlyDetached)
 		return
 	}
-	if ecmState != emm.ECMIdle {
+	if ecmState != emm.ECMIdle && !resumePending {
 		log.Warn("s1ap: ServiceRequest: UE already ECM-Connected")
 		reject(emm.CauseUEIdentityCannotBeDerived)
 		return
@@ -175,6 +203,75 @@ func (s *Server) handleServiceRequest(
 		zap.String("computed_short_mac_hex", serviceRequestComputedShortMACHex(macDetails)),
 		zap.String("expected_short_mac_hex", serviceRequestExpectedShortMACHex(macDetails)))
 
+	if resumePending {
+		realUE.Lock()
+		realUE.StopTimer(uecontext.TimerT3413)
+		oldENBUEID := realUE.ENBS1APID
+		oldENBAddr := realUE.ENBGlobalID
+		oldBindingGeneration := realUE.S1BindingGeneration
+		realUE.ENBS1APID = enbUEID
+		realUE.ENBGlobalID = enbAddr
+		realUE.S1BindingGeneration++
+		realUE.S1BindingState = uecontext.S1BindingActive
+		if tai != nil {
+			realUE.TAI = emmTAIFromS1AP(tai)
+		}
+		realUE.ULNASCount = security.NASCount(reconstructedCount)
+		realUE.SetEMMState(emm.StateServiceRequestInitiated)
+		realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
+		resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+		if resumeErr == nil && len(resumeBearers) > 0 {
+			if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
+				realUE.AttachStep = uecontext.AttachStepNone
+				realUE.Unlock()
+				s.ueManager.Remove(tempUE)
+				log.Warn("s1ap: duplicate Service Request AS security snapshot failed", zap.Error(err))
+				s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+				metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+				return
+			}
+		}
+		if resumeErr == nil {
+			s.logServiceRequestResumeSelectionLocked(realUE, "duplicate_retransmit", resumeBearers)
+		}
+		newBindingGeneration := realUE.S1BindingGeneration
+		realUE.Unlock()
+		s.noteDDNServiceRequest(realUE, enbUEID, newBindingGeneration)
+
+		s.ueManager.Remove(tempUE)
+		if resumeErr != nil {
+			log.Warn("s1ap: duplicate ServiceRequest resume rejected due to incomplete retained bearer policy", zap.Error(resumeErr))
+			realUE.Lock()
+			realUE.SetEMMState(emm.StateRegistered)
+			realUE.SetECMState(emm.ECMIdle)
+			realUE.AttachStep = uecontext.AttachStepNone
+			realUE.Unlock()
+			s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+			return
+		}
+
+		log.Info("s1ap: duplicate ServiceRequest resume rebound; retransmitting ICS",
+			zap.String("imsi", imsi),
+			zap.Uint32("old_enb_ue_id", oldENBUEID),
+			zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.String("old_remote", oldENBAddr),
+			zap.String("new_remote", enbAddr),
+			zap.Uint64("old_binding_generation", oldBindingGeneration),
+			zap.Uint64("new_binding_generation", newBindingGeneration),
+			zap.Int("resume_bearer_count", len(resumeBearers)))
+		if err := s.SendInitialContextSetupWithBearers(realMmeUEID, nil, resumeBearers); err != nil {
+			log.Error("s1ap: duplicate ServiceRequest retransmit failed", zap.Error(err))
+			realUE.Lock()
+			realUE.SetEMMState(emm.StateRegistered)
+			realUE.SetECMState(emm.ECMIdle)
+			realUE.AttachStep = uecontext.AttachStepNone
+			realUE.Unlock()
+			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+		}
+		return
+	}
+
 	// Transfer S1AP context from tempUE to the real UE.
 	realUE.Lock()
 	realUE.StopTimer(uecontext.TimerT3413)
@@ -184,23 +281,43 @@ func (s *Server) handleServiceRequest(
 	realUE.ENBGlobalID = enbAddr
 	realUE.S1BindingGeneration++
 	realUE.S1BindingState = uecontext.S1BindingActive
-	realUE.S1ReleasePending = false
 	if tai != nil {
-		plmnBytes, _ := ies.EncodePLMN(tai.MCC, tai.MNC)
-		t := emm.TAI{TAC: tai.TAC}
-		if len(plmnBytes) == 3 {
-			copy(t.PLMN[:], plmnBytes)
-		}
-		realUE.TAI = &t
+		realUE.TAI = emmTAIFromS1AP(tai)
 	}
 	realUE.ULNASCount = security.NASCount(reconstructedCount)
 	realUE.SetEMMState(emm.StateServiceRequestInitiated)
 	realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
-	resumeBearers := serviceRequestResumeBearersLocked(realUE)
+	resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+	if resumeErr == nil && len(resumeBearers) > 0 {
+		if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
+			realUE.AttachStep = uecontext.AttachStepNone
+			realUE.Unlock()
+			log.Warn("s1ap: Service Request AS security snapshot failed", zap.Error(err))
+			s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+			return
+		}
+	}
+	if resumeErr == nil {
+		s.logServiceRequestResumeSelectionLocked(realUE, "accepted_resume", resumeBearers)
+	}
+	newBindingGeneration := realUE.S1BindingGeneration
 	realUE.Unlock()
+	s.noteDDNServiceRequest(realUE, enbUEID, newBindingGeneration)
 
 	// Remove the temporary UE — its only purpose was to carry the S1AP IDs.
 	s.ueManager.Remove(tempUE)
+	if resumeErr != nil {
+		log.Warn("s1ap: Service Request rejected due to incomplete retained bearer policy", zap.Error(resumeErr))
+		realUE.Lock()
+		realUE.SetEMMState(emm.StateRegistered)
+		realUE.SetECMState(emm.ECMIdle)
+		realUE.AttachStep = uecontext.AttachStepNone
+		realUE.Unlock()
+		s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+		metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
+		return
+	}
 
 	metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "attempt").Inc()
 	log.Info("s1ap: Service Request accepted, sending ICS resume",
@@ -231,20 +348,9 @@ func (s *Server) handleServiceRequest(
 
 	// EPS has no NAS Service Accept message. Open5GS accepts a normal LTE
 	// Service Request by sending InitialContextSetupRequest without NAS-PDU.
-	// If the previous UE Context Release is still pending, defer slightly so
-	// srsENB can finish cleaning up the old RRC/E-RAB context before resume ICS.
-	if releasePending {
-		log.Info("s1ap: ServiceRequest resume ICS delayed pending UE Context Release Complete",
-			zap.Uint32("old_enb_ue_id", releaseENBID),
-			zap.Uint32("new_enb_ue_id", enbUEID),
-			zap.Duration("delay", 150*time.Millisecond))
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			sendResumeICS()
-		}()
-		return
-	}
-	sendResumeICS()
+	// If a previous UE Context Release is still pending, wait for the release
+	// to clear rather than relying on a fixed sleep.
+	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, sendResumeICS, log)
 }
 
 func (s *Server) handleInitialUEExtendedServiceRequest(
@@ -327,6 +433,7 @@ func (s *Server) handleInitialUEExtendedServiceRequest(
 	emmState := realUE.EMMState
 	ecmState := realUE.ECMState
 	imsi := realUE.IMSI
+	attachStep := realUE.AttachStep
 	realUE.Unlock()
 
 	log = log.With(zap.Uint32("mme_ue_id", realUE.MMEUES1APID))
@@ -336,15 +443,17 @@ func (s *Server) handleInitialUEExtendedServiceRequest(
 		zap.String("imsi", imsi),
 		zap.Stringer("emm_state", emmState),
 		zap.Stringer("ecm_state", ecmState),
+		zap.Uint8("attach_step", attachStep),
 		zap.Uint8("default_ebi", defaultEBI),
 		zap.Uint32("sgw_s1u_teid", sgwUTEID))
 
-	if emmState != emm.StateRegistered {
+	resumePending := attachStep == uecontext.AttachStepWaitingICSRespSR
+	if emmState != emm.StateRegistered && !resumePending {
 		log.Warn("s1ap: Extended Service Request: UE not in Registered state", zap.Stringer("state", emmState))
 		reject(emm.CauseImplicitlyDetached)
 		return
 	}
-	if ecmState != emm.ECMIdle {
+	if ecmState != emm.ECMIdle && !resumePending {
 		log.Warn("s1ap: Extended Service Request: UE already ECM-Connected")
 		reject(emm.CauseUEIdentityCannotBeDerived)
 		return
@@ -372,29 +481,47 @@ func (s *Server) resumeIdleUEFromInitialUE(
 
 	realUE.Lock()
 	realUE.StopTimer(uecontext.TimerT3413)
+	releasePending := realUE.S1ReleasePending
+	releaseENBID := realUE.S1ReleaseENBID
 	realUE.ENBS1APID = enbUEID
 	realUE.ENBGlobalID = enbAddr
 	realUE.S1BindingGeneration++
 	realUE.S1BindingState = uecontext.S1BindingActive
-	realUE.S1ReleasePending = false
 	if tai != nil {
-		plmnBytes, _ := ies.EncodePLMN(tai.MCC, tai.MNC)
-		t := emm.TAI{TAC: tai.TAC}
-		if len(plmnBytes) == 3 {
-			copy(t.PLMN[:], plmnBytes)
-		}
-		realUE.TAI = &t
+		realUE.TAI = emmTAIFromS1AP(tai)
 	}
 	realUE.SetEMMState(emm.StateServiceRequestInitiated)
 	realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
-	resumeBearers := serviceRequestResumeBearersLocked(realUE)
-	releasePending := realUE.S1ReleasePending
-	releaseENBID := realUE.S1ReleaseENBID
 	realMmeUEID := realUE.MMEUES1APID
 	defaultEBI := realUE.DefaultEBI
+	resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+	if resumeErr == nil && len(resumeBearers) > 0 {
+		if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
+			realUE.AttachStep = uecontext.AttachStepNone
+			realUE.Unlock()
+			s.ueManager.Remove(tempUE)
+			log.Warn("s1ap: resume AS security snapshot failed", zap.Error(err))
+			s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+			metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "reject").Inc()
+			return
+		}
+	}
+	newBindingGeneration := realUE.S1BindingGeneration
 	realUE.Unlock()
+	s.noteDDNServiceRequest(realUE, enbUEID, newBindingGeneration)
 
 	s.ueManager.Remove(tempUE)
+	if resumeErr != nil {
+		log.Warn("s1ap: resume rejected due to incomplete retained bearer policy", zap.Error(resumeErr))
+		realUE.Lock()
+		realUE.SetEMMState(emm.StateRegistered)
+		realUE.SetECMState(emm.ECMIdle)
+		realUE.AttachStep = uecontext.AttachStepNone
+		realUE.Unlock()
+		s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
+		metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "reject").Inc()
+		return
+	}
 
 	sendResumeICS := func() {
 		if err := s.SendInitialContextSetupWithBearers(realMmeUEID, nil, resumeBearers); err != nil {
@@ -418,39 +545,49 @@ func (s *Server) resumeIdleUEFromInitialUE(
 		zap.Int("resume_bearer_count", len(resumeBearers)),
 		zap.Bool("s1_release_pending", releasePending))
 
-	if releasePending {
-		log.Info("s1ap: resume ICS delayed pending UE Context Release Complete",
-			zap.Uint32("old_enb_ue_id", releaseENBID),
-			zap.Uint32("new_enb_ue_id", enbUEID),
-			zap.Duration("delay", 150*time.Millisecond))
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			sendResumeICS()
-		}()
-		return
-	}
-	sendResumeICS()
+	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, sendResumeICS, log)
 }
 
-func serviceRequestResumeBearersLocked(ue *uecontext.Context) []BearerInfo {
-	defaultBearers := make([]BearerInfo, 0, len(ue.PDNs)+1)
-	seen := make(map[uint8]struct{}, len(ue.DedicatedBearers)+len(ue.PDNs)+1)
+func serviceRequestResumeBearersLocked(ue *uecontext.Context) ([]BearerInfo, error) {
+	return retainedResumeBearersLocked(ue, false)
+}
 
-	for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
-		proc := ue.DedicatedBearers[ebi]
-		if proc == nil || !proc.ERABEstablished || proc.SGWS1UTEID == 0 || len(proc.SGWS1UIP) == 0 {
-			continue
+func retainedResumeBearersLocked(ue *uecontext.Context, includeDedicated bool) ([]BearerInfo, error) {
+	defaultsByEBI := make(map[uint8]BearerInfo, len(ue.PDNs)+1)
+	dedicatedByLinkedEBI := make(map[uint8][]BearerInfo, len(ue.DedicatedBearers))
+	orphanDedicated := make([]BearerInfo, 0, len(ue.DedicatedBearers))
+
+	if includeDedicated {
+		for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
+			proc := ue.DedicatedBearers[ebi]
+			if proc == nil || proc.SGWS1UTEID == 0 || len(proc.SGWS1UIP) == 0 {
+				continue
+			}
+			if tauDedicatedBearerInactive(proc) {
+				continue
+			}
+			if dedicatedBearerHasPendingResumeBlockingTransactionLocked(ue, proc.AssignedEBI) {
+				continue
+			}
+			if !proc.NASAccepted && !proc.ERABEstablished {
+				continue
+			}
+			item := BearerInfo{
+				EBI:                     proc.AssignedEBI,
+				QCI:                     proc.QCI,
+				ARPPriority:             arpPriority(proc.ARP),
+				PreemptionCapability:    preemptionCapability(proc.ARP),
+				PreemptionVulnerability: preemptionVulnerability(proc.ARP),
+				BearerQoS:               append([]byte(nil), proc.BearerQoS...),
+				SGWU_TEID:               proc.SGWS1UTEID,
+				SGWU_IP:                 append([]byte(nil), proc.SGWS1UIP.To4()...),
+			}
+			if proc.LinkedEBI != 0 {
+				dedicatedByLinkedEBI[proc.LinkedEBI] = append(dedicatedByLinkedEBI[proc.LinkedEBI], item)
+				continue
+			}
+			orphanDedicated = append(orphanDedicated, item)
 		}
-		seen[ebi] = struct{}{}
-		defaultBearers = append(defaultBearers, BearerInfo{
-			EBI:                     proc.AssignedEBI,
-			QCI:                     proc.QCI,
-			ARPPriority:             proc.ARP,
-			PreemptionCapability:    false,
-			PreemptionVulnerability: true,
-			SGWU_TEID:               proc.SGWS1UTEID,
-			SGWU_IP:                 append([]byte(nil), proc.SGWS1UIP.To4()...),
-		})
 	}
 
 	pdns := sortedPDNContextsLocked(ue)
@@ -461,39 +598,461 @@ func serviceRequestResumeBearersLocked(ue *uecontext.Context) []BearerInfo {
 		if pdnDisconnectInProgress(pdn) {
 			continue
 		}
-		if !pdn.ERABEstablished || pdn.ModifyBearerFailed {
+		if tauPDNIsInactiveForStatusSync(pdn) || pdn.ModifyBearerFailed {
+			continue
+		}
+		cfg, ok := subscriberAPNConfigForResumeLocked(ue, pdn.APN)
+		if !ok {
+			return nil, fmt.Errorf("s1ap: missing subscriber APN policy for resumed PDN %q", pdn.APN)
+		}
+		if missing := validateSubscriberAPNPolicy(&cfg); len(missing) != 0 {
+			return nil, fmt.Errorf("s1ap: incomplete subscriber APN policy for resumed PDN %q: %s", pdn.APN, strings.Join(missing, ","))
+		}
+		defaultsByEBI[pdn.DefaultEBI] = BearerInfo{
+			EBI:                     pdn.DefaultEBI,
+			QCI:                     cfg.QCI,
+			ARPPriority:             cfg.ARPPriority,
+			PreemptionCapability:    cfg.PreemptionCapability,
+			PreemptionVulnerability: cfg.PreemptionVulnerability,
+			SGWU_TEID:               pdn.SGWU_TEID,
+			SGWU_IP:                 append([]byte(nil), pdn.SGWU_IP.To4()...),
+		}
+	}
+
+	if ue.DefaultEBI != 0 && ue.SGWU_TEID != 0 && len(ue.SGWU_IP) != 0 {
+		if _, ok := defaultsByEBI[ue.DefaultEBI]; !ok {
+			cfg, ok := subscriberAPNConfigForResumeLocked(ue, ue.APN)
+			if !ok {
+				return nil, fmt.Errorf("s1ap: missing subscriber APN policy for retained default bearer %q", ue.APN)
+			}
+			if missing := validateSubscriberAPNPolicy(&cfg); len(missing) != 0 {
+				return nil, fmt.Errorf("s1ap: incomplete subscriber APN policy for retained default bearer %q: %s", ue.APN, strings.Join(missing, ","))
+			}
+			defaultsByEBI[ue.DefaultEBI] = BearerInfo{
+				EBI:                     ue.DefaultEBI,
+				QCI:                     cfg.QCI,
+				ARPPriority:             cfg.ARPPriority,
+				PreemptionCapability:    cfg.PreemptionCapability,
+				PreemptionVulnerability: cfg.PreemptionVulnerability,
+				SGWU_TEID:               ue.SGWU_TEID,
+				SGWU_IP:                 append([]byte(nil), ue.SGWU_IP.To4()...),
+			}
+		}
+	}
+
+	appendLinked := func(out []BearerInfo, linkedEBI uint8) []BearerInfo {
+		items := dedicatedByLinkedEBI[linkedEBI]
+		sort.Slice(items, func(i, j int) bool { return items[i].EBI < items[j].EBI })
+		out = append(out, items...)
+		delete(dedicatedByLinkedEBI, linkedEBI)
+		return out
+	}
+
+	legacyDefaultEBI := ue.DefaultEBI
+	nonLegacyDefaultEBIs := make([]uint8, 0, len(defaultsByEBI))
+	for ebi := range defaultsByEBI {
+		if ebi == legacyDefaultEBI {
+			continue
+		}
+		nonLegacyDefaultEBIs = append(nonLegacyDefaultEBIs, ebi)
+	}
+	sort.Slice(nonLegacyDefaultEBIs, func(i, j int) bool { return nonLegacyDefaultEBIs[i] < nonLegacyDefaultEBIs[j] })
+
+	out := make([]BearerInfo, 0, len(defaultsByEBI)+len(ue.DedicatedBearers))
+	for _, ebi := range nonLegacyDefaultEBIs {
+		out = append(out, defaultsByEBI[ebi])
+		out = appendLinked(out, ebi)
+	}
+
+	if legacy, ok := defaultsByEBI[legacyDefaultEBI]; ok {
+		if len(nonLegacyDefaultEBIs) == 0 {
+			out = append(out, legacy)
+			out = appendLinked(out, legacyDefaultEBI)
+		} else {
+			out = appendLinked(out, legacyDefaultEBI)
+			out = append(out, legacy)
+		}
+		delete(defaultsByEBI, legacyDefaultEBI)
+	}
+
+	remainingLinked := make([]uint8, 0, len(dedicatedByLinkedEBI))
+	for linkedEBI := range dedicatedByLinkedEBI {
+		remainingLinked = append(remainingLinked, linkedEBI)
+	}
+	sort.Slice(remainingLinked, func(i, j int) bool { return remainingLinked[i] < remainingLinked[j] })
+	for _, linkedEBI := range remainingLinked {
+		out = appendLinked(out, linkedEBI)
+	}
+
+	sort.Slice(orphanDedicated, func(i, j int) bool { return orphanDedicated[i].EBI < orphanDedicated[j].EBI })
+	out = append(out, orphanDedicated...)
+	return out, nil
+}
+
+func dedicatedBearerHasPendingResumeBlockingTransactionLocked(ue *uecontext.Context, assignedEBI uint8) bool {
+	for _, tx := range ue.PendingBearerTransactions {
+		if tx == nil {
+			continue
+		}
+		switch tx.Kind {
+		case bearerTxDelete, bearerTxUpdate, bearerTxLocalUpdate:
+			if _, ok := tx.Bearers[assignedEBI]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) logServiceRequestResumeSelectionLocked(ue *uecontext.Context, phase string, selected []BearerInfo) {
+	selectedByEBI := make(map[uint8]struct{}, len(selected))
+	selectedEBIs := make([]uint8, 0, len(selected))
+	for _, bearer := range selected {
+		selectedByEBI[bearer.EBI] = struct{}{}
+		selectedEBIs = append(selectedEBIs, bearer.EBI)
+	}
+
+	records := make([]resumeBearerSelectionRecord, 0, len(ue.PDNs)+len(ue.DedicatedBearers))
+	skippedEBIs := make([]uint8, 0, len(ue.PDNs)+len(ue.DedicatedBearers))
+
+	for _, pdn := range sortedPDNContextsLocked(ue) {
+		if pdn == nil || pdn.DefaultEBI == 0 {
+			continue
+		}
+		_, isSelected := selectedByEBI[pdn.DefaultEBI]
+		reason := "selected_default_bearer"
+		if !isSelected {
+			reason = defaultResumeSkipReasonLocked(ue, pdn)
+			skippedEBIs = append(skippedEBIs, pdn.DefaultEBI)
+		}
+		records = append(records, resumeBearerSelectionRecord{
+			EBI:                  pdn.DefaultEBI,
+			BearerType:           "default",
+			APN:                  pdn.APN,
+			QCI:                  pdnQCIForResumeLocked(ue, pdn),
+			ARPPriority:          pdnARPPriorityForResumeLocked(ue, pdn),
+			State:                pdn.State,
+			NASAccepted:          pdn.NASAccepted,
+			ERABEstablished:      pdn.ERABEstablished,
+			ModifyBearerSent:     pdn.ModifyBearerSent,
+			ModifyBearerAccepted: pdn.ModifyBearerAccepted,
+			SGWS1UIP:             ipString(pdn.SGWU_IP),
+			SGWS1UTEID:           pdn.SGWU_TEID,
+			PreviousENBS1UTEID:   pdn.ENBU_TEID,
+			SelectedForResume:    isSelected,
+			SelectionReason:      reason,
+		})
+	}
+
+	for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
+		proc := ue.DedicatedBearers[ebi]
+		if proc == nil {
+			continue
+		}
+		pendingType, pendingID := dedicatedBearerResumeBlockingTransactionLocked(ue, ebi)
+		_, isSelected := selectedByEBI[ebi]
+		reason := "selected_dedicated_bearer"
+		if !isSelected {
+			reason = dedicatedResumeSkipReasonLocked(proc, pendingType, true)
+			skippedEBIs = append(skippedEBIs, ebi)
+		}
+		records = append(records, resumeBearerSelectionRecord{
+			EBI:                    proc.AssignedEBI,
+			BearerType:             "dedicated",
+			LinkedEBI:              proc.LinkedEBI,
+			APN:                    apnForLinkedEBILocked(ue, proc.LinkedEBI),
+			QCI:                    proc.QCI,
+			ARPPriority:            arpPriority(proc.ARP),
+			State:                  proc.State,
+			NASAccepted:            proc.NASAccepted,
+			ERABEstablished:        proc.ERABEstablished,
+			SGWS1UIP:               ipString(proc.SGWS1UIP),
+			SGWS1UTEID:             proc.SGWS1UTEID,
+			PreviousENBS1UTEID:     proc.ENBS1UTEID,
+			PendingTransactionType: pendingType,
+			PendingTransactionID:   pendingID,
+			SelectedForResume:      isSelected,
+			SelectionReason:        reason,
+		})
+	}
+
+	sort.Slice(records, func(i, j int) bool { return records[i].EBI < records[j].EBI })
+	sort.Slice(skippedEBIs, func(i, j int) bool { return skippedEBIs[i] < skippedEBIs[j] })
+
+	s.log.Info("s1ap: ServiceRequest resume bearer selection",
+		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+		zap.Uint32("enb_ue_id", ue.ENBS1APID),
+		zap.String("imsi", ue.IMSI),
+		zap.String("phase", phase),
+		zap.Uint8s("resume_ics_ebis", selectedEBIs),
+		zap.Uint8s("resume_skipped_ebis", skippedEBIs),
+		zap.Any("resume_selection_records", records))
+}
+
+func defaultResumeSkipReasonLocked(ue *uecontext.Context, pdn *uecontext.PDNContext) string {
+	if pdn == nil {
+		return "missing_pdn_context"
+	}
+	if pdn.DefaultEBI == 0 {
+		return "missing_default_ebi"
+	}
+	if pdn.SGWU_TEID == 0 || len(pdn.SGWU_IP) == 0 {
+		return "missing_sgw_s1u_transport"
+	}
+	if pdnDisconnectInProgress(pdn) {
+		return "pdn_disconnect_in_progress"
+	}
+	if tauPDNIsInactiveForStatusSync(pdn) {
+		return "inactive_pdn_state"
+	}
+	if pdn.ModifyBearerFailed {
+		return "modify_bearer_failed"
+	}
+	return "not_selected"
+}
+
+func dedicatedResumeSkipReasonLocked(proc *uecontext.DedicatedBearerContext, pendingType string, defaultOnly bool) string {
+	if proc == nil {
+		return "missing_dedicated_bearer"
+	}
+	if defaultOnly {
+		return "default_only_resume_policy"
+	}
+	if proc.SGWS1UTEID == 0 || len(proc.SGWS1UIP) == 0 {
+		return "missing_sgw_s1u_transport"
+	}
+	if tauDedicatedBearerInactive(proc) {
+		return "inactive_dedicated_state"
+	}
+	if pendingType != "" {
+		return "pending_transaction_" + pendingType
+	}
+	if !proc.NASAccepted && !proc.ERABEstablished {
+		return "nas_and_erab_not_accepted"
+	}
+	return "not_selected"
+}
+
+func dedicatedBearerResumeBlockingTransactionLocked(ue *uecontext.Context, assignedEBI uint8) (string, string) {
+	for _, tx := range ue.PendingBearerTransactions {
+		if tx == nil {
+			continue
+		}
+		switch tx.Kind {
+		case bearerTxDelete, bearerTxUpdate, bearerTxLocalUpdate:
+			if _, ok := tx.Bearers[assignedEBI]; ok {
+				return tx.Kind, tx.ID
+			}
+		}
+	}
+	return "", ""
+}
+
+func apnForLinkedEBILocked(ue *uecontext.Context, linkedEBI uint8) string {
+	for _, pdn := range ue.PDNs {
+		if pdn != nil && pdn.DefaultEBI == linkedEBI {
+			return pdn.APN
+		}
+	}
+	if ue.DefaultEBI == linkedEBI {
+		return ue.APN
+	}
+	return ""
+}
+
+func pdnQCIForResumeLocked(ue *uecontext.Context, pdn *uecontext.PDNContext) uint8 {
+	if pdn == nil {
+		return 0
+	}
+	if cfg, ok := subscriberAPNConfigForResumeLocked(ue, pdn.APN); ok {
+		return cfg.QCI
+	}
+	if pdn.DefaultEBI == ue.DefaultEBI {
+		if cfg, ok := subscriberAPNConfigForResumeLocked(ue, ue.APN); ok {
+			return cfg.QCI
+		}
+	}
+	return 0
+}
+
+func pdnARPPriorityForResumeLocked(ue *uecontext.Context, pdn *uecontext.PDNContext) uint8 {
+	if pdn == nil {
+		return 0
+	}
+	if cfg, ok := subscriberAPNConfigForResumeLocked(ue, pdn.APN); ok {
+		return cfg.ARPPriority
+	}
+	if pdn.DefaultEBI == ue.DefaultEBI {
+		if cfg, ok := subscriberAPNConfigForResumeLocked(ue, ue.APN); ok {
+			return cfg.ARPPriority
+		}
+	}
+	return 0
+}
+
+type serviceRequestMBRGroup struct {
+	sgwAddr  string
+	sgwcTEID uint32
+	bearers  []gtpv2.ModifyBearer
+}
+
+func serviceRequestMBRGroupsLocked(ue *uecontext.Context) []serviceRequestMBRGroup {
+	type groupKey struct {
+		legacyDefault bool
+		sgwAddr       string
+		sgwcTEID      uint32
+	}
+
+	groups := make(map[groupKey]*serviceRequestMBRGroup, len(ue.PDNs)+1)
+	seen := make(map[uint8]struct{}, len(ue.PDNs)+len(ue.DedicatedBearers)+1)
+
+	ensureGroup := func(legacyDefault bool, sgwAddr string, sgwcTEID uint32) *serviceRequestMBRGroup {
+		key := groupKey{legacyDefault: legacyDefault, sgwAddr: sgwAddr, sgwcTEID: sgwcTEID}
+		if grp, ok := groups[key]; ok {
+			return grp
+		}
+		grp := &serviceRequestMBRGroup{sgwAddr: sgwAddr, sgwcTEID: sgwcTEID}
+		groups[key] = grp
+		return grp
+	}
+
+	pdnByDefaultEBI := make(map[uint8]*uecontext.PDNContext, len(ue.PDNs))
+	for _, pdn := range ue.PDNs {
+		if pdn == nil || pdn.DefaultEBI == 0 {
+			continue
+		}
+		pdnByDefaultEBI[pdn.DefaultEBI] = pdn
+	}
+
+	for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
+		proc := ue.DedicatedBearers[ebi]
+		if proc == nil || !proc.ERABEstablished || proc.SGWS1UTEID == 0 || len(proc.SGWS1UIP) == 0 || proc.ENBS1UTEID == 0 || len(proc.ENBS1UIP) == 0 {
+			continue
+		}
+
+		legacyDefault := proc.LinkedEBI == ue.DefaultEBI
+		sgwAddr := ue.SGWAddress
+		sgwcTEID := ue.SGWC_TEID
+		if pdn := pdnByDefaultEBI[proc.LinkedEBI]; pdn != nil {
+			sgwAddr = pdn.SGWAddress
+			sgwcTEID = pdn.SGWC_TEID
+			legacyDefault = pdn.DefaultEBI == ue.DefaultEBI
+		}
+		if sgwcTEID == 0 {
+			continue
+		}
+
+		seen[ebi] = struct{}{}
+		grp := ensureGroup(legacyDefault, sgwAddr, sgwcTEID)
+		grp.bearers = append(grp.bearers, gtpv2.ModifyBearer{
+			EBI:       proc.AssignedEBI,
+			ENBU_TEID: proc.ENBS1UTEID,
+			ENBU_IP:   append(net.IP(nil), proc.ENBS1UIP...),
+		})
+	}
+
+	for _, pdn := range sortedPDNContextsLocked(ue) {
+		if pdn == nil || pdn.DefaultEBI == 0 || !pdn.ERABEstablished || pdn.ModifyBearerFailed || pdnDisconnectInProgress(pdn) {
+			continue
+		}
+		if pdn.SGWC_TEID == 0 || pdn.ENBU_TEID == 0 || len(pdn.ENBU_IP) == 0 {
 			continue
 		}
 		if _, ok := seen[pdn.DefaultEBI]; ok {
 			continue
 		}
 		seen[pdn.DefaultEBI] = struct{}{}
-		defaultBearers = append(defaultBearers, BearerInfo{
-			EBI:                     pdn.DefaultEBI,
-			QCI:                     defaultBearerQCIForAPN(pdn.APN),
-			ARPPriority:             8,
-			PreemptionCapability:    false,
-			PreemptionVulnerability: true,
-			SGWU_TEID:               pdn.SGWU_TEID,
-			SGWU_IP:                 append([]byte(nil), pdn.SGWU_IP.To4()...),
+		grp := ensureGroup(pdn.DefaultEBI == ue.DefaultEBI, pdn.SGWAddress, pdn.SGWC_TEID)
+		grp.bearers = append(grp.bearers, gtpv2.ModifyBearer{
+			EBI:       pdn.DefaultEBI,
+			ENBU_TEID: pdn.ENBU_TEID,
+			ENBU_IP:   append(net.IP(nil), pdn.ENBU_IP...),
 		})
 	}
 
 	if ue.DefaultEBI != 0 {
-		if _, ok := seen[ue.DefaultEBI]; !ok && ue.SGWU_TEID != 0 && len(ue.SGWU_IP) != 0 {
-			defaultBearers = append(defaultBearers, BearerInfo{
-				EBI:                     ue.DefaultEBI,
-				QCI:                     9,
-				ARPPriority:             8,
-				PreemptionCapability:    false,
-				PreemptionVulnerability: true,
-				SGWU_TEID:               ue.SGWU_TEID,
-				SGWU_IP:                 append([]byte(nil), ue.SGWU_IP.To4()...),
+		if _, ok := seen[ue.DefaultEBI]; !ok && ue.SGWC_TEID != 0 && ue.ENBU_TEID != 0 && len(ue.ENBU_IP) != 0 {
+			grp := ensureGroup(true, ue.SGWAddress, ue.SGWC_TEID)
+			grp.bearers = append(grp.bearers, gtpv2.ModifyBearer{
+				EBI:       ue.DefaultEBI,
+				ENBU_TEID: ue.ENBU_TEID,
+				ENBU_IP:   append(net.IP(nil), ue.ENBU_IP...),
 			})
 		}
 	}
 
-	return defaultBearers
+	out := make([]serviceRequestMBRGroup, 0, len(groups))
+	for _, grp := range groups {
+		sort.Slice(grp.bearers, func(i, j int) bool { return grp.bearers[i].EBI < grp.bearers[j].EBI })
+		if len(grp.bearers) == 0 {
+			continue
+		}
+		out = append(out, *grp)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		leftLegacy := false
+		rightLegacy := false
+		if len(out[i].bearers) != 0 {
+			leftLegacy = out[i].bearers[0].EBI == ue.DefaultEBI
+		}
+		if len(out[j].bearers) != 0 {
+			rightLegacy = out[j].bearers[0].EBI == ue.DefaultEBI
+		}
+		if leftLegacy != rightLegacy {
+			return !leftLegacy && rightLegacy
+		}
+		return out[i].bearers[0].EBI < out[j].bearers[0].EBI
+	})
+	return out
+}
+
+func (s *Server) sendResumeICSWhenReleaseClears(
+	ue *uecontext.Context,
+	releasePending bool,
+	oldENBUEID uint32,
+	newENBUEID uint32,
+	send func(),
+	log *zap.Logger,
+) {
+	if !releasePending {
+		send()
+		return
+	}
+	log.Info("s1ap: resume ICS waiting for UE Context Release Complete",
+		zap.Uint32("old_enb_ue_id", oldENBUEID),
+		zap.Uint32("new_enb_ue_id", newENBUEID),
+		zap.Duration("timeout", serviceRequestReleaseWaitTimeout))
+	go func() {
+		deadline := time.Now().Add(serviceRequestReleaseWaitTimeout)
+		ticker := time.NewTicker(25 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			ue.Lock()
+			stillPending := ue.S1ReleasePending
+			attachStep := ue.AttachStep
+			ue.Unlock()
+
+			if attachStep != uecontext.AttachStepWaitingICSRespSR {
+				log.Info("s1ap: resume ICS cancelled before release cleared",
+					zap.Uint32("old_enb_ue_id", oldENBUEID),
+					zap.Uint32("new_enb_ue_id", newENBUEID),
+					zap.Uint8("attach_step", attachStep))
+				return
+			}
+			if !stillPending {
+				break
+			}
+			if time.Now().After(deadline) {
+				log.Warn("s1ap: resume ICS proceeding after release wait timeout",
+					zap.Uint32("old_enb_ue_id", oldENBUEID),
+					zap.Uint32("new_enb_ue_id", newENBUEID),
+					zap.Duration("timeout", serviceRequestReleaseWaitTimeout))
+				break
+			}
+			<-ticker.C
+		}
+		send()
+	}()
 }
 
 func sortedDedicatedBearerEBIsLocked(ue *uecontext.Context) []uint8 {
@@ -518,11 +1077,19 @@ func sortedPDNContextsLocked(ue *uecontext.Context) []*uecontext.PDNContext {
 	return out
 }
 
-func defaultBearerQCIForAPN(apn string) uint8 {
-	if apn == "ims" {
-		return 5
+func subscriberAPNConfigForResumeLocked(ue *uecontext.Context, apn string) (uecontext.SubscriberAPNConfig, bool) {
+	if ue.SubscriberAPNConfigs == nil {
+		return uecontext.SubscriberAPNConfig{}, false
 	}
-	return 9
+	if cfg, ok := ue.SubscriberAPNConfigs[apn]; ok {
+		return cfg, true
+	}
+	for candidateAPN, cfg := range ue.SubscriberAPNConfigs {
+		if strings.EqualFold(candidateAPN, apn) {
+			return cfg, true
+		}
+	}
+	return uecontext.SubscriberAPNConfig{}, false
 }
 
 func serviceRequestKSI(d *emm.ServiceRequestMACDetails) uint8 {
@@ -581,6 +1148,18 @@ func serviceRequestComputedShortMACHex(d *emm.ServiceRequestMACDetails) string {
 	return hex.EncodeToString(d.ComputedShortMAC)
 }
 
+func isServiceRequestResumeStep(step uint8) bool {
+	return step == uecontext.AttachStepWaitingICSRespSR
+}
+
+func isTAUActiveResumeStep(step uint8) bool {
+	return step == uecontext.AttachStepWaitingICSRespTAU
+}
+
+func isResumeICSAttachStep(step uint8) bool {
+	return isServiceRequestResumeStep(step) || isTAUActiveResumeStep(step)
+}
+
 func serviceRequestExpectedShortMACHex(d *emm.ServiceRequestMACDetails) string {
 	if d == nil {
 		return ""
@@ -600,12 +1179,7 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 
 	mmeUEID := ue.MMEUES1APID
 	imsi := ue.IMSI
-
-	mbrSGWCTEID := ue.SGWC_TEID
-	mbrSGWAddr := ue.SGWAddress
-	mbrEBI := ue.DefaultEBI
-	mbrENBUTEID := ue.ENBU_TEID
-	mbrENBUIP := append(net.IP(nil), ue.ENBU_IP...)
+	mbrGroups := serviceRequestMBRGroupsLocked(ue)
 
 	ue.Unlock()
 
@@ -614,24 +1188,55 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 		metrics.PagingTotal.WithLabelValues("success").Inc()
 	}
 	log.Info("s1ap: Service Request re-established", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
+	s.noteDDNResumeInProgress(ue)
+	s.logPostICSDebugWindow(ue, "service_request_reestablished")
 
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateRecovered, "ESTABLISHED")
 	s.ResumePendingNetworkBearerProcedures(ue)
 
-	if mbrSGWCTEID != 0 && mbrEBI != 0 && mbrENBUTEID != 0 {
+	for _, group := range mbrGroups {
+		if group.sgwcTEID == 0 || len(group.bearers) == 0 {
+			continue
+		}
 		mbr := &gtpv2.ModifyBearerRequest{
-			SGWAddress: mbrSGWAddr,
-			SGWC_TEID:  mbrSGWCTEID,
-			EBI:        mbrEBI,
-			ENBU_TEID:  mbrENBUTEID,
-			ENBU_IP:    mbrENBUIP,
+			SGWAddress: group.sgwAddr,
+			SGWC_TEID:  group.sgwcTEID,
+			Bearers:    append([]gtpv2.ModifyBearer(nil), group.bearers...),
 			RATType:    gtpv2.RATTypeEUTRAN,
 		}
-		go func() {
-			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
-				s.log.Warn("s1ap: ServiceRequest: SendMBR failed", zap.Error(err))
-			}
-		}()
+		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
+			s.log.Warn("s1ap: ServiceRequest: SendMBR failed", zap.Error(err))
+		}
+	}
+}
+
+func (s *Server) handleActiveTAUReestablished(ue *uecontext.Context, log *zap.Logger) {
+	ue.Lock()
+	ue.SetEMMState(emm.StateRegistered)
+	ue.AttachStep = uecontext.AttachStepNone
+
+	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	mbrGroups := serviceRequestMBRGroupsLocked(ue)
+
+	ue.Unlock()
+
+	log.Info("s1ap: Active-flag TAU access re-established", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
+	s.logPostICSDebugWindow(ue, "tau_active_reestablished")
+
+	for _, group := range mbrGroups {
+		if group.sgwcTEID == 0 || len(group.bearers) == 0 {
+			continue
+		}
+		mbr := &gtpv2.ModifyBearerRequest{
+			SGWAddress: group.sgwAddr,
+			SGWC_TEID:  group.sgwcTEID,
+			Bearers:    append([]gtpv2.ModifyBearer(nil), group.bearers...),
+			RATType:    gtpv2.RATTypeEUTRAN,
+		}
+		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
+			s.log.Warn("s1ap: ActiveTAU: SendMBR failed", zap.Error(err))
+		}
 	}
 }
 

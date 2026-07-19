@@ -14,25 +14,22 @@ import (
 
 // SendPUR sends a Purge-UE-Request to the HSS (on UE detach).
 func (h *Handlers) SendPUR(imsi string) error {
+	if !h.cfg.SendPUROnDetach {
+		h.log.Debug("s6a: PUR disabled by config", zap.String("imsi", imsi))
+		return nil
+	}
+
 	conn, err := h.getConn()
 	if err != nil {
 		return err
 	}
 
-	meta, _, ok := peerMeta(conn)
+	host, realm, ok := peerMeta(conn)
 	if !ok {
 		return fmt.Errorf("s6a: peer metadata unavailable")
 	}
 
-	sid := h.newSessionID(imsi)
-	m := diam.NewRequest(diam.PurgeUE, appIDS6a, dict.Default)
-	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sid))
-	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
-	m.NewAVP(avp.DestinationHost, avp.Mbit, 0, datatype.DiameterIdentity(meta))
-	m.NewAVP(avp.DestinationRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
-	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
-	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1))
+	m := h.buildPUR(imsi, host, realm)
 
 	if _, err := m.WriteTo(conn); err != nil {
 		return fmt.Errorf("s6a: PUR write: %w", err)
@@ -41,6 +38,18 @@ func (h *Handlers) SendPUR(imsi string) error {
 	metrics.S6aRequestsTotal.WithLabelValues("PUR", "sent").Inc()
 	h.log.Info("s6a: PUR sent", zap.String("imsi", imsi))
 	return nil
+}
+
+func (h *Handlers) buildPUR(imsi, destHost, destRealm string) *diam.Message {
+	sid := h.newSessionID(imsi)
+	m := diam.NewRequest(diam.PurgeUE, appIDS6a, dict.Default)
+	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sid))
+	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
+	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	h.addDestinationRouting(m, destHost, destRealm)
+	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
+	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1))
+	return m
 }
 
 func (h *Handlers) handlePUA(_ diam.Conn, m *diam.Message) {

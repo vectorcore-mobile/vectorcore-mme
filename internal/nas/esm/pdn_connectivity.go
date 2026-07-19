@@ -266,12 +266,20 @@ func DecodeActivateDefaultEPSBearerContextAccept(data []byte) (*ActivateDefaultE
 // EncodePDNConnectivityReject encodes an ESM PDN Connectivity Reject.
 // Phase 1: the MME stubs PDN setup. PTI is the Procedure Transaction ID from the request.
 func EncodePDNConnectivityReject(pti uint8, cause uint8) []byte {
-	return []byte{
+	return EncodePDNConnectivityRejectWithBackoff(pti, cause, nil)
+}
+
+func EncodePDNConnectivityRejectWithBackoff(pti uint8, cause uint8, backoff *uint8) []byte {
+	buf := []byte{
 		PDEPSSessionMgmt, // PD = ESM, bearer ID = 0
 		pti,              // Procedure Transaction ID
 		MsgPDNConnectivityReject,
 		cause,
 	}
+	if backoff != nil {
+		buf = append(buf, 0x37, *backoff)
+	}
+	return buf
 }
 
 func EncodePDNDisconnectReject(pti uint8, cause uint8) []byte {

@@ -107,7 +107,17 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 		}()
 	}
 
-	msg, erabValue, err := BuildERABSetupRequest(mmeUEID, enbS1APID, nil, items)
+	downlink, uplink, err := subscriberUEAMBR(ue)
+	if err != nil {
+		if transactionID != "" {
+			s.unregisterPendingERABProcedure(ue, transactionID)
+		}
+		return err
+	}
+	msg, erabValue, err := BuildERABSetupRequest(mmeUEID, enbS1APID, &UEAggregateMaximumBitrate{
+		Downlink: downlink,
+		Uplink:   uplink,
+	}, items)
 	if err != nil {
 		if transactionID != "" {
 			s.unregisterPendingERABProcedure(ue, transactionID)
@@ -115,7 +125,7 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 		return err
 	}
 	for _, item := range items {
-		s.log.Info("s1ap: E-RAB Setup Request item",
+		s.log.Debug("s1ap: E-RAB Setup Request item",
 			zap.Uint32("mme_ue_id", mmeUEID),
 			zap.Uint32("enb_ue_id", enbS1APID),
 			zap.Uint64("s1_binding_generation", bindingGeneration),
@@ -506,9 +516,17 @@ func decodeERABSetupResponse(_ *pdu.PDU, ieList []pdu.ProtocolIE) (*ERABSetupRes
 		ieHex = append(ieHex, hex.EncodeToString(ie.Value))
 		switch ie.ID {
 		case pdu.IEMMEUES1APID:
-			resp.MMEUEID, _ = ies.DecodeMMEUEApID(ie.Value)
+			v, err := ies.DecodeMMEUEApID(ie.Value)
+			if err != nil {
+				return nil, ieIDs, ieLengths, ieHex, unknownIEs, len(setupList) > 0, hex.EncodeToString(setupList), len(failedList) > 0, hex.EncodeToString(failedList), fmt.Errorf("decode MME-UE-S1AP-ID: %w", err)
+			}
+			resp.MMEUEID = v
 		case pdu.IEENBS1APID:
-			resp.ENBUEID, _ = ies.DecodeENBUEApID(ie.Value)
+			v, err := ies.DecodeENBUEApID(ie.Value)
+			if err != nil {
+				return nil, ieIDs, ieLengths, ieHex, unknownIEs, len(setupList) > 0, hex.EncodeToString(setupList), len(failedList) > 0, hex.EncodeToString(failedList), fmt.Errorf("decode eNB-UE-S1AP-ID: %w", err)
+			}
+			resp.ENBUEID = v
 		case pdu.IEERABSetupListBearerSURes:
 			setupList = ie.Value
 		case pdu.IEERABFailedToSetupListBearerSURes:
@@ -570,20 +588,8 @@ func (s *Server) handleERABSetupResponse(remoteAddr string, p *pdu.PDU, raw []by
 		zap.String("remote", remoteAddr),
 		zap.Uint32("mme_ue_id", resp.MMEUEID),
 		zap.Uint32("enb_ue_id", resp.ENBUEID))
-	ue, ok := s.ueManager.GetByMMEID(resp.MMEUEID)
+	ue, ok := s.findUEForUEAssociatedMessage(remoteAddr, p, resp.MMEUEID, resp.ENBUEID)
 	if !ok {
-		log.Warn("s1ap: E-RAB Setup Response UE not found",
-			zap.Uint32("procedure_code", uint32(p.ProcedureCode)),
-			zap.String("pdu_choice", p.Type.String()),
-			zap.String("criticality", p.Criticality.String()),
-			zap.String("raw_s1ap_hex", hex.EncodeToString(raw)),
-			zap.Int("ie_count", len(ieList)),
-			zap.Uint16s("ie_ids", ieIDs),
-			zap.Ints("ie_lengths", ieLengths),
-			zap.Bool("setup_list_present", setupPresent),
-			zap.String("setup_list_hex", setupHex),
-			zap.Bool("failed_list_present", failedPresent),
-			zap.String("failed_list_hex", failedHex))
 		return
 	}
 	ue.Lock()
@@ -593,7 +599,7 @@ func (s *Server) handleERABSetupResponse(remoteAddr string, p *pdu.PDU, raw []by
 		log.Warn("s1ap: E-RAB Setup Response contains unsupported IEs",
 			zap.Strings("unknown_ies", unknownIEs))
 	}
-	log.Info("s1ap: E-RAB Setup Response decoded",
+	log.Debug("s1ap: E-RAB Setup Response decoded",
 		zap.Uint32("procedure_code", uint32(p.ProcedureCode)),
 		zap.String("pdu_choice", p.Type.String()),
 		zap.String("criticality", p.Criticality.String()),
@@ -614,7 +620,7 @@ func (s *Server) handleERABSetupResponse(remoteAddr string, p *pdu.PDU, raw []by
 	for _, result := range resp.Successful {
 		successEBIs = append(successEBIs, result.EBI)
 		received[result.EBI] = struct{}{}
-		log.Info("s1ap: E-RAB Setup Response item",
+		log.Debug("s1ap: E-RAB Setup Response item",
 			zap.Uint8("ebi", result.EBI),
 			zap.Bool("success", true),
 			zap.String("enb_s1u_ip", result.ENBS1UAddr.String()),
@@ -624,7 +630,7 @@ func (s *Server) handleERABSetupResponse(remoteAddr string, p *pdu.PDU, raw []by
 	for _, result := range resp.Failed {
 		failedEBIs = append(failedEBIs, result.EBI)
 		received[result.EBI] = struct{}{}
-		log.Info("s1ap: E-RAB Setup Response item",
+		log.Debug("s1ap: E-RAB Setup Response item",
 			zap.Uint8("ebi", result.EBI),
 			zap.Bool("success", false),
 			zap.Uint8("cause_group", result.CauseGroup),
@@ -645,7 +651,7 @@ func (s *Server) handleERABSetupResponse(remoteAddr string, p *pdu.PDU, raw []by
 		return
 	}
 	matchedExpected := sortedExpectedEBIs(proc.ExpectedEBIs)
-	log.Info("s1ap: E-RAB Setup Response correlated",
+	log.Debug("s1ap: E-RAB Setup Response correlated",
 		zap.Uint8s("received_success_ebis", successEBIs),
 		zap.Uint8s("received_failed_ebis", failedEBIs),
 		zap.String("matched_transaction_id", proc.TransactionID),
@@ -802,7 +808,7 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 		}
 		ue.Unlock()
 		if nasAccepted && erabEstablished && !modifyBearerSent {
-			log.Info("s1ap: IMS default bearer access ready, resuming linked Create Bearer before MBR",
+			log.Debug("s1ap: IMS default bearer access ready, resuming linked Create Bearer before MBR",
 				zap.Uint32("mme_ue_id", ue.MMEUES1APID),
 				zap.String("imsi", ue.IMSI),
 				zap.String("apn", target.APN),
@@ -816,7 +822,7 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 			s.resumePendingCreateBearersForLinkedEBI(ue, ebi, "linked_access_ready")
 			return
 		}
-		log.Info("s1ap: IMS default bearer waiting for linked Create Bearer completion before MBR",
+		log.Debug("s1ap: IMS default bearer waiting for linked Create Bearer completion before MBR",
 			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
 			zap.String("imsi", ue.IMSI),
 			zap.String("apn", target.APN),
@@ -838,7 +844,7 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 			}
 		}
 		ue.Unlock()
-		log.Info("s1ap: IMS default bearer waiting for completion",
+		log.Debug("s1ap: IMS default bearer waiting for completion",
 			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
 			zap.String("imsi", ue.IMSI),
 			zap.String("apn", target.APN),
@@ -857,7 +863,7 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 		apn := target.APN
 		imsi := ue.IMSI
 		ue.Unlock()
-		log.Info("s1ap: IMS default bearer waiting for linked bearer settle before MBR",
+		log.Debug("s1ap: IMS default bearer waiting for linked bearer settle before MBR",
 			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
 			zap.String("imsi", imsi),
 			zap.String("apn", apn),
@@ -877,7 +883,7 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 	})
 	ue.Unlock()
 
-	log.Info("s1ap: IMS default bearer ready; deferring standalone MBR until linked bearer activity settles",
+	log.Debug("s1ap: IMS default bearer ready; deferring standalone MBR until linked bearer activity settles",
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("apn", apn),
@@ -930,7 +936,7 @@ func (s *Server) sendIMSModifyBearerNow(ue *uecontext.Context, ebi uint8, trigge
 	ue.StopTimer(imsModifyBearerSettleTimerName(ebi))
 	ue.Unlock()
 
-	log.Info("s1ap: sending IMS S11 Modify Bearer Request",
+	log.Debug("s1ap: sending IMS S11 Modify Bearer Request",
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("apn", apn),

@@ -108,7 +108,7 @@ func TestBuildERABSetupRequestMatchesPeerDefaultBearerSemantics(t *testing.T) {
 		t.Fatalf("built item semantics differ:\n got %+v\nwant %+v", built.Items[0], item)
 	}
 	if !bytes.Equal(built.Items[0].RawItemBody, item.RawItemBody) {
-			t.Fatalf("built EBI 6 item body differs from reference fixture:\n got %x\nwant %x",
+		t.Fatalf("built EBI 6 item body differs from reference fixture:\n got %x\nwant %x",
 			built.Items[0].RawItemBody, item.RawItemBody)
 	}
 }
@@ -181,6 +181,29 @@ func TestBuildCurrentIMSDefaultBearerERABSetupDecodes(t *testing.T) {
 	}
 	if got.RawFirstByte != 0x0c {
 		t.Fatalf("first E-RAB item body byte got %#02x, want 0x0c", got.RawFirstByte)
+	}
+}
+
+func TestBuildERABSetupRequestUsesProvidedUEAMBR(t *testing.T) {
+	raw, _, err := BuildERABSetupRequest(1, 2, &UEAggregateMaximumBitrate{
+		Downlink: 1530000,
+		Uplink:   3850000,
+	}, []ERABSetupItem{{
+		EBI:                     6,
+		QCI:                     5,
+		ARPPriority:             8,
+		PreemptionVulnerability: true,
+		SGWS1UIPv4:              net.ParseIP("10.90.250.59"),
+		SGWS1UTEID:              0x570c0dad,
+		NASPDU:                  []byte{0x27, 0x62, 0x00, 0xc2},
+	}})
+	if err != nil {
+		t.Fatalf("BuildERABSetupRequest: %v", err)
+	}
+	req := decodeERABSetupRequest(t, raw)
+	want := ies.EncodeUEAggregateMaxBitrate(1530000, 3850000)
+	if !bytes.Equal(req.UEAMBR, want) {
+		t.Fatalf("UE AMBR got %x, want %x", req.UEAMBR, want)
 	}
 }
 
@@ -300,6 +323,39 @@ func TestDecodeMultiItemERABSetupResponse(t *testing.T) {
 	if len(resp.Successful) != 3 {
 		t.Fatalf("successful result count got %d, want 3", len(resp.Successful))
 	}
+}
+
+func TestERABSetupResponseWrongPairSendsErrorIndication(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.10.9.1:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.ENBS1APID = 1
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(2)},
+		{ID: pdu.IEERABSetupListBearerSURes, Criticality: aper.CriticalityIgnore, Value: encodeERABSetupResponseListForTest([]ERABSetupSuccess{
+			{EBI: 6, ENBS1UAddr: net.ParseIP("192.168.105.247").To4(), ENBS1UTEID: 0xa8b9f5cf},
+		})},
+	}
+
+	srv.handleERABSetupResponse(addr, &pdu.PDU{
+		Type:          pdu.PDUTypeSuccessfulOutcome,
+		ProcedureCode: pdu.ProcERABSetup,
+		Criticality:   aper.CriticalityIgnore,
+	}, nil, ieList)
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnknownPairUES1APID)
 }
 
 func TestDecodeERABSetupResponseWithOnlyFailureList(t *testing.T) {

@@ -81,8 +81,184 @@ s6a:
 	if cfg.Operator.Name.Encoding != "gsm7" {
 		t.Fatalf("operator.name.encoding = %q, want gsm7", cfg.Operator.Name.Encoding)
 	}
+	if !cfg.S6a.SendPUROnDetach {
+		t.Fatal("s6a.send_pur_on_detach default got false, want true")
+	}
+	if cfg.NF.RelativeMMECapacity != 255 {
+		t.Fatalf("nf.relative_mme_capacity default got %d, want 255", cfg.NF.RelativeMMECapacity)
+	}
 	if cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS {
 		t.Fatal("nas.eps_network_feature_support.ims_voice_over_ps default got true, want false")
+	}
+}
+
+func TestLoadNFRelativeMMECapacity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+  relative_mme_capacity: 128
+s6a:
+  peer_address: "127.0.0.1:3868"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if got, want := cfg.NF.RelativeMMECapacity, uint8(128); got != want {
+		t.Fatalf("nf.relative_mme_capacity got %d, want %d", got, want)
+	}
+}
+
+func TestLoadNFMMEName(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+  mme_name: "vectorcore-mme"
+s6a:
+  peer_address: "127.0.0.1:3868"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if got, want := cfg.NF.MMEName, "vectorcore-mme"; got != want {
+		t.Fatalf("nf.mme_name got %q, want %q", got, want)
+	}
+}
+
+func TestLoadS6aSendPURToggle(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+  send_pur_on_detach: false
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.S6a.SendPUROnDetach {
+		t.Fatal("s6a.send_pur_on_detach got true, want false")
+	}
+}
+
+func TestLoadS6aRequestShapingDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if !cfg.S6a.Routing.SendDestinationHost {
+		t.Fatal("s6a.routing.send_destination_host default got false, want true")
+	}
+	if cfg.S6a.AIR.RequestedVectors != 1 {
+		t.Fatalf("s6a.air.requested_vectors default got %d, want 1", cfg.S6a.AIR.RequestedVectors)
+	}
+	if !cfg.S6a.AIR.ImmediateResponsePreferred {
+		t.Fatal("s6a.air.immediate_response_preferred default got false, want true")
+	}
+	if cfg.S6a.ULR.Flags != 0x02 {
+		t.Fatalf("s6a.ulr.flags default got %d, want 2", cfg.S6a.ULR.Flags)
+	}
+}
+
+func TestLoadS6aRequestShapingOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+  routing:
+    send_destination_host: false
+  air:
+    requested_vectors: 3
+    immediate_response_preferred: false
+  ulr:
+    flags: 18
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.S6a.Routing.SendDestinationHost {
+		t.Fatal("s6a.routing.send_destination_host got true, want false")
+	}
+	if cfg.S6a.AIR.RequestedVectors != 3 {
+		t.Fatalf("s6a.air.requested_vectors got %d, want 3", cfg.S6a.AIR.RequestedVectors)
+	}
+	if cfg.S6a.AIR.ImmediateResponsePreferred {
+		t.Fatal("s6a.air.immediate_response_preferred got true, want false")
+	}
+	if cfg.S6a.ULR.Flags != 18 {
+		t.Fatalf("s6a.ulr.flags got %d, want 18", cfg.S6a.ULR.Flags)
+	}
+}
+
+func TestLoadS6aRequestedVectorsRejectsZero(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+  air:
+    requested_vectors: 0
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load() expected invalid s6a.air.requested_vectors error")
 	}
 }
 
@@ -110,6 +286,85 @@ nas:
 	}
 	if !cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS {
 		t.Fatal("ims_voice_over_ps got false, want true")
+	}
+}
+
+func TestLoadNASTimerDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.NAS.Timers.T3402 != 720 || cfg.NAS.Timers.T3396 != 720 ||
+		cfg.NAS.Timers.T3412 != 3240 || cfg.NAS.Timers.T3423 != 720 {
+		t.Fatalf("unexpected NAS timer defaults: %+v", cfg.NAS.Timers)
+	}
+}
+
+func TestLoadNASTimers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+nas:
+  timers:
+    t3402: 720
+    t3396: 1800
+    t3412: 3240
+    t3423: 720
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.NAS.Timers.T3402 != 720 || cfg.NAS.Timers.T3396 != 1800 ||
+		cfg.NAS.Timers.T3412 != 3240 || cfg.NAS.Timers.T3423 != 720 {
+		t.Fatalf("unexpected NAS timers: %+v", cfg.NAS.Timers)
+	}
+}
+
+func TestLoadNASTimersInvalid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	data := []byte(`
+nf:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  mcc: "001"
+  mnc: "01"
+s6a:
+  peer_address: "127.0.0.1:3868"
+nas:
+  timers:
+    t3412: 61
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load() expected invalid nas.timers.t3412 error")
 	}
 }
 

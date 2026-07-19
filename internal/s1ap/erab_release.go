@@ -237,12 +237,8 @@ func (s *Server) handleERABReleaseComplete(remoteAddr string, p *pdu.PDU, raw []
 			zap.String("raw_s1ap_hex", fmt.Sprintf("%x", raw)))
 		return
 	}
-	ue, ok := s.ueManager.GetByMMEID(resp.MMEUEID)
+	ue, ok := s.findUEForUEAssociatedMessage(remoteAddr, p, resp.MMEUEID, resp.ENBUEID)
 	if !ok {
-		log.Warn("s1ap: E-RAB Release Response UE not found",
-			zap.Uint32("mme_ue_id", resp.MMEUEID),
-			zap.Uint8s("released_ebis", resp.Released),
-			zap.Uint8s("failed_ebis", resp.Failed))
 		return
 	}
 	received := make(map[uint8]struct{}, len(resp.Released)+len(resp.Failed))

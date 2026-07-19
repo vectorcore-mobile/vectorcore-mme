@@ -134,6 +134,13 @@ func DecodeVisibleStringExt(r *BitReader, minLen, maxLen int) (string, error) {
 	return DecodeVisibleString(r, -1, -1)
 }
 
+// EncodeVisibleStringExt encodes an extensible VisibleString with a root size constraint.
+// Root values are encoded with extension bit 0 and then as a regular VisibleString.
+func EncodeVisibleStringExt(w *BitWriter, s string, minLen, maxLen int) error {
+	w.WriteBit(0)
+	return EncodeUTF8String(w, s, minLen, maxLen)
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a

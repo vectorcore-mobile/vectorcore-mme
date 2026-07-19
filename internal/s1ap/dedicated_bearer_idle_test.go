@@ -208,8 +208,33 @@ func makeIdleDedicatedBearerUE(t *testing.T, srv *Server, enbAddr string) (*ueco
 	ue.EMMState = emm.StateRegistered
 	ue.ECMState = emm.ECMIdle
 	ue.S1BindingState = uecontext.S1BindingReleased
+	ue.APN = "internet"
 	ue.DefaultEBI = 5
 	ue.LocalS11TEID = 0x0f
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 gtpv2.PDNTypeIPv4,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: true,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+		"ims": {
+			ServiceSelection:        "ims",
+			PDNType:                 gtpv2.PDNTypeIPv4,
+			QCI:                     5,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: true,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+	}
 	ue.KNASint = make([]byte, 16)
 	ue.KNASenc = make([]byte, 16)
 	ue.IntAlg = 0
@@ -226,6 +251,15 @@ func makeIdleDedicatedBearerUE(t *testing.T, srv *Server, enbAddr string) (*ueco
 	}
 	ue.Unlock()
 	srv.ueManager.Register(ue)
+	srv.ueManager.UpdateGUTI(ue, &emm.GUTI{
+		PLMN:  [3]byte{0x00, 0xF1, 0x10},
+		MMEGI: 1,
+		MMEC:  1,
+		MTMSI: 0xAABBCCDD,
+	})
+	ue.Lock()
+	ue.TAI = &emm.TAI{PLMN: [3]byte{0x00, 0xF1, 0x10}, TAC: 1}
+	ue.Unlock()
 	ch := registerTestENBWithChan(srv, enbAddr)
 	return ue, ch
 }
@@ -742,6 +776,45 @@ func TestDedicatedBearerWaitsForLinkedBearerReadiness(t *testing.T) {
 	}
 }
 
+func TestEquivalentCreateBearerWhileWaitingForLinkUsesLatestSequenceOnTimeout(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	enbAddr := "10.0.0.8:36412"
+	ue, _ := makeIdleDedicatedBearerUE(t, srv, enbAddr)
+
+	ue.Lock()
+	ue.ECMState = emm.ECMConnected
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.ENBGlobalID = enbAddr
+	ue.ENBS1APID = 91
+	ue.PDNs["ims"].ERABEstablished = false
+	ue.PDNs["ims"].ModifyBearerAccepted = false
+	ue.Unlock()
+
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2753, 0x11111111, 0x22222222))
+	key := singlePendingCreateKey(t, ue)
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2754, 0x33333333, 0x44444444))
+
+	ue.Lock()
+	tx := ue.PendingBearerTransactions[key]
+	if tx == nil {
+		ue.Unlock()
+		t.Fatal("pending transaction missing")
+	}
+	if tx.SequenceNum != 2754 {
+		ue.Unlock()
+		t.Fatalf("collapsed transaction seq got %d, want 2754", tx.SequenceNum)
+	}
+	ue.Unlock()
+
+	srv.onCreateBearerTimeout(ue, key)
+	waitForCreateResponseCount(t, mock, 1)
+	resp := mock.createResponseAt(0)
+	if resp.Seq != 2754 {
+		t.Fatalf("Create Bearer response seq got %d, want 2754", resp.Seq)
+	}
+}
+
 func TestPendingCreateBearerProceedsOnceLinkedAccessPathReady(t *testing.T) {
 	mock := &bearerResponderMock{}
 	srv := newTestServer(mock)
@@ -759,6 +832,58 @@ func TestPendingCreateBearerProceedsOnceLinkedAccessPathReady(t *testing.T) {
 	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2753, 0x11111111, 0x22222222))
 
 	waitForPDU(t, ch, "E-RAB Setup Request")
+}
+
+func TestEquivalentCreateBearerWhileWaitingResultsUsesLatestSequenceOnTimeout(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	enbAddr := "10.0.0.9:36412"
+	ue, ch := makeIdleDedicatedBearerUE(t, srv, enbAddr)
+
+	ue.Lock()
+	ue.PDNs["ims"].ModifyBearerAccepted = false
+	ue.ECMState = emm.ECMConnected
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.ENBGlobalID = enbAddr
+	ue.ENBS1APID = 88
+	ue.Unlock()
+
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2753, 0x11111111, 0x22222222))
+	waitForPDU(t, ch, "E-RAB Setup Request")
+	key := singlePendingCreateKey(t, ue)
+
+	ue.Lock()
+	tx := ue.PendingBearerTransactions[key]
+	if tx == nil {
+		ue.Unlock()
+		t.Fatal("pending transaction missing")
+	}
+	if tx.CreateState != uecontext.CreateBearerWaitingResults {
+		ue.Unlock()
+		t.Fatalf("transaction state got %s, want %s", tx.CreateState, uecontext.CreateBearerWaitingResults)
+	}
+	ue.Unlock()
+
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2754, 0x33333333, 0x44444444))
+
+	ue.Lock()
+	tx = ue.PendingBearerTransactions[key]
+	if tx == nil {
+		ue.Unlock()
+		t.Fatal("pending transaction missing after collapse")
+	}
+	if tx.SequenceNum != 2754 {
+		ue.Unlock()
+		t.Fatalf("collapsed transaction seq got %d, want 2754", tx.SequenceNum)
+	}
+	ue.Unlock()
+
+	srv.onCreateBearerTimeout(ue, key)
+	waitForCreateResponseCount(t, mock, 1)
+	resp := mock.createResponseAt(0)
+	if resp.Seq != 2754 {
+		t.Fatalf("Create Bearer response seq got %d, want 2754", resp.Seq)
+	}
 }
 
 func TestMaybeAdvanceDefaultBearerResumesPendingCreateBearerWhenMBRDeferred(t *testing.T) {

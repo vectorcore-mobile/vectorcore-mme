@@ -32,6 +32,75 @@ func (s S1BindingState) String() string {
 	}
 }
 
+type DDNPagingStatus string
+
+const (
+	DDNPagingPending          DDNPagingStatus = "pending"
+	DDNPagingPagingSent       DDNPagingStatus = "paging-sent"
+	DDNPagingServiceRequest   DDNPagingStatus = "service-request-received"
+	DDNPagingResumeInProgress DDNPagingStatus = "resume-in-progress"
+	DDNPagingCompleted        DDNPagingStatus = "completed"
+	DDNPagingTimedOut         DDNPagingStatus = "timed-out"
+	DDNPagingFailed           DDNPagingStatus = "failed"
+)
+
+type DDNPagingTransaction struct {
+	ID                 string
+	SourcePeer         string
+	MMEControlTEID     uint32
+	OriginalSequence   uint32
+	InitialBearerEBI   uint8
+	ARPRaw             uint8
+	FirstDDNAt         time.Time
+	LastDDNAt          time.Time
+	PagingAttemptCount uint8
+	LastPagingAt       time.Time
+	Status             DDNPagingStatus
+	BindingGeneration  uint64
+	LastAckCause       uint8
+	FailureCause       uint8
+	FailureReason      string
+	JoinedBearers      map[uint8]struct{}
+	DedupKeys          map[string]time.Time
+}
+
+type RABRSessionResult string
+
+const (
+	RABRSessionPending               RABRSessionResult = "pending"
+	RABRSessionAccepted             RABRSessionResult = "accepted"
+	RABRSessionContextNotFound      RABRSessionResult = "context-not-found"
+	RABRSessionTimedOut             RABRSessionResult = "timed-out"
+	RABRSessionLocalValidationFailed RABRSessionResult = "local-validation-failed"
+	RABRSessionPeerError            RABRSessionResult = "peer-error"
+)
+
+type S1ReleaseRABRSession struct {
+	Key                        string
+	APN                        string
+	DefaultEBI                 uint8
+	MMES11TEID                 uint32
+	SGWS11TEID                 uint32
+	SGWS11Addr                 string
+	SessionState               string
+	LastSuccessfulS11Procedure string
+	Sequence                   uint32
+	SentAt                     time.Time
+	ResponseAt                 time.Time
+	ResponseHeaderTEID         uint32
+	Cause                      uint8
+	Result                     RABRSessionResult
+}
+
+type S1ReleaseRABRTransaction struct {
+	ID            string
+	StartedAt     time.Time
+	ReleaseCause  string
+	CommandSent   bool
+	PolicyApplied string
+	Sessions      map[string]*S1ReleaseRABRSession
+}
+
 // Context holds all runtime state for a single attached UE.
 // It is protected by mu; all fields must be accessed under mu.
 type Context struct {
@@ -51,6 +120,8 @@ type Context struct {
 	S1ReleaseENBID      uint32
 	S1ReleaseENBAddr    string
 	S1ReleaseGeneration uint64
+	S1ReleaseCauseGroup uint8
+	S1ReleaseCauseValue uint8
 
 	// Identity
 	IMSI string
@@ -78,10 +149,17 @@ type Context struct {
 	KNASenc []byte
 	IntAlg  uint8 // selected EIA (0,1,2)
 	EncAlg  uint8 // selected EEA (0,1,2)
+	NASKSI  uint8 // 0..6 valid, 7 means "no key available"
 
 	// NAS COUNTs
 	ULNASCount security.NASCount
 	DLNASCount security.NASCount
+
+	// Access-stratum security context snapshot used for the next resume ICS.
+	// KeNB must remain tied to the UL NAS COUNT that triggered the resume.
+	KeNB                   []byte
+	KeNBULCount            uint32
+	KeNBSnapshotGeneration uint64
 
 	// UE network capability (raw bytes from Attach Request)
 	UENetworkCapability []byte
@@ -117,6 +195,8 @@ type Context struct {
 	// Subscription data (from HSS via S6a ULR/ULA)
 	MSISDN               string
 	APN                  string
+	UEAMBRDown           uint32
+	UEAMBRUp             uint32
 	SubscriberAPNs       []string
 	SubscriberAPNConfigs map[string]SubscriberAPNConfig
 
@@ -152,6 +232,10 @@ type Context struct {
 	NH  []byte // 32-byte Next Hop key; nil until first ICS sent
 	NCC uint8  // Next hop Chaining Counter 0..7
 
+	// Short debug watch after successful ICS to catch post-restore mutations.
+	PostICSDebugUntil      time.Time
+	PostICSDebugGeneration uint64
+
 	// S1 handover state (transient, not persisted to DB)
 	HOState             HOState
 	HOSrcENBAddr        string // source eNB remote addr (preserved during HO)
@@ -167,7 +251,10 @@ type Context struct {
 	S10OldMMETEID uint32 // old MME's S10 local TEID (goes in CTX-Ack header)
 
 	// Paging state
-	PagingAttempts uint8 // 0 = not paging; >0 = paging cycle active
+	PagingAttempts   uint8 // 0 = not paging; >0 = paging cycle active
+	DDNPaging        *DDNPagingTransaction
+	DefaultPagingDRX uint8
+	S1ReleaseRABR    *S1ReleaseRABRTransaction
 
 	// Active timers
 	timers map[string]*time.Timer
@@ -198,6 +285,10 @@ type PDNContext struct {
 	DisconnectPTI            uint8
 	PDNType                  uint8
 	DefaultEBI               uint8
+	QCI                      uint8
+	ARPPriority              uint8
+	PreemptionCapability     bool
+	PreemptionVulnerability  bool
 	LocalS11TEID             uint32
 	SGWAddress               string
 	SGWC_TEID                uint32
@@ -219,6 +310,8 @@ type PDNContext struct {
 	DisconnectRequested      bool
 	DisconnectNASAccepted    bool
 	State                    string
+	SessionCreatedAt         time.Time
+	LastSuccessfulS11Procedure string
 }
 
 type CreateBearerState string
@@ -320,6 +413,7 @@ func NewContext(mmeID uint32) *Context {
 		timers:                    make(map[string]*time.Timer),
 		CreatedAt:                 time.Now(),
 		UpdatedAt:                 time.Now(),
+		NASKSI:                    0x07,
 	}
 }
 
@@ -347,6 +441,12 @@ func (c *Context) StoreAuthChallenge(rand, xres, autn, kasme []byte) {
 	c.XRES = xres
 	c.AUTN = autn
 	c.KASME = kasme
+	if c.NASKSI < 6 {
+		c.NASKSI++
+	} else {
+		c.NASKSI = 0
+	}
+	c.UpdatedAt = time.Now()
 }
 
 // ActivateSecurityContext derives NAS keys from KASME and stores them.
@@ -420,7 +520,8 @@ const (
 	AttachStepWaitingAttachCplt     uint8 = 7  // Attach Accept delivered, waiting Attach Complete
 	AttachStepWaitingTAUComplete    uint8 = 8  // TAU Accept sent, waiting TAU Complete
 	AttachStepWaitingICSRespSR      uint8 = 9  // ICS Request sent for Service Request re-establishment
-	AttachStepWaitingULAInterMMETAU uint8 = 10 // ULR sent after inter-MME context import, waiting ULA
+	AttachStepWaitingICSRespTAU     uint8 = 10 // ICS Request sent for active-flag idle TAU resume
+	AttachStepWaitingULAInterMMETAU uint8 = 11 // ULR sent after inter-MME context import, waiting ULA
 )
 
 // NAS timer names (3GPP TS 24.301).
@@ -433,4 +534,5 @@ const (
 	TimerT3470 = "T3470" // Identity Request timer (6s)
 
 	TimerCreateBearerPrefix = "CreateBearer:"
+	TimerUpdateBearerPrefix = "UpdateBearer:"
 )

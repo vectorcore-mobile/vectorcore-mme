@@ -12,10 +12,12 @@ import (
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
+	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
@@ -35,7 +37,9 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 			g, err := ies.DecodeGlobalENBID(ie.Value)
 			if err != nil {
 				log.Error("s1ap: GlobalENBID decode error", zap.Error(err))
-				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, 0)
+				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolTransferSyntaxError,
+					criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IEGlobal_ENB_ID, TypeOfError: typeOfErrorNotUnderstood},
+				)
 				return
 			}
 			globalENBID = &g
@@ -51,19 +55,22 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 		case pdu.IESupportedTAs:
 			decoded, err := decodeSupportedTAsStrict(ie.Value)
 			if err != nil {
-				log.Warn("s1ap: SupportedTAs decode error; accepting S1Setup with empty SupportedTAs for compatibility",
+				log.Warn("s1ap: SupportedTAs decode error",
 					zap.Error(err),
 					zap.String("supported_tas_hex", hex.EncodeToString(ie.Value)))
-				supportedTAs = nil
-				supportedTAsPresent = true
-				break
+				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage,
+					criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IESupportedTAs, TypeOfError: typeOfErrorNotUnderstood},
+				)
+				return
 			}
 			supportedTAs = decoded
 			supportedTAsPresent = true
 		case pdu.IEDefaultPagingDRX:
 			if _, err := ies.DecodePagingDRX(ie.Value); err != nil {
 				log.Error("s1ap: DefaultPagingDRX decode error", zap.Error(err))
-				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+				s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage,
+					criticalityDiagnosticItem{Criticality: aper.CriticalityIgnore, IEID: pdu.IEDefaultPagingDRX, TypeOfError: typeOfErrorNotUnderstood},
+				)
 				return
 			}
 			defaultPagingDRXPresent = true
@@ -75,7 +82,17 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 			zap.Bool("global_enb_id_present", globalENBID != nil),
 			zap.Bool("supported_tas_present", supportedTAsPresent),
 			zap.Bool("default_paging_drx_present", defaultPagingDRXPresent))
-		s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, 0)
+		diagItems := make([]criticalityDiagnosticItem, 0, 3)
+		if globalENBID == nil {
+			diagItems = append(diagItems, criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IEGlobal_ENB_ID, TypeOfError: typeOfErrorMissing})
+		}
+		if !supportedTAsPresent {
+			diagItems = append(diagItems, criticalityDiagnosticItem{Criticality: aper.CriticalityReject, IEID: pdu.IESupportedTAs, TypeOfError: typeOfErrorMissing})
+		}
+		if !defaultPagingDRXPresent {
+			diagItems = append(diagItems, criticalityDiagnosticItem{Criticality: aper.CriticalityIgnore, IEID: pdu.IEDefaultPagingDRX, TypeOfError: typeOfErrorMissing})
+		}
+		s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError, diagItems...)
 		return
 	}
 
@@ -88,10 +105,11 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 
 	// Register the eNB connection
 	enb := &ENBContext{
-		GlobalENBID:  *globalENBID,
-		ENBName:      enbName,
-		SupportedTAs: supportedTAs,
-		RemoteAddr:   remoteAddr,
+		GlobalENBID:   *globalENBID,
+		ENBName:       enbName,
+		SupportedTAs:  supportedTAs,
+		RemoteAddr:    remoteAddr,
+		SetupComplete: true,
 	}
 	// We need a Conn — but in handleMessage we only have remoteAddr.
 	// The Conn is created during the SCTP accept loop. For now, we'll wire this up
@@ -158,19 +176,29 @@ func (s *Server) buildS1SetupResponseIEs() []pdu.ProtocolIE {
 	// ServedGUMMEIs (mandatory): list of GUMMEIs served by this MME
 	// Global-MME-ID, ServedGroupIDs, ServedMMECs, ServedPLMNs
 	gummeiValue := s.encodeServedGUMMEIs()
-
-	return []pdu.ProtocolIE{
-		{
+	ieList := make([]pdu.ProtocolIE, 0, 3)
+	if s.nfCfg.MMEName != "" {
+		w := aper.NewBitWriter()
+		_ = aper.EncodeVisibleStringExt(w, s.nfCfg.MMEName, 1, 150)
+		ieList = append(ieList, pdu.ProtocolIE{
+			ID:          pdu.IEMMEname,
+			Criticality: aper.CriticalityIgnore,
+			Value:       w.Bytes(),
+		})
+	}
+	ieList = append(ieList,
+		pdu.ProtocolIE{
 			ID:          pdu.IEServedGUMMEIs,
 			Criticality: aper.CriticalityReject,
 			Value:       gummeiValue,
 		},
-		{
+		pdu.ProtocolIE{
 			ID:          pdu.IERelativeMMECapacity,
 			Criticality: aper.CriticalityIgnore,
-			Value:       ies.EncodeRelativeMMECapacity(255),
+			Value:       ies.EncodeRelativeMMECapacity(s.nfCfg.RelativeMMECapacity),
 		},
-	}
+	)
+	return ieList
 }
 
 func (s *Server) encodeServedGUMMEIs() []byte {
@@ -198,13 +226,25 @@ func (s *Server) encodeServedGUMMEIs() []byte {
 	return w.Bytes()
 }
 
-func (s *Server) sendS1SetupFailure(remoteAddr string, p *pdu.PDU, group ies.CauseGroup, value uint8) {
+func (s *Server) sendS1SetupFailure(remoteAddr string, p *pdu.PDU, group ies.CauseGroup, value uint8, items ...criticalityDiagnosticItem) {
 	failureIEs := []pdu.ProtocolIE{
 		{
 			ID:          pdu.IECause,
 			Criticality: aper.CriticalityIgnore,
 			Value:       ies.EncodeCause(group, value),
 		},
+		{
+			ID:          pdu.IETimeToWait,
+			Criticality: aper.CriticalityIgnore,
+			Value:       ies.EncodeTimeToWait(ies.TimeToWaitV10s),
+		},
+	}
+	if p != nil && len(items) > 0 {
+		failureIEs = append(failureIEs, pdu.ProtocolIE{
+			ID:          pdu.IECriticalityDiagnostics,
+			Criticality: aper.CriticalityIgnore,
+			Value:       encodeCriticalityDiagnostics(p.ProcedureCode, p.Type, p.Criticality, items),
+		})
 	}
 	resp := pdu.Encode(&pdu.PDU{
 		Type:          pdu.PDUTypeUnsuccessfulOutcome,
@@ -221,14 +261,21 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 	log := s.log.With(zap.String("remote", remoteAddr), zap.String("procedure", "Reset"))
 	var causePresent bool
 	var resetTypePresent bool
+	var causeGroup ies.CauseGroup
+	var causeValue uint8
+	resetType := "unknown"
+	resetTypeRawHex := ""
 	for _, ie := range ieList {
 		switch ie.ID {
 		case pdu.IECause:
-			if _, _, err := ies.DecodeCause(ie.Value); err != nil {
+			group, cause, err := ies.DecodeCause(ie.Value)
+			if err != nil {
 				log.Warn("s1ap: Reset Cause decode error", zap.Error(err))
 				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
+			causeGroup = group
+			causeValue = cause
 			causePresent = true
 		case pdu.IEResetType:
 			if err := validateResetType(ie.Value); err != nil {
@@ -236,6 +283,8 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
+			resetType = decodeResetTypeName(ie.Value)
+			resetTypeRawHex = hex.EncodeToString(ie.Value)
 			resetTypePresent = true
 		}
 	}
@@ -253,10 +302,100 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 		s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError, diagItems...)
 		return
 	}
-	log.Info("s1ap: Reset received")
+	log.Info("s1ap: Reset received",
+		zap.String("reset_type", resetType),
+		zap.String("reset_type_raw_hex", resetTypeRawHex),
+		zap.String("cause_group_name", ies.CauseGroupName(causeGroup)),
+		zap.Uint8("cause_group", uint8(causeGroup)),
+		zap.Uint8("cause", causeValue),
+		zap.String("cause_name", ies.CauseName(causeGroup, causeValue)))
+	s.handleENBReset(remoteAddr)
 	// Send Reset Acknowledge
 	resp := pdu.BuildSuccessfulOutcome(pdu.ProcReset, aper.CriticalityReject, nil)
 	s.sendToAddr(remoteAddr, resp)
+}
+
+func (s *Server) handleENBReset(remoteAddr string) {
+	preserved := 0
+	evicted := 0
+	for _, ue := range s.ueManager.List() {
+		ue.Lock()
+		if ue.ENBGlobalID != remoteAddr {
+			ue.Unlock()
+			continue
+		}
+		emmState := ue.EMMState
+		preserveEPS := emmState == emm.StateRegistered ||
+			emmState == emm.StateTrackingAreaUpdating ||
+			emmState == emm.StateServiceRequestInitiated
+		if preserveEPS {
+			mmeID := ue.MMEUES1APID
+			enbUEID := ue.ENBS1APID
+			imsi := ue.IMSI
+			apn := ue.APN
+			releaseCause := ue.LastReleaseCause
+			if releaseCause == "" {
+				releaseCause = "s1-reset"
+			}
+			ue.LastReleaseCause = releaseCause
+			if isResumeICSAttachStep(ue.AttachStep) {
+				ue.AttachStep = uecontext.AttachStepNone
+				ue.SetEMMState(emm.StateRegistered)
+			}
+			ue.SetECMState(emm.ECMIdle)
+			ue.ENBS1APID = 0
+			ue.ENBGlobalID = ""
+			ue.S1ReleasePending = false
+			ue.S1ReleaseENBID = 0
+			ue.S1ReleaseENBAddr = ""
+			ue.S1ReleaseGeneration = 0
+			ue.S1ReleaseCauseGroup = 0
+			ue.S1ReleaseCauseValue = 0
+			ue.S1BindingState = uecontext.S1BindingReleased
+			ue.ENBU_TEID = 0
+			ue.ENBU_IP = nil
+			ue.Unlock()
+
+			s.log.Info("s1ap: preserving UE EPS context on eNB reset",
+				zap.String("imsi", imsi),
+				zap.Uint32("mme_ue_id", mmeID),
+				zap.Uint32("old_enb_ue_id", enbUEID),
+				zap.String("apn", apn),
+				zap.String("remote", remoteAddr),
+				zap.String("emm_state", emmState.String()),
+				zap.String("ecm_state", emm.ECMIdle.String()),
+				zap.String("delete_reason", "s1_reset"),
+				zap.Bool("s11_delete_required", false))
+			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_RESET")
+			s.failCreateBearersWaitingForLinkedBearer(ue, 94, "s1_reset")
+			preserved++
+			continue
+		}
+
+		mmeID := ue.MMEUES1APID
+		imsi := ue.IMSI
+		apn := ue.APN
+		ue.StopAllTimers()
+		ue.Unlock()
+
+		s.log.Info("s1ap: evicting UE on eNB reset",
+			zap.String("imsi", imsi),
+			zap.Uint32("mme_ue_id", mmeID),
+			zap.String("apn", apn),
+			zap.String("remote", remoteAddr))
+
+		s.sendDeleteSession(ue)
+		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_RESET")
+		s.ueManager.Remove(ue)
+		evicted++
+	}
+
+	if preserved > 0 || evicted > 0 {
+		s.log.Info("s1ap: eNB reset state cleared",
+			zap.String("remote", remoteAddr),
+			zap.Int("preserved_ues", preserved),
+			zap.Int("evicted_ues", evicted))
+	}
 }
 
 func validateResetType(data []byte) error {
@@ -292,6 +431,22 @@ func validateResetType(data []byte) error {
 		return fmt.Errorf("ies: unsupported ResetType choice %d", choice)
 	}
 	return nil
+}
+
+func decodeResetTypeName(data []byte) string {
+	r := aper.NewBitReader(data)
+	ext, err := r.ReadBit()
+	if err != nil || ext != 0 {
+		return "decode_error"
+	}
+	choice, err := r.ReadBit()
+	if err != nil {
+		return "decode_error"
+	}
+	if choice == 0 {
+		return "s1_interface"
+	}
+	return "part_of_s1_interface"
 }
 
 // decodeSupportedTAs is a best-effort decoder for the SupportedTAs IE.
@@ -543,29 +698,36 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 	enbS1APID := ue.ENBS1APID
 	bindingGeneration := ue.S1BindingGeneration
 	bindingState := ue.S1BindingState
-	kasme := ue.KASME
-	ulNASCount := uint32(ue.ULNASCount)
+	attachStep := ue.AttachStep
+	currentULNASCount := uint32(ue.ULNASCount)
 	ueCap := append([]byte(nil), ue.UENetworkCapability...)
+	ueRadioCapability := append([]byte(nil), ue.UERadioCapability...)
+	ueAMBRDown := ue.UEAMBRDown
+	ueAMBRUp := ue.UEAMBRUp
+	kenb := append([]byte(nil), ue.KeNB...)
+	kenbULNASCount := ue.KeNBULCount
+	kenbSource := "stored_snapshot"
+	if len(kenb) == 0 {
+		var err error
+		kenb, kenbULNASCount, err = deriveAndStoreASContextLocked(ue)
+		if err != nil {
+			ue.Unlock()
+			s.log.Error("s1ap: DeriveKeNB failed", zap.Error(err))
+			return fmt.Errorf("DeriveKeNB: %w", err)
+		}
+		kenbSource = "derived_fallback"
+	}
 	ue.Unlock()
+	procedure := resumeProcedureName(attachStep)
 	if enbAddr == "" {
 		return fmt.Errorf("s1ap: UE %d has no active S1 binding remote=%q enb_ue_id=%d state=%s generation=%d",
 			mmeUEID, enbAddr, enbS1APID, bindingState.String(), bindingGeneration)
 	}
-
-	// Derive KeNB per TS 33.401 §A.3: KDF(KASME, FC=0x11, UL_NAS_COUNT as 4-byte BE).
-	kenb, err := security.DeriveKeNB(kasme, ulNASCount)
-	if err != nil {
-		s.log.Error("s1ap: DeriveKeNB failed", zap.Error(err))
-		return fmt.Errorf("DeriveKeNB: %w", err)
+	if kenbSource == "stored_snapshot" {
+		s.logASSecuritySnapshotReused(ue)
 	}
-
-	// Pre-compute the first NH (NCC=1) for future handover preparation (TS 33.401 §A.4).
-	if nh, nhErr := security.DeriveNH(kasme, kenb); nhErr == nil {
-		ue.Lock()
-		ue.NH = nh
-		ue.NCC = 1
-		ue.Unlock()
-	}
+	comparisonKeNB := s.maybeComparisonKeNB(ue)
+	s.logICSSecurityKeySelected(ue, procedure, map[bool]string{true: "snapshot", false: "fresh_derivation"}[kenbSource == "stored_snapshot"], kenb, comparisonKeNB)
 
 	// Echo the UE's actual EEA/EIA bitmasks received in the Attach Request.
 	// UENetworkCapability byte 0 = EEA bitmap, byte 1 = EIA bitmap.
@@ -583,7 +745,12 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 
 	if len(bearers) > 0 {
 		erabValue = encodeERABList(bearers, nasPDU)
-		ambrValue := ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)
+		if ueAMBRDown == 0 || ueAMBRUp == 0 {
+			return fmt.Errorf("s1ap: UE %d missing UE AMBR for Initial Context Setup (down=%d up=%d)", mmeUEID, ueAMBRDown, ueAMBRUp)
+		}
+		downlink := uint64(ueAMBRDown)
+		uplink := uint64(ueAMBRUp)
+		ambrValue := ies.EncodeUEAggregateMaxBitrate(downlink, uplink)
 		ieList = []pdu.ProtocolIE{
 			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 			{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbS1APID)},
@@ -592,6 +759,13 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
 			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
 		}
+		if len(ueRadioCapability) > 0 {
+			ieList = append(ieList, pdu.ProtocolIE{
+				ID:          pdu.IEUERadioCapability,
+				Criticality: aper.CriticalityIgnore,
+				Value:       ies.EncodeUERadioCapability(ueRadioCapability),
+			})
+		}
 	}
 
 	msg := pdu.BuildInitiatingMessage(pdu.ProcInitialContextSetup, aper.CriticalityReject, ieList)
@@ -599,31 +773,74 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbS1APID),
 		zap.Strings("ie_list", describeS1APIEList(ieList)),
-		zap.String("ue_ambr_hex", hex.EncodeToString(findS1APIEValue(ieList, pdu.IEUEAggregateMaxBitrate))),
-		zap.Uint64("ue_ambr_downlink", 100000000),
-		zap.Uint64("ue_ambr_uplink", 100000000),
+		zap.Uint64("ue_ambr_downlink", uint64(ueAMBRDown)),
+		zap.Uint64("ue_ambr_uplink", uint64(ueAMBRUp)),
 		zap.String("nas_ue_security_capability", hex.EncodeToString(ueCap)),
+		zap.String("kenb_source", kenbSource),
+		zap.Uint32("kenb_ul_nas_count", kenbULNASCount),
+		zap.Uint32("current_ul_nas_count", currentULNASCount),
 		zap.String("derived_s1ap_encryption_algorithms_bits", fmt.Sprintf("%016b", encAlgBits)),
 		zap.String("derived_s1ap_integrity_algorithms_bits", fmt.Sprintf("%016b", intAlgBits)),
-		zap.String("encoded_ue_security_capabilities_hex", hex.EncodeToString(secCapValue)),
-		zap.String("ics_hex", hex.EncodeToString(msg)),
+		zap.Int("encoded_ue_security_capabilities_len", len(secCapValue)),
+		zap.Int("ics_len", len(msg)),
 	}
 	if len(bearers) > 0 {
+		resumeICSebis := make([]uint8, 0, len(bearers))
+		for _, bearer := range bearers {
+			resumeICSebis = append(resumeICSebis, bearer.EBI)
+		}
 		logFields = append(logFields,
-			zap.String("erab_list_hex", hex.EncodeToString(erabValue)),
-			zap.String("erab_item_hex", hex.EncodeToString(firstERABItemValue(erabValue))),
+			zap.Uint8s("resume_ics_ebis", resumeICSebis),
 			zap.String("erab_item_optional_bitmap", fmt.Sprintf("nas_pdu_present=%t ie_extensions_present=false", len(nasPDU) > 0)),
 			zap.Int("erab_item_count", len(bearers)),
 			zap.String("erab_id_encoded_bits", fmt.Sprintf("integer_extension=0 value=%04b", bearers[0].EBI&0x0f)),
 			zap.String("qos_encoded_summary", fmt.Sprintf("qci=%d arp_priority=%d preemption_capability=%t preemption_vulnerability=%t", effectiveBearerQCI(bearers[0]), effectiveBearerARP(bearers[0]), bearers[0].PreemptionCapability, effectivePreemptionVulnerability(bearers[0]))),
 			zap.String("transport_layer_address", fmt.Sprintf("extension=0 bits=32 ipv4=%s encoded_bitstring=%s", hex.EncodeToString(firstIPv4Bytes(bearers[0].SGWU_IP)), hex.EncodeToString(firstIPv4Bytes(bearers[0].SGWU_IP)))),
-			zap.String("gtp_teid_encoded_hex", fmt.Sprintf("%08x", bearers[0].SGWU_TEID)),
 			zap.Int("nas_pdu_len", len(nasPDU)),
-			zap.String("nas_pdu_hex", hex.EncodeToString(nasPDU)),
+		)
+	}
+	if len(ueRadioCapability) > 0 {
+		logFields = append(logFields,
+			zap.Int("ue_radio_capability_len", len(ueRadioCapability)),
+			zap.String("ue_radio_capability_hex", hex.EncodeToString(ueRadioCapability)),
 		)
 	}
 	s.log.Debug("s1ap: Initial Context Setup Request encoded", logFields...)
 	return s.sendToAddr(enbAddr, msg)
+}
+
+func deriveAndStoreASContextLocked(ue *uecontext.Context) ([]byte, uint32, error) {
+	if ue == nil {
+		return nil, 0, fmt.Errorf("nil UE context")
+	}
+	ulNASCount := uint32(ue.ULNASCount)
+	kenb, err := security.DeriveKeNB(ue.KASME, ulNASCount)
+	if err != nil {
+		return nil, 0, err
+	}
+	ue.KeNB = append([]byte(nil), kenb...)
+	ue.KeNBULCount = ulNASCount
+	ue.KeNBSnapshotGeneration = ue.S1BindingGeneration
+	if nh, nhErr := security.DeriveNH(ue.KASME, kenb); nhErr == nil {
+		ue.NH = nh
+		ue.NCC = 1
+	}
+	return append([]byte(nil), kenb...), ulNASCount, nil
+}
+
+func (s *Server) armPostICSDebugWindow(ue *uecontext.Context, trigger string) {
+	if ue == nil {
+		return
+	}
+	ue.Lock()
+	ue.PostICSDebugUntil = time.Now().Add(15 * time.Second)
+	ue.PostICSDebugGeneration = ue.S1BindingGeneration
+	ue.Unlock()
+	s.logPostICSMutation(ue, "post_ics_watch_armed", "", "", zap.String("trigger", trigger))
+}
+
+func (s *Server) logPostICSDebugWindow(ue *uecontext.Context, event string, extra ...zap.Field) {
+	s.logPostICSMutation(ue, event, "", "", extra...)
 }
 
 func describeS1APIEList(ieList []pdu.ProtocolIE) []string {
@@ -669,6 +886,13 @@ func firstIPv4Bytes(ip []byte) []byte {
 	return []byte{0, 0, 0, 0}
 }
 
+func uint64OrDefault(v uint32, fallback uint64) uint64 {
+	if v == 0 {
+		return fallback
+	}
+	return uint64(v)
+}
+
 // encodeEmptyERABList encodes an empty E-RAB-To-Be-Setup list (count=0).
 // encodeERABList encodes an E-RABToBeSetupListCtxtSUReq with one or more items.
 //
@@ -709,6 +933,7 @@ func encodeERABList(bearers []BearerInfo, nasPDU []byte) []byte {
 
 func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 	nasPDUPresent := len(nasPDU) > 0
+	gbrInfo, gbrPresent := deriveGBRQosInformation(b.BearerQoS)
 
 	w := aper.NewBitWriter()
 
@@ -724,9 +949,19 @@ func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.EBI), 0, 15)
 
 	w.WriteBit(0) // extension marker
-	w.WriteBit(0) // gbrQosInformation absent
+	if gbrPresent {
+		w.WriteBit(1)
+	} else {
+		w.WriteBit(0)
+	}
 	w.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerQCI(b)), 0, 255)
+	if gbrPresent {
+		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateDL)
+		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateUL)
+		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateDL)
+		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateUL)
+	}
 	w.WriteBit(0) // extension marker
 	w.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerARP(b)), 0, 15)
@@ -780,8 +1015,5 @@ func effectiveBearerARP(b BearerInfo) uint8 {
 }
 
 func effectivePreemptionVulnerability(b BearerInfo) bool {
-	if b.PreemptionVulnerability {
-		return true
-	}
-	return true
+	return b.PreemptionVulnerability
 }

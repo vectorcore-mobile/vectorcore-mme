@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	s10pkg "github.com/vectorcore/mme/internal/gtpv2/s10"
 	"github.com/vectorcore/mme/internal/metrics"
@@ -174,7 +175,7 @@ func addTempUE(srv *Server, remoteAddr string, enbUEID uint32) *uecontext.Contex
 	ue := srv.ueManager.Allocate()
 	ue.ENBGlobalID = remoteAddr
 	ue.ENBS1APID = enbUEID
-	srv.enbs.Store(remoteAddr, &ENBContext{RemoteAddr: remoteAddr})
+	srv.enbs.Store(remoteAddr, &ENBContext{RemoteAddr: remoteAddr, SetupComplete: true})
 	// sendToAddr does a type assertion to chan<- []byte, so we must store it as such.
 	srv.sends.Store(remoteAddr, (chan<- []byte)(make(chan []byte, 64)))
 	return ue
@@ -458,8 +459,24 @@ func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 		// Expected: no ack yet.
 	}
 
-	// Deliver ULA.
-	srv.HandleULAResult(ulrCall.mmeUEID, "4915123456789", "internet", nil)
+	// Deliver ULA with the mandatory bearer policy required to resume TAU.
+	srv.HandleULAResultWithSubscriberProfile(ulrCall.mmeUEID, "4915123456789", &gateway.SubscriberProfile{
+		DefaultContextID: 1,
+		APNs: map[string]gateway.APNConfiguration{
+			"internet": {
+				ContextIdentifier:    1,
+				ServiceSelection:     "internet",
+				PDNType:              gtpv2.PDNTypeIPv4,
+				QCI:                  9,
+				ARPPriority:          8,
+				APNAMBRUp:            384,
+				APNAMBRDown:          512,
+				PreemptionCapability: false,
+			},
+		},
+		UEAMBRUp:   1024,
+		UEAMBRDown: 2048,
+	}, nil)
 
 	// Now CTX-Ack must arrive.
 	select {

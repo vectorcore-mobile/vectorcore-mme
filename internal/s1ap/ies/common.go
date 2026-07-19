@@ -354,26 +354,27 @@ const (
 
 // Cause values by group.
 const (
-	CauseRadioNetworkUnspecified           uint8 = 0
-	CauseRadioNetworkNormalRelease         uint8 = 1
-	CauseRadioNetworkLoadBalancingRequired uint8 = 2
-	CauseRadioNetworkSuccessfulHandover    uint8 = 2  // tx2relocoverall-expiry=1, successful-handover=2
-	CauseRadioNetworkUserInactivity        uint8 = 20 // user-inactivity=20
-	CauseRadioNetworkHOCancelled           uint8 = 4  // handover-cancelled=4
-	CauseRadioNetworkUnknownTargetID       uint8 = 11 // unknown-targetID=11
-	CauseRadioNetworkUnknownMMEUES1APID    uint8 = 13 // unknown-mme-ue-s1ap-id=13
-	CauseRadioNetworkUnknownENBUES1APID    uint8 = 14 // unknown-enb-ue-s1ap-id=14
-	CauseRadioNetworkUnknownPairUES1APID   uint8 = 15 // unknown-pair-ue-s1ap-id=15
-	CauseNASNormalRelease                  uint8 = 0
-	CauseNASAuthentication                 uint8 = 1
-	CauseNASDetach                         uint8 = 2
-	CauseNASUnspecified                    uint8 = 3
-	CauseProtocolTransferSyntaxError       uint8 = 0
-	CauseProtocolAbstractSyntaxErrorReject uint8 = 1
-	CauseProtocolSemanticError             uint8 = 4
-	CauseProtocolFalselyConstructedMessage uint8 = 5
-	CauseMiscControlProcessingOverload     uint8 = 0
-	CauseMiscUnspecified                   uint8 = 5
+	CauseRadioNetworkUnspecified                    uint8 = 0
+	CauseRadioNetworkNormalRelease                  uint8 = 1
+	CauseRadioNetworkLoadBalancingRequired          uint8 = 2
+	CauseRadioNetworkSuccessfulHandover             uint8 = 2  // tx2relocoverall-expiry=1, successful-handover=2
+	CauseRadioNetworkUserInactivity                 uint8 = 20 // user-inactivity=20
+	CauseRadioNetworkHOCancelled                    uint8 = 4  // handover-cancelled=4
+	CauseRadioNetworkUnknownTargetID                uint8 = 11 // unknown-targetID=11
+	CauseRadioNetworkUnknownMMEUES1APID             uint8 = 13 // unknown-mme-ue-s1ap-id=13
+	CauseRadioNetworkUnknownENBUES1APID             uint8 = 14 // unknown-enb-ue-s1ap-id=14
+	CauseRadioNetworkUnknownPairUES1APID            uint8 = 15 // unknown-pair-ue-s1ap-id=15
+	CauseNASNormalRelease                           uint8 = 0
+	CauseNASAuthentication                          uint8 = 1
+	CauseNASDetach                                  uint8 = 2
+	CauseNASUnspecified                             uint8 = 3
+	CauseProtocolTransferSyntaxError                uint8 = 0
+	CauseProtocolAbstractSyntaxErrorReject          uint8 = 1
+	CauseProtocolAbstractSyntaxErrorIgnoreAndNotify uint8 = 2
+	CauseProtocolSemanticError                      uint8 = 4
+	CauseProtocolFalselyConstructedMessage          uint8 = 5
+	CauseMiscControlProcessingOverload              uint8 = 0
+	CauseMiscUnspecified                            uint8 = 5
 )
 
 // EncodeCause encodes a Cause IE value (CHOICE with 5 alternatives).
@@ -670,6 +671,31 @@ func DecodePagingDRX(data []byte) (uint8, error) {
 		}
 	}
 	return uint8(v), nil
+}
+
+const (
+	TimeToWaitV1s  uint8 = 0
+	TimeToWaitV2s  uint8 = 1
+	TimeToWaitV5s  uint8 = 2
+	TimeToWaitV10s uint8 = 3
+	TimeToWaitV20s uint8 = 4
+	TimeToWaitV60s uint8 = 5
+)
+
+// EncodeTimeToWait encodes the TimeToWait IE (ENUMERATED).
+func EncodeTimeToWait(v uint8) []byte {
+	w := aper.NewBitWriter()
+	aper.EncodeEnumerated(w, int(v), 6)
+	return w.Bytes()
+}
+
+// EncodeCNDomain encodes the CNDomain IE (ENUMERATED).
+// Values: 0=ps, 1=cs.
+func EncodeCNDomain(domain uint8) []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0) // no extension
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(domain), 0, 1)
+	return w.Bytes()
 }
 
 // EncodeRelativeMMECapacity encodes RelativeMMECapacity INTEGER (0..255).

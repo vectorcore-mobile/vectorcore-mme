@@ -103,7 +103,7 @@ func newTestServer(s11 S11Client) *Server {
 
 // registerTestENB adds a fake ENBContext to the server's enbs map.
 func registerTestENB(srv *Server, remoteAddr string) {
-	enb := &ENBContext{RemoteAddr: remoteAddr}
+	enb := &ENBContext{RemoteAddr: remoteAddr, SetupComplete: true}
 	srv.enbs.Store(remoteAddr, enb)
 	// sends stores the send-direction so sendToAddr's type assertion (chan<- []byte) succeeds.
 	ch := make(chan []byte, 8)
@@ -113,7 +113,7 @@ func registerTestENB(srv *Server, remoteAddr string) {
 // registerTestENBWithChan is like registerTestENB but returns the bidirectional channel
 // so the caller can drain it and inspect sent PDUs.
 func registerTestENBWithChan(srv *Server, remoteAddr string) chan []byte {
-	enb := &ENBContext{RemoteAddr: remoteAddr}
+	enb := &ENBContext{RemoteAddr: remoteAddr, SetupComplete: true}
 	srv.enbs.Store(remoteAddr, enb)
 	ch := make(chan []byte, 16)
 	srv.sends.Store(remoteAddr, (chan<- []byte)(ch))
@@ -349,6 +349,44 @@ func TestHandleDisconnect_PreservesRegisteredUEs(t *testing.T) {
 		if teid == 0 {
 			t.Error("S11 session TEID cleared on S1-only disconnect")
 		}
+	}
+}
+
+func TestHandleDisconnect_ClearsPendingServiceRequestResume(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.0.0.3:36412"
+	registerTestENB(srv, addr)
+
+	ue := allocateTestUE(srv, addr, 0x3333, true)
+	ue.Lock()
+	ue.SetEMMState(emm.StateServiceRequestInitiated)
+	ue.SetECMState(emm.ECMConnected)
+	ue.AttachStep = uecontext.AttachStepWaitingICSRespSR
+	ue.Unlock()
+
+	srv.handleDisconnect(addr)
+
+	found := srv.ueManager.MustGetByMMEID(ue.MMEUES1APID)
+	found.Lock()
+	emmState := found.EMMState
+	ecmState := found.ECMState
+	attachStep := found.AttachStep
+	enb := found.ENBGlobalID
+	found.Unlock()
+
+	if emmState != emm.StateRegistered {
+		t.Fatalf("EMM state after disconnect: got %s, want %s", emmState, emm.StateRegistered)
+	}
+	if ecmState != emm.ECMIdle {
+		t.Fatalf("ECM state after disconnect: got %s, want %s", ecmState, emm.ECMIdle)
+	}
+	if attachStep != uecontext.AttachStepNone {
+		t.Fatalf("AttachStep after disconnect: got %d, want %d", attachStep, uecontext.AttachStepNone)
+	}
+	if enb != "" {
+		t.Fatalf("ENBGlobalID after disconnect: got %q, want empty", enb)
 	}
 }
 

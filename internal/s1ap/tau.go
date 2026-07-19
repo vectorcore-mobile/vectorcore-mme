@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -25,11 +26,11 @@ func (s *Server) validateTAI(tai *emm.TAI) bool {
 		if item.TAC != tai.TAC {
 			continue
 		}
-		plmn, err := ies.EncodePLMN(item.MCC, item.MNC)
-		if err != nil || len(plmn) != 3 {
+		plmn, err := encodeNASPLMN(item.MCC, item.MNC)
+		if err != nil {
 			continue
 		}
-		if plmn[0] == tai.PLMN[0] && plmn[1] == tai.PLMN[1] && plmn[2] == tai.PLMN[2] {
+		if plmn == tai.PLMN {
 			return true
 		}
 	}
@@ -38,15 +39,7 @@ func (s *Server) validateTAI(tai *emm.TAI) bool {
 
 // taiFromIE converts an S1AP TAI IE to an EMM TAI.
 func taiFromIE(t *ies.TAI) *emm.TAI {
-	if t == nil {
-		return nil
-	}
-	emmTAI := &emm.TAI{TAC: t.TAC}
-	plmn, err := ies.EncodePLMN(t.MCC, t.MNC)
-	if err == nil && len(plmn) == 3 {
-		copy(emmTAI.PLMN[:], plmn)
-	}
-	return emmTAI
+	return emmTAIFromS1AP(t)
 }
 
 // handleIdleTAUMessage handles a TAU Request that arrived via Initial UE Message
@@ -101,6 +94,11 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	}
 
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "request").Inc()
+	log = log.With(
+		zap.Uint8("update_type", tauReq.EPSUpdateType),
+		zap.Bool("active_flag", tauReq.ActiveFlag),
+		zap.Bool("security_protected", protected),
+	)
 
 	if tauReq.OldGUTI == nil {
 		log.Warn("nas: idle TAU: no GUTI in TAU Request")
@@ -136,6 +134,30 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 		return
 	}
 
+	ue.Lock()
+	preEMMState := ue.EMMState.String()
+	preECMState := ue.ECMState.String()
+	preAttachStep := fmt.Sprintf("%d", ue.AttachStep)
+	resumePending := tauReq.ActiveFlag &&
+		ue.ECMState == emm.ECMConnected &&
+		isResumeICSAttachStep(ue.AttachStep)
+	preReleasePending := ue.S1ReleasePending
+	preReleaseENBID := ue.S1ReleaseENBID
+	preReleaseENBAddr := ue.S1ReleaseENBAddr
+	preBearerStatus, preActiveBearers, preSkippedBearers := tauMMEBearerContextStatusSnapshotLocked(ue)
+	ue.Unlock()
+	log.Info("nas: idle TAU: matched retained UE context",
+		zap.String("guti", gutiStr),
+		zap.String("pre_emm_state", preEMMState),
+		zap.String("pre_ecm_state", preECMState),
+		zap.String("pre_attach_step", preAttachStep),
+		zap.Bool("pre_s1_release_pending", preReleasePending),
+		zap.Uint32("pre_s1_release_enb_ue_id", preReleaseENBID),
+		zap.String("pre_s1_release_enb_addr", preReleaseENBAddr),
+		zap.String("pre_eps_bearer_status_hex", tauBearerStatusHex(preBearerStatus)),
+		zap.String("pre_active_bearers", preActiveBearers),
+		zap.String("pre_skipped_bearers", preSkippedBearers))
+
 	// Verify NAS MAC if security-protected
 	if protected {
 		ue.Lock()
@@ -164,6 +186,39 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 		ue.Unlock()
 	}
 
+	if resumePending {
+		s.ueManager.Remove(tempUE)
+
+		ue.Lock()
+		oldENBUEID := ue.ENBS1APID
+		oldRemoteAddr := ue.ENBGlobalID
+		oldBindingGeneration := ue.S1BindingGeneration
+		ue.ENBS1APID = enbUEID
+		ue.ENBGlobalID = remoteAddr
+		ue.S1BindingGeneration++
+		ue.S1BindingState = uecontext.S1BindingActive
+		ue.S1ReleasePending = false
+		if emmTAI := taiFromIE(tai); emmTAI != nil {
+			ue.TAI = emmTAI
+		}
+		mmeUEID := ue.MMEUES1APID
+		newBindingGeneration := ue.S1BindingGeneration
+		ue.Unlock()
+
+		log.Info("nas: idle TAU duplicate active-flag resume rebound; retransmitting Initial Context Setup",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("old_enb_ue_id", oldENBUEID),
+			zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.String("old_remote", oldRemoteAddr),
+			zap.String("new_remote", remoteAddr),
+			zap.Uint64("old_binding_generation", oldBindingGeneration),
+			zap.Uint64("new_binding_generation", newBindingGeneration))
+		if err := s.sendIdleActiveTAUAcceptAndResume(ue, log, tauReq); err != nil {
+			log.Warn("nas: idle TAU duplicate active-flag resume retransmit failed", zap.Error(err))
+		}
+		return
+	}
+
 	// Remove temp context before updating the real UE
 	s.ueManager.Remove(tempUE)
 
@@ -188,9 +243,19 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	log.Info("nas: idle TAU: UE found, sending TAU Accept",
 		zap.Uint32("mme_ue_id", mmeUEID))
 
-	if err := s.sendTAUAcceptForRequest(ue, log, tauReq); err != nil {
-		log.Warn("nas: idle TAU: sendTAUAccept failed", zap.Error(err))
-		return
+	if tauReq.ActiveFlag && !s.operCfg.TAU.ReallocateGUTI {
+		if err := s.sendIdleActiveTAUAcceptAndResume(ue, log, tauReq); err != nil {
+			log.Warn("nas: idle TAU: active-flag TAU resume failed", zap.Error(err))
+			return
+		}
+	} else {
+		if err := s.sendTAUAcceptForRequest(ue, log, tauReq); err != nil {
+			log.Warn("nas: idle TAU: sendTAUAccept failed", zap.Error(err))
+			return
+		}
+		if tauReq.ActiveFlag {
+			s.resumeIdleTAUUserPlane(ue, tauReq.EPSBearerStatus, nil, log)
+		}
 	}
 	// When no GUTI realloc is pending the UE is immediately StateRegistered;
 	// processTAUComplete never fires, so send EMM Information here.
@@ -200,6 +265,13 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	if step == uecontext.AttachStepNone &&
 		s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU {
 		go s.sendEMMInformation(mmeUEID, "tau", log)
+	}
+	if !tauReq.ActiveFlag && step == uecontext.AttachStepNone {
+		log.Info("nas: idle TAU: scheduling post-accept S1 release",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("enb_ue_id", enbUEID),
+			zap.String("remote", remoteAddr))
+		s.scheduleIdleTAURelease(remoteAddr, mmeUEID, enbUEID, log)
 	}
 }
 
@@ -263,6 +335,144 @@ func (s *Server) processTrackingAreaUpdate(ue *uecontext.Context, inner []byte, 
 	return nil
 }
 
+func (s *Server) sendIdleActiveTAUAcceptAndResume(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) error {
+	opts := s.tauAcceptOptionsForRequest(ue, log, req)
+	nasPDU, err := s.buildTAUAcceptNAS(ue, log, opts)
+	if err != nil {
+		return err
+	}
+	if err := s.resumeIdleTAUUserPlane(ue, req.EPSBearerStatus, nasPDU, log); err != nil {
+		return err
+	}
+	ue.Lock()
+	ue.DLNASCount.Increment()
+	ue.SetEMMState(emm.StateRegistered)
+	ue.Unlock()
+	metrics.NASProceduresTotal.WithLabelValues("TAU", "accept").Inc()
+	log.Info("nas: TAU Accept sent",
+		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+		zap.Bool("guti_realloc", false),
+		zap.Bool("send_success", true),
+		zap.String("delivery", "initial_context_setup"))
+	return nil
+}
+
+func (s *Server) resumeIdleTAUUserPlane(ue *uecontext.Context, requestStatus *emm.EPSBearerContextStatus, nasPDU []byte, log *zap.Logger) error {
+	ue.Lock()
+	resumeBearers, resumeErr := tauResumeBearersLocked(ue, requestStatus)
+	mmeUEID := ue.MMEUES1APID
+	defaultEBI := ue.DefaultEBI
+	enbUEID := ue.ENBS1APID
+	ue.AttachStep = uecontext.AttachStepWaitingICSRespTAU
+	if resumeErr == nil && len(resumeBearers) > 0 {
+		if err := s.createASSecuritySnapshotLocked(ue, "active_flag_tau"); err != nil {
+			ue.AttachStep = uecontext.AttachStepNone
+			ue.Unlock()
+			log.Warn("nas: idle TAU active-flag AS security snapshot failed",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.Error(err))
+			return err
+		}
+	}
+	ue.Unlock()
+
+	if resumeErr != nil {
+		ue.Lock()
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.Unlock()
+		log.Warn("nas: idle TAU active-flag resume skipped due to incomplete retained bearer policy",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Error(resumeErr))
+		return nil
+	}
+	if len(resumeBearers) == 0 {
+		ue.Lock()
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.Unlock()
+		log.Info("nas: idle TAU active-flag resume skipped because no retained bearers were found",
+			zap.Uint32("mme_ue_id", mmeUEID))
+		return nil
+	}
+
+	log.Info("nas: idle TAU active-flag triggering Initial Context Setup",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
+		zap.Uint8("default_ebi", defaultEBI),
+		zap.String("ue_eps_bearer_status_hex", tauBearerStatusHex(requestStatus)),
+		zap.String("ue_active_ebis", tauBearerStatusEBIString(requestStatus)),
+		zap.Int("resume_bearer_count", len(resumeBearers)))
+
+	if err := s.SendInitialContextSetupWithBearers(mmeUEID, nasPDU, resumeBearers); err != nil {
+		ue.Lock()
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.Unlock()
+		log.Warn("nas: idle TAU active-flag Initial Context Setup failed",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Error(err))
+		return err
+	}
+	return nil
+}
+
+func (s *Server) scheduleIdleTAURelease(remoteAddr string, mmeUEID, enbUEID uint32, log *zap.Logger) {
+	const releaseDelay = 25 * time.Millisecond
+
+	go func() {
+		time.Sleep(releaseDelay)
+
+		ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+		if !ok {
+			return
+		}
+
+		ue.Lock()
+		boundRemote := ue.ENBGlobalID
+		boundENBUEID := ue.ENBS1APID
+		ecmState := ue.ECMState
+		releasePending := ue.S1ReleasePending
+		ue.Unlock()
+
+		if boundRemote != remoteAddr || boundENBUEID != enbUEID {
+			log.Info("nas: idle TAU release skipped because S1 binding changed before release",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.Uint32("enb_ue_id", enbUEID),
+				zap.String("expected_remote", remoteAddr),
+				zap.String("current_remote", boundRemote),
+				zap.Uint32("current_enb_ue_id", boundENBUEID))
+			return
+		}
+		if ecmState != emm.ECMConnected || releasePending {
+			log.Info("nas: idle TAU release skipped because UE state changed before release",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.Uint32("enb_ue_id", enbUEID),
+				zap.String("ecm_state", ecmState.String()),
+				zap.Bool("release_pending", releasePending))
+			return
+		}
+
+		log.Info("nas: idle TAU release starting after TAU Accept ordering delay",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("enb_ue_id", enbUEID),
+			zap.Duration("delay", releaseDelay))
+		s.beginPreservedS1Release(ue, remoteAddr, enbUEID, ies.CauseGroupNAS, ies.CauseNASNormalRelease)
+	}()
+}
+
+func tauResumeBearersLocked(ue *uecontext.Context, requestStatus *emm.EPSBearerContextStatus) ([]BearerInfo, error) {
+	resumeBearers, err := retainedResumeBearersLocked(ue, true)
+	if err != nil || requestStatus == nil {
+		return resumeBearers, err
+	}
+
+	filtered := make([]BearerInfo, 0, len(resumeBearers))
+	for _, bearer := range resumeBearers {
+		if requestStatus.HasEBI(bearer.EBI) {
+			filtered = append(filtered, bearer)
+		}
+	}
+	return filtered, nil
+}
+
 // processTAUComplete handles a TAU Complete from the UE after GUTI reallocation.
 func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) error {
 	ue.Lock()
@@ -314,6 +524,7 @@ type tauAcceptOptions struct {
 	ReallocateGUTI     bool
 	ReallocationReason string
 	UpdateResult       uint8
+	EPSBearerStatus    *emm.EPSBearerContextStatus
 }
 
 // sendTAUAccept builds and sends a security-protected TAU Accept to the UE.
@@ -339,15 +550,240 @@ func (s *Server) sendTAUAcceptWithGUTIReallocation(ue *uecontext.Context, log *z
 }
 
 func (s *Server) sendTAUAcceptForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) error {
+	return s.sendTAUAcceptWithOptions(ue, log, s.tauAcceptOptionsForRequest(ue, log, req))
+}
+
+func (s *Server) tauAcceptOptionsForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) tauAcceptOptions {
 	updateResult := emm.EPSUpdateResultTAUpdated
+	var requestStatus *emm.EPSBearerContextStatus
+	reconcileRequestStatus := true
 	if req != nil {
 		updateResult = tauAcceptResultForRequest(req.EPSUpdateType)
+		requestStatus = req.EPSBearerStatus
+		// Reconcile the bearer-status view for active-flag TAU, where the UE is
+		// explicitly requesting resume for its currently active bearers, and for
+		// periodic TAU, where the bitmap represents the retained context.
+		reconcileRequestStatus = req.ActiveFlag || req.EPSUpdateType == emm.EPSUpdateTypePeriodic
 	}
-	return s.sendTAUAcceptWithOptions(ue, log, tauAcceptOptions{
+	var reconciledDetails string
+	if requestStatus != nil && reconcileRequestStatus {
+		ue.Lock()
+		reconciledDetails = tauReconcileBearerStatusLocked(ue, requestStatus)
+		ue.Unlock()
+	}
+	ue.Lock()
+	mmeStatus, activeDetails, skippedDetails := tauMMEBearerContextStatusSnapshotLocked(ue)
+	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	ue.Unlock()
+
+	if requestStatus != nil {
+		log.Info("nas: TAU EPS bearer context status evaluated",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("ue_eps_bearer_status_hex", tauBearerStatusHex(requestStatus)),
+			zap.String("ue_active_ebis", tauBearerStatusEBIString(requestStatus)),
+			zap.String("mme_eps_bearer_status_hex", tauBearerStatusHex(mmeStatus)),
+			zap.String("mme_active_ebis", tauBearerStatusEBIString(mmeStatus)),
+			zap.String("mme_active_bearer_sources", activeDetails),
+			zap.String("mme_skipped_bearers", skippedDetails),
+			zap.String("tau_reconciled_bearers", reconciledDetails))
+	}
+
+	responseStatus := mmeStatus
+	if requestStatus == nil {
+		log.Info("nas: TAU Accept including MME EPS bearer context status",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("mme_eps_bearer_status_hex", tauBearerStatusHex(mmeStatus)),
+			zap.String("mme_active_ebis", tauBearerStatusEBIString(mmeStatus)),
+			zap.String("mme_active_bearer_sources", activeDetails),
+			zap.String("mme_skipped_bearers", skippedDetails),
+			zap.String("reason", "default_mme_status_sync"))
+	} else if !tauBearerStatusesEqual(requestStatus, mmeStatus) {
+		if reconcileRequestStatus {
+			responseStatus = tauIntersectBearerStatuses(requestStatus, mmeStatus)
+			log.Info("nas: TAU EPS bearer context status mismatch",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.String("ue_eps_bearer_status_hex", tauBearerStatusHex(requestStatus)),
+				zap.String("mme_eps_bearer_status_hex", tauBearerStatusHex(mmeStatus)),
+				zap.String("tau_accept_eps_bearer_status_hex", tauBearerStatusHex(responseStatus)),
+				zap.String("ue_active_ebis", tauBearerStatusEBIString(requestStatus)),
+				zap.String("mme_active_ebis", tauBearerStatusEBIString(mmeStatus)),
+				zap.String("tau_accept_active_ebis", tauBearerStatusEBIString(responseStatus)),
+				zap.String("mme_active_bearer_sources", activeDetails),
+				zap.String("mme_skipped_bearers", skippedDetails),
+				zap.Bool("tau_accept_eps_bearer_status_included", true),
+				zap.String("tau_accept_status_source", "intersection"))
+		} else {
+			log.Info("nas: TAU EPS bearer context status mismatch",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.String("ue_eps_bearer_status_hex", tauBearerStatusHex(requestStatus)),
+				zap.String("mme_eps_bearer_status_hex", tauBearerStatusHex(mmeStatus)),
+				zap.String("tau_accept_eps_bearer_status_hex", tauBearerStatusHex(responseStatus)),
+				zap.String("ue_active_ebis", tauBearerStatusEBIString(requestStatus)),
+				zap.String("mme_active_ebis", tauBearerStatusEBIString(mmeStatus)),
+				zap.String("tau_accept_active_ebis", tauBearerStatusEBIString(responseStatus)),
+				zap.String("mme_active_bearer_sources", activeDetails),
+				zap.String("mme_skipped_bearers", skippedDetails),
+				zap.Bool("tau_accept_eps_bearer_status_included", true),
+				zap.String("tau_accept_status_source", "mme-retained"))
+		}
+	} else {
+		log.Info("nas: TAU EPS bearer context status aligned",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("ue_eps_bearer_status_hex", tauBearerStatusHex(requestStatus)),
+			zap.String("mme_eps_bearer_status_hex", tauBearerStatusHex(mmeStatus)),
+			zap.String("mme_active_ebis", tauBearerStatusEBIString(mmeStatus)),
+			zap.Bool("tau_accept_eps_bearer_status_included", true))
+	}
+
+	return tauAcceptOptions{
 		ReallocateGUTI:     s.operCfg.TAU.ReallocateGUTI,
 		ReallocationReason: "same_mme_policy",
 		UpdateResult:       updateResult,
+		EPSBearerStatus:    responseStatus,
+	}
+}
+
+func (s *Server) buildTAUAcceptNAS(ue *uecontext.Context, log *zap.Logger, opts tauAcceptOptions) ([]byte, error) {
+	ue.Lock()
+	intAlg := ue.IntAlg
+	encAlg := ue.EncAlg
+	knasInt := append([]byte(nil), ue.KNASint...)
+	knasEnc := append([]byte(nil), ue.KNASenc...)
+	tai := ue.TAI
+	mmeUEID := ue.MMEUES1APID
+	dlCount := uint32(ue.DLNASCount)
+	ue.Unlock()
+
+	var taiList []emm.TAI
+	for _, item := range s.nfCfg.TAIList {
+		plmn, err := encodeNASPLMN(item.MCC, item.MNC)
+		if err != nil {
+			continue
+		}
+		taiList = append(taiList, emm.TAI{PLMN: plmn, TAC: item.TAC})
+	}
+	if len(taiList) == 0 && tai != nil {
+		taiList = []emm.TAI{*tai}
+	}
+
+	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+	if timerErr != nil {
+		return nil, fmt.Errorf("sendTAUAccept: timers: %w", timerErr)
+	}
+	tauAcceptPDU := emm.EncodeTAUAcceptWithParams(emm.TAUAcceptParams{
+		UpdateResult:             opts.UpdateResult,
+		T3412:                    t3412,
+		T3402:                    t3402,
+		T3423:                    t3423,
+		TAIList:                  taiList,
+		IncludeGUTI:              false,
+		EPSBearerStatus:          opts.EPSBearerStatus,
+		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
 	})
+
+	toSend := tauAcceptPDU
+	if len(knasInt) > 0 {
+		var encErr error
+		if encAlg != security.AlgIDEEA0 {
+			toSend, encErr = nas.EncodeIntegrityAndCiphered(
+				tauAcceptPDU, intAlg, encAlg, knasInt, knasEnc, dlCount)
+		} else {
+			toSend, encErr = nas.EncodeIntegrityProtected(
+				tauAcceptPDU, intAlg, knasInt, dlCount)
+		}
+		if encErr != nil {
+			return nil, fmt.Errorf("sendTAUAccept: encode: %w", encErr)
+		}
+	}
+
+	log.Info("nas: TAU Accept encoded",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("update_result", opts.UpdateResult),
+		zap.Bool("guti_included", false),
+		zap.String("reallocation_reason", opts.ReallocationReason),
+		zap.Bool("ims_voice_over_ps_configured", s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS),
+		zap.Bool("ims_voice_over_ps_advertised", s.epsNetworkFeatureSupport() != nil),
+		zap.Bool("eps_bearer_status_included", opts.EPSBearerStatus != nil),
+		zap.String("eps_bearer_status_hex", tauBearerStatusHex(opts.EPSBearerStatus)),
+		zap.String("eps_bearer_status_ebis", tauBearerStatusEBIString(opts.EPSBearerStatus)),
+		zap.String("eps_network_feature_support_hex", fmt.Sprintf("%x", encodeFeatureSupportForLog(s.epsNetworkFeatureSupport()))),
+		zap.String("plain_tau_accept_hex", fmt.Sprintf("%x", tauAcceptPDU)),
+		zap.String("protected_tau_accept_hex", fmt.Sprintf("%x", toSend)),
+		zap.Uint32("dl_count", dlCount),
+		zap.Bool("t3450_started", false))
+	return toSend, nil
+}
+
+func tauIntersectBearerStatuses(a, b *emm.EPSBearerContextStatus) *emm.EPSBearerContextStatus {
+	if a == nil && b == nil {
+		return nil
+	}
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &emm.EPSBearerContextStatus{Bitmap: a.Bitmap & b.Bitmap}
+}
+
+func tauReconcileBearerStatusLocked(ue *uecontext.Context, requestStatus *emm.EPSBearerContextStatus) string {
+	if ue == nil || requestStatus == nil {
+		return "none"
+	}
+
+	changes := make([]string, 0, len(ue.PDNs)+len(ue.DedicatedBearers))
+
+	for _, pdn := range sortedPDNContextsLocked(ue) {
+		if pdn == nil || pdn.DefaultEBI == 0 {
+			continue
+		}
+		if requestStatus.HasEBI(pdn.DefaultEBI) {
+			continue
+		}
+		if tauPDNIsInactiveForStatusSync(pdn) {
+			continue
+		}
+		changes = append(changes, fmt.Sprintf("pdn(apn=%s,ebi=%d,state=%s->tau-suspended)", pdn.APN, pdn.DefaultEBI, pdn.State))
+		pdn.NASAccepted = false
+		pdn.ERABEstablished = false
+		pdn.ModifyBearerSent = false
+		pdn.ModifyBearerAccepted = false
+		pdn.ModifyBearerFailed = false
+		pdn.ModifyBearerDeferred = false
+		pdn.ModifyBearerFallbackSent = false
+		pdn.ENBU_TEID = 0
+		pdn.ENBU_IP = nil
+		pdn.State = "tau-suspended"
+	}
+
+	for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
+		proc := ue.DedicatedBearers[ebi]
+		if proc == nil || proc.AssignedEBI == 0 {
+			continue
+		}
+		if requestStatus.HasEBI(proc.AssignedEBI) {
+			continue
+		}
+		if tauDedicatedBearerInactive(proc) {
+			continue
+		}
+		changes = append(changes, fmt.Sprintf("dedicated(ebi=%d,linked=%d,state=%s->tau-suspended)", proc.AssignedEBI, proc.LinkedEBI, proc.State))
+		proc.NASAccepted = false
+		proc.ERABEstablished = false
+		proc.ERABFailed = false
+		proc.ENBS1UTEID = 0
+		proc.ENBS1UIP = nil
+		proc.State = "tau-suspended"
+	}
+
+	if len(changes) == 0 {
+		return "none"
+	}
+	return strings.Join(changes, "; ")
 }
 
 func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger, opts tauAcceptOptions) error {
@@ -388,24 +824,29 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	// Build TAI list from config (fall back to UE's stored TAI)
 	var taiList []emm.TAI
 	for _, item := range s.nfCfg.TAIList {
-		plmn, err := ies.EncodePLMN(item.MCC, item.MNC)
-		if err != nil || len(plmn) != 3 {
+		plmn, err := encodeNASPLMN(item.MCC, item.MNC)
+		if err != nil {
 			continue
 		}
-		t := emm.TAI{TAC: item.TAC}
-		copy(t.PLMN[:], plmn)
-		taiList = append(taiList, t)
+		taiList = append(taiList, emm.TAI{PLMN: plmn, TAC: item.TAC})
 	}
 	if len(taiList) == 0 && tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
 
+	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+	if timerErr != nil {
+		return fmt.Errorf("sendTAUAccept: timers: %w", timerErr)
+	}
 	tauAcceptPDU := emm.EncodeTAUAcceptWithParams(emm.TAUAcceptParams{
 		UpdateResult:             opts.UpdateResult,
-		T3412:                    0x21,
+		T3412:                    t3412,
+		T3402:                    t3402,
+		T3423:                    t3423,
 		TAIList:                  taiList,
 		IncludeGUTI:              newGUTI != nil,
 		GUTI:                     newGUTI,
+		EPSBearerStatus:          opts.EPSBearerStatus,
 		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
 	})
 
@@ -435,6 +876,9 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 		zap.String("reallocation_reason", opts.ReallocationReason),
 		zap.Bool("ims_voice_over_ps_configured", s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS),
 		zap.Bool("ims_voice_over_ps_advertised", s.epsNetworkFeatureSupport() != nil),
+		zap.Bool("eps_bearer_status_included", opts.EPSBearerStatus != nil),
+		zap.String("eps_bearer_status_hex", tauBearerStatusHex(opts.EPSBearerStatus)),
+		zap.String("eps_bearer_status_ebis", tauBearerStatusEBIString(opts.EPSBearerStatus)),
 		zap.String("eps_network_feature_support_hex", fmt.Sprintf("%x", encodeFeatureSupportForLog(s.epsNetworkFeatureSupport()))),
 		zap.String("plain_tau_accept_hex", fmt.Sprintf("%x", tauAcceptPDU)),
 		zap.String("protected_tau_accept_hex", fmt.Sprintf("%x", toSend)),
@@ -504,6 +948,123 @@ func tauAcceptResultForRequest(updateType uint8) uint8 {
 	default:
 		return emm.EPSUpdateResultTAUpdated
 	}
+}
+
+func tauMMEBearerContextStatusLocked(ue *uecontext.Context) *emm.EPSBearerContextStatus {
+	status, _, _ := tauMMEBearerContextStatusSnapshotLocked(ue)
+	return status
+}
+
+func tauMMEBearerContextStatusSnapshotLocked(ue *uecontext.Context) (*emm.EPSBearerContextStatus, string, string) {
+	if ue == nil {
+		return nil, "", ""
+	}
+	var bitmap uint16
+	active := make([]string, 0, 8)
+	skipped := make([]string, 0, 8)
+	if ue.DefaultEBI >= 5 && ue.DefaultEBI <= 15 && ue.SGWC_TEID != 0 && ue.SGWU_TEID != 0 {
+		bitmap |= 1 << ue.DefaultEBI
+		active = append(active, fmt.Sprintf("legacy-default(ebi=%d,sgwc=0x%08x,sgwu=0x%08x)", ue.DefaultEBI, ue.SGWC_TEID, ue.SGWU_TEID))
+	} else if ue.DefaultEBI != 0 || ue.SGWC_TEID != 0 || ue.SGWU_TEID != 0 {
+		skipped = append(skipped, fmt.Sprintf("legacy-default(ebi=%d,sgwc=0x%08x,sgwu=0x%08x)", ue.DefaultEBI, ue.SGWC_TEID, ue.SGWU_TEID))
+	}
+	for _, pdn := range sortedPDNContextsLocked(ue) {
+		if pdn == nil {
+			continue
+		}
+		if pdn.DefaultEBI < 5 || pdn.DefaultEBI > 15 || tauPDNIsInactiveForStatusSync(pdn) {
+			skipped = append(skipped, fmt.Sprintf("pdn(apn=%s,ebi=%d,state=%s,disconnect=%t)", pdn.APN, pdn.DefaultEBI, pdn.State, pdn.DisconnectRequested))
+			continue
+		}
+		if pdn.SGWC_TEID == 0 || pdn.SGWU_TEID == 0 {
+			skipped = append(skipped, fmt.Sprintf("pdn(apn=%s,ebi=%d,state=%s,sgwc=0x%08x,sgwu=0x%08x)", pdn.APN, pdn.DefaultEBI, pdn.State, pdn.SGWC_TEID, pdn.SGWU_TEID))
+			continue
+		}
+		bitmap |= 1 << pdn.DefaultEBI
+		active = append(active, fmt.Sprintf("pdn(apn=%s,ebi=%d,state=%s,sgwc=0x%08x,sgwu=0x%08x,nas=%t,erab=%t,mbr=%t/%t)",
+			pdn.APN, pdn.DefaultEBI, pdn.State, pdn.SGWC_TEID, pdn.SGWU_TEID, pdn.NASAccepted, pdn.ERABEstablished, pdn.ModifyBearerSent, pdn.ModifyBearerAccepted))
+	}
+	for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
+		proc := ue.DedicatedBearers[ebi]
+		if proc == nil || proc.AssignedEBI < 5 || proc.AssignedEBI > 15 {
+			continue
+		}
+		if tauDedicatedBearerInactive(proc) {
+			skipped = append(skipped, fmt.Sprintf("dedicated(ebi=%d,linked=%d,state=%s,nas_accepted=%t,nas_rejected=%t,erab_established=%t,erab_failed=%t)",
+				proc.AssignedEBI, proc.LinkedEBI, proc.State, proc.NASAccepted, proc.NASRejected, proc.ERABEstablished, proc.ERABFailed))
+			continue
+		}
+		bitmap |= 1 << proc.AssignedEBI
+		active = append(active, fmt.Sprintf("dedicated(ebi=%d,linked=%d,state=%s,qci=%d,nas_accepted=%t,erab_established=%t,sgw_teid=0x%08x,enb_teid=0x%08x)",
+			proc.AssignedEBI, proc.LinkedEBI, proc.State, proc.QCI, proc.NASAccepted, proc.ERABEstablished, proc.SGWS1UTEID, proc.ENBS1UTEID))
+	}
+	return &emm.EPSBearerContextStatus{Bitmap: bitmap}, tauBearerDetailString(active), tauBearerDetailString(skipped)
+}
+
+func tauDedicatedBearerInactive(proc *uecontext.DedicatedBearerContext) bool {
+	if proc == nil || proc.AssignedEBI == 0 || proc.NASRejected {
+		return true
+	}
+	switch proc.State {
+	case "deleting", "erab-setup-failed", "release-failed", "release-missing", "waiting_erab_release", "tau-suspended":
+		return true
+	default:
+		return false
+	}
+}
+
+func tauPDNIsInactiveForStatusSync(pdn *uecontext.PDNContext) bool {
+	if pdn == nil || pdn.DefaultEBI == 0 {
+		return true
+	}
+	if pdn.DisconnectRequested || pdn.DisconnectNASAccepted {
+		return true
+	}
+	switch pdn.State {
+	case "", "inactive", "disconnecting", "disconnected", "erab-setup-failed", "tau-suspended":
+		return true
+	default:
+		return !pdn.NASAccepted && !pdn.ERABEstablished && !pdn.ModifyBearerAccepted
+	}
+}
+
+func tauBearerStatusesEqual(a, b *emm.EPSBearerContextStatus) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Bitmap == b.Bitmap
+}
+
+func tauBearerStatusHex(status *emm.EPSBearerContextStatus) string {
+	if status == nil {
+		return ""
+	}
+	return fmt.Sprintf("%04x", status.Bitmap)
+}
+
+func tauBearerStatusEBIString(status *emm.EPSBearerContextStatus) string {
+	if status == nil {
+		return ""
+	}
+	active := status.ActiveEBIs()
+	if len(active) == 0 {
+		return "none"
+	}
+	out := make([]string, 0, len(active))
+	for _, ebi := range active {
+		out = append(out, fmt.Sprintf("%d", ebi))
+	}
+	return strings.Join(out, ",")
+}
+
+func tauBearerDetailString(parts []string) string {
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (s *Server) retransmitPendingTAUAccept(ue *uecontext.Context, log *zap.Logger) {

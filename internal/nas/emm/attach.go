@@ -44,6 +44,9 @@ type AttachComplete struct {
 
 type AttachAcceptParams struct {
 	AttachResult             uint8
+	T3412                    uint8
+	T3402                    *uint8
+	T3423                    *uint8
 	TAIList                  []TAI
 	GUTI                     *GUTI
 	ESMContainer             []byte
@@ -202,6 +205,7 @@ func EncodeAttachAccept(
 ) []byte {
 	return EncodeAttachAcceptWithParams(AttachAcceptParams{
 		AttachResult: attachResult,
+		T3412:        0x49,
 		TAIList:      taiList,
 		GUTI:         guti,
 		ESMContainer: esmContainer,
@@ -218,9 +222,8 @@ func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 	// EPS attach result (bits 2:0)
 	b = append(b, params.AttachResult&0x07)
 
-	// T3412 timer value (periodic TAU timer) — 54 minutes default (0x23 = binary 00100011 = 3*6 hours = 18 hours? Let's use 0xA8 = 5 min * 1 = 5 min unit)
-	// Timer value: unit=minutes (bits 7:5 = 010), value (bits 4:0 = 00001) → 1 minute
-	b = append(b, 0x21) // binary 0010 0001 = 1 minute
+	// T3412 timer value (periodic TAU timer) is mandatory in Attach Accept.
+	b = append(b, params.T3412)
 
 	// TAI list (mandatory) - we encode as partial TAI list type 0x00
 	taiBytes := encodeTAIList(params.TAIList)
@@ -240,6 +243,14 @@ func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 		b = append(b, gutiBytes...)
 	}
 
+	if params.T3402 != nil {
+		b = append(b, 0x17, *params.T3402)
+	}
+
+	if params.T3423 != nil {
+		b = append(b, 0x59, *params.T3423)
+	}
+
 	if params.EPSNetworkFeatureSupport != nil {
 		b = append(b, EncodeEPSNetworkFeatureSupport(*params.EPSNetworkFeatureSupport)...)
 	}
@@ -256,21 +267,75 @@ func EncodeAttachReject(cause uint8) []byte {
 	}
 }
 
-// encodeTAIList encodes a list of TAIs as partial TAI list type 0x00
-// (list of TAIs belonging to the same PLMN).
+const (
+	taiListTypeOnePLMNNonConsecutive uint8 = 0
+	taiListTypeOnePLMNConsecutive    uint8 = 1
+	taiListTypeDifferentPLMNs        uint8 = 2
+	maxTAIListElements               int   = 16
+)
+
+// encodeTAIList encodes a NAS Tracking Area Identity list using one or more
+// partial TAI sublists as defined in TS 24.301 §9.9.3.33. It preserves the
+// input order and emits compact type 01 runs for consecutive TAC sequences.
 func encodeTAIList(tais []TAI) []byte {
 	if len(tais) == 0 {
 		return nil
 	}
-	// Type 0x00: list of TACs with the same PLMN
-	// Format: type/number (1B) | PLMN (3B) | TAC1 (2B) | TAC2 (2B) | ...
-	b := make([]byte, 0, 4+len(tais)*2)
-	b = append(b, byte(0x00|(len(tais)-1)&0x1F)) // type=00, num elements-1
-	b = append(b, tais[0].PLMN[:]...)
-	for _, t := range tais {
-		b = append(b, byte(t.TAC>>8), byte(t.TAC))
+	if len(tais) > maxTAIListElements {
+		tais = tais[:maxTAIListElements]
+	}
+
+	b := make([]byte, 0, 1+len(tais)*5)
+	for i := 0; i < len(tais); {
+		if run := consecutiveTAIRunLength(tais, i); run >= 2 {
+			b = appendTAIListType01(b, tais[i], run)
+			i += run
+			continue
+		}
+
+		end := i + 1
+		for end < len(tais) && end-i < maxTAIListElements {
+			if tais[end].PLMN != tais[i].PLMN {
+				break
+			}
+			if consecutiveTAIRunLength(tais, end) >= 2 {
+				break
+			}
+			end++
+		}
+		b = appendTAIListType00(b, tais[i:end])
+		i = end
 	}
 	return b
+}
+
+func appendTAIListType00(dst []byte, tais []TAI) []byte {
+	dst = append(dst, byte(taiListTypeOnePLMNNonConsecutive<<5)|byte(len(tais)-1))
+	dst = append(dst, tais[0].PLMN[:]...)
+	for _, tai := range tais {
+		dst = append(dst, byte(tai.TAC>>8), byte(tai.TAC))
+	}
+	return dst
+}
+
+func appendTAIListType01(dst []byte, first TAI, count int) []byte {
+	dst = append(dst, byte(taiListTypeOnePLMNConsecutive<<5)|byte(count-1))
+	dst = append(dst, first.PLMN[:]...)
+	dst = append(dst, byte(first.TAC>>8), byte(first.TAC))
+	return dst
+}
+
+func consecutiveTAIRunLength(tais []TAI, start int) int {
+	run := 1
+	for start+run < len(tais) && run < maxTAIListElements {
+		prev := tais[start+run-1]
+		next := tais[start+run]
+		if next.PLMN != prev.PLMN || next.TAC != prev.TAC+1 {
+			break
+		}
+		run++
+	}
+	return run
 }
 
 // decodeIMSI extracts an IMSI string from the mobile identity IE.

@@ -287,3 +287,20 @@ func TestDecodeCreateSessionResponseAcceptsAllSuccessfulCauses(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeCreateSessionResponseRejectsAcceptedResponseWithoutBearerEBI(t *testing.T) {
+	msg := &Message{
+		Type: MsgCreateSessionResponse,
+		IEs: []IE{
+			{Type: IETypeCause, Value: []byte{CauseRequestAccepted, 0x00}},
+			EncodeFTEID(IFTypeS11S4SGW, 0x01020304, net.ParseIP("10.0.0.2"), 0),
+			EncodeGrouped(IETypeBearerContext, 0, []IE{
+				EncodeFTEID(IFTypeS1USGW, 0x10203040, net.ParseIP("10.0.0.3"), 0),
+			}),
+		},
+	}
+
+	if _, err := DecodeCreateSessionResponse(msg); err == nil {
+		t.Fatal("DecodeCreateSessionResponse succeeded without bearer EBI")
+	}
+}

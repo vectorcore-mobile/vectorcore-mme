@@ -7,12 +7,54 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
+
+type releaseAccessMockS11 struct {
+	mockS11
+	rabrCalls []gtpv2.ReleaseAccessBearersRequest
+	rabrErr   error
+}
+
+type ddnAckCall struct {
+	peer       string
+	teid       uint32
+	seq        uint32
+	cause      uint8
+	delayValue *uint8
+}
+
+type ddnMockS11 struct {
+	NoopS11Client
+	ackCalls []ddnAckCall
+}
+
+func (m *releaseAccessMockS11) SendRABR(_ uint32, req *gtpv2.ReleaseAccessBearersRequest) (uint32, error) {
+	m.rabrCalls = append(m.rabrCalls, *req)
+	return uint32(len(m.rabrCalls)), m.rabrErr
+}
+
+func (m *ddnMockS11) SendDDNAck(peer string, teid uint32, seq uint32, cause uint8, delayValue *uint8) error {
+	call := ddnAckCall{
+		peer:  peer,
+		teid:  teid,
+		seq:   seq,
+		cause: cause,
+	}
+	if delayValue != nil {
+		v := *delayValue
+		call.delayValue = &v
+	}
+	m.ackCalls = append(m.ackCalls, call)
+	return nil
+}
 
 // makeIdleRegisteredUE creates an EMM-REGISTERED + ECM-IDLE UE with a TAI set to tac.
 // It reuses makeRegisteredIdleUE from service_request_test.go, and additionally
@@ -48,6 +90,20 @@ func registerENBWithTAC(srv *Server, addr string, tac uint16) chan []byte {
 	return ch
 }
 
+func attachDDNPDN(ue *uecontext.Context, peer string, localTEID uint32, defaultEBI uint8) {
+	ue.Lock()
+	defer ue.Unlock()
+	ue.PDNs["ims"] = &uecontext.PDNContext{
+		APN:          "ims",
+		DefaultEBI:   defaultEBI,
+		LocalS11TEID: localTEID,
+		SGWAddress:   peer,
+		SGWC_TEID:    0x11112222,
+		SGWU_TEID:    0x33334444,
+		State:        "active",
+	}
+}
+
 // ── encoding unit tests ───────────────────────────────────────────────────────
 
 func TestEncodeUEIdentityIndexValue(t *testing.T) {
@@ -78,6 +134,15 @@ func TestEncodeUEIdentityIndexValue(t *testing.T) {
 		t.Errorf("value=1 bytes: got %02X %02X, want 00 40", b3[0], b3[1])
 	}
 	_ = b2
+}
+
+func TestPagingIEConstantsRel16(t *testing.T) {
+	if got, want := pdu.IEPagingDRX, uint16(44); got != want {
+		t.Fatalf("IEPagingDRX: got %d, want %d", got, want)
+	}
+	if got, want := pdu.IECNDomain, uint16(109); got != want {
+		t.Fatalf("IECNDomain: got %d, want %d", got, want)
+	}
 }
 
 func TestEncodeUEPagingIDSTMSI(t *testing.T) {
@@ -169,6 +234,23 @@ func TestPageUE_NoENB(t *testing.T) {
 	}
 }
 
+func TestPageUE_NoPagingIdentity(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.10.0.31:36412"
+
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 1)
+	ue.Lock()
+	ue.GUTI = nil
+	ue.Unlock()
+
+	registerENBWithTAC(srv, addr, 1)
+
+	err := srv.PageUE(ue.IMSI)
+	if err != ErrNoPagingIdentity {
+		t.Errorf("error: got %v, want ErrNoPagingIdentity", err)
+	}
+}
+
 func TestPageUE_ValidIdleUE(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.10.0.4:36412"
@@ -182,7 +264,8 @@ func TestPageUE_ValidIdleUE(t *testing.T) {
 
 	// Paging PDU must be sent
 	select {
-	case <-ch:
+	case raw := <-ch:
+		assertPagingMessageHasMandatoryIEs(t, raw)
 	case <-time.After(200 * time.Millisecond):
 		t.Error("no Paging PDU sent to eNB")
 	}
@@ -199,6 +282,241 @@ func TestPageUE_ValidIdleUE(t *testing.T) {
 	ue.Lock()
 	ue.StopTimer(uecontext.TimerT3413)
 	ue.Unlock()
+}
+
+func TestHandleDownlinkDataNotification_IdleRegisteredUEStartsPaging(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{
+		DDNEnabled:         true,
+		RetryInterval:      25 * time.Millisecond,
+		MaxAttempts:        3,
+		TransactionTimeout: 200 * time.Millisecond,
+	}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.1:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020304
+		seq  = 0x10203
+		tac  = uint16(42)
+	)
+	ebi := uint8(6)
+	arp := uint8(8)
+
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, tac)
+	ch := registerENBWithTAC(srv, addr, tac)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	req := &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: seq, EBI: &ebi, ARP: &arp}
+	srv.HandleDownlinkDataNotification(peer, req)
+	defer func() {
+		ue.Lock()
+		ue.StopTimer(ddnPagingRetryTimerName)
+		ue.StopTimer(ddnPagingTimeoutTimerName)
+		ue.Unlock()
+	}()
+
+	if len(mock.ackCalls) != 1 {
+		t.Fatalf("DDN Ack count got %d, want 1", len(mock.ackCalls))
+	}
+	if got := mock.ackCalls[0].cause; got != gtpv2.CauseRequestAccepted {
+		t.Fatalf("DDN Ack cause got %d, want %d", got, gtpv2.CauseRequestAccepted)
+	}
+
+	select {
+	case raw := <-ch:
+		assertPagingMessageHasMandatoryIEs(t, raw)
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no Paging PDU sent after DDN")
+	}
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.PagingAttempts != 1 {
+		t.Fatalf("PagingAttempts got %d, want 1", ue.PagingAttempts)
+	}
+	if ue.DDNPaging == nil {
+		t.Fatal("DDNPaging transaction not created")
+	}
+	if got := ue.DDNPaging.Status; got != uecontext.DDNPagingPagingSent {
+		t.Fatalf("DDNPaging status got %q, want %q", got, uecontext.DDNPagingPagingSent)
+	}
+}
+
+func TestHandleDownlinkDataNotification_ConnectedUESuppressesPaging(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{DDNEnabled: true}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.2:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020305
+		seq  = 0x10204
+	)
+	ebi := uint8(6)
+
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	ue.Lock()
+	ue.ECMState = emm.ECMConnected
+	ue.Unlock()
+	ch := registerENBWithTAC(srv, addr, 42)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	req := &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: seq, EBI: &ebi}
+	srv.HandleDownlinkDataNotification(peer, req)
+
+	if len(mock.ackCalls) != 1 {
+		t.Fatalf("DDN Ack count got %d, want 1", len(mock.ackCalls))
+	}
+	if got := mock.ackCalls[0].cause; got != gtpv2.CauseRequestAccepted {
+		t.Fatalf("DDN Ack cause got %d, want %d", got, gtpv2.CauseRequestAccepted)
+	}
+	select {
+	case raw := <-ch:
+		t.Fatalf("unexpected Paging PDU for connected UE: %x", raw)
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.DDNPaging != nil {
+		t.Fatal("DDNPaging transaction should not exist for connected UE")
+	}
+}
+
+func TestHandleDownlinkDataNotification_UnknownTEIDAcksContextNotFound(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{DDNEnabled: true}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	req := &gtpv2.DownlinkDataNotification{TEID: 0xdeadbeef, SeqNum: 0x33}
+	srv.HandleDownlinkDataNotification("10.90.250.59:2123", req)
+
+	if len(mock.ackCalls) != 1 {
+		t.Fatalf("DDN Ack count got %d, want 1", len(mock.ackCalls))
+	}
+	if got := mock.ackCalls[0].cause; got != gtpv2.CauseContextNotFound {
+		t.Fatalf("DDN Ack cause got %d, want %d", got, gtpv2.CauseContextNotFound)
+	}
+}
+
+func TestHandleDownlinkDataNotification_DuplicateDoesNotRepaging(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{
+		DDNEnabled:         true,
+		RetryInterval:      250 * time.Millisecond,
+		MaxAttempts:        3,
+		TransactionTimeout: time.Second,
+	}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.3:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020306
+		seq  = 0x10205
+	)
+	ebi := uint8(6)
+
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	ch := registerENBWithTAC(srv, addr, 42)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	req := &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: seq, EBI: &ebi}
+	srv.HandleDownlinkDataNotification(peer, req)
+	srv.HandleDownlinkDataNotification(peer, req)
+	defer func() {
+		ue.Lock()
+		ue.StopTimer(ddnPagingRetryTimerName)
+		ue.StopTimer(ddnPagingTimeoutTimerName)
+		ue.Unlock()
+	}()
+
+	if len(mock.ackCalls) != 2 {
+		t.Fatalf("DDN Ack count got %d, want 2", len(mock.ackCalls))
+	}
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected first Paging PDU")
+	}
+	select {
+	case raw := <-ch:
+		t.Fatalf("unexpected duplicate Paging PDU: %x", raw)
+	case <-time.After(80 * time.Millisecond):
+	}
+}
+
+func TestHandleDownlinkDataNotification_RetryAndCompletion(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{
+		DDNEnabled:         true,
+		RetryInterval:      20 * time.Millisecond,
+		MaxAttempts:        3,
+		TransactionTimeout: 200 * time.Millisecond,
+	}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.4:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020307
+		seq  = 0x10206
+	)
+	ebi := uint8(6)
+
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	ch := registerENBWithTAC(srv, addr, 42)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	req := &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: seq, EBI: &ebi}
+	srv.HandleDownlinkDataNotification(peer, req)
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected first Paging PDU")
+	}
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected retry Paging PDU")
+	}
+
+	ue.Lock()
+	if ue.DDNPaging == nil {
+		ue.Unlock()
+		t.Fatal("DDNPaging transaction not created")
+	}
+	txID := ue.DDNPaging.ID
+	attempts := ue.DDNPaging.PagingAttemptCount
+	ue.Unlock()
+	if attempts < 2 {
+		t.Fatalf("paging attempts got %d, want at least 2", attempts)
+	}
+
+	srv.noteDDNServiceRequest(ue, 0xabc, 7)
+	srv.noteDDNResumeInProgress(ue)
+	srv.completeDDNPagingIfPending(ue, "modify_bearer_accepted", []uint8{ebi})
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.DDNPaging == nil || ue.DDNPaging.ID != txID {
+		t.Fatal("DDNPaging transaction unexpectedly replaced")
+	}
+	if got := ue.DDNPaging.Status; got != uecontext.DDNPagingCompleted {
+		t.Fatalf("DDNPaging status got %q, want %q", got, uecontext.DDNPagingCompleted)
+	}
+	if ue.PagingAttempts != 0 {
+		t.Fatalf("PagingAttempts got %d, want 0 after completion", ue.PagingAttempts)
+	}
 }
 
 func TestPageUE_TAIMatchesCorrectENB(t *testing.T) {
@@ -518,6 +836,255 @@ func TestUEContextReleaseRequest_MarksReleasePendingBeforeComplete(t *testing.T)
 	}
 }
 
+func TestUEContextReleaseRequest_DefersReleaseCommandUntilRABRsp(t *testing.T) {
+	mock := &releaseAccessMockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.13:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.IMSI = "311435300070581"
+	ue.SGWAddress = "10.90.250.59:2123"
+	ue.SGWC_TEID = 0xABCD1001
+	ue.SGWU_TEID = 0xABCD1002
+	ue.SGWU_IP = net.ParseIP("10.90.250.59").To4()
+	ue.ENBS1APID = 2
+	ue.ENBU_TEID = 0x00000002
+	ue.ENBU_IP = net.ParseIP("192.168.105.35").To4()
+	ue.DefaultEBI = 5
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(2)},
+	}
+	srv.handleUEContextReleaseRequest(addr, nil, ieList)
+
+	if len(mock.rabrCalls) != 1 {
+		t.Fatalf("expected 1 RABR call, got %d", len(mock.rabrCalls))
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("unexpected UE Context Release Command before RABRsp: %x", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	srv.HandleRABRResult(mmeID, &gtpv2.ReleaseAccessBearersResult{
+		Peer:              "10.90.250.59:2123",
+		RequestedSGWCTEID: 0xABCD1001,
+		Cause:             gtpv2.CauseRequestAccepted,
+	}, nil)
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no UE Context Release Command sent after RABRsp")
+	}
+
+	found, ok := srv.ueManager.GetByMMEID(mmeID)
+	if !ok {
+		t.Fatal("UE was removed from manager; expected ECM-IDLE retention")
+	}
+	found.Lock()
+	enbuTEID := found.ENBU_TEID
+	enbuIP := found.ENBU_IP
+	releasePending := found.S1ReleasePending
+	found.Unlock()
+	if enbuTEID != 0 {
+		t.Errorf("ENBU_TEID should be cleared after RABRsp, got %#x", enbuTEID)
+	}
+	if enbuIP != nil {
+		t.Errorf("ENBU_IP should be cleared after RABRsp, got %v", enbuIP)
+	}
+	if !releasePending {
+		t.Error("S1ReleasePending should remain true until UE Context Release Complete")
+	}
+}
+
+func TestUEContextReleaseRequest_SendsRABRPerUniquePDNSession(t *testing.T) {
+	mock := &releaseAccessMockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.14:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.IMSI = "311435300070582"
+	ue.ENBS1APID = 3
+	ue.TAI = &emm.TAI{TAC: 1}
+	ue.SGWAddress = "10.90.250.80:2123"
+	ue.SGWC_TEID = 0x800a6003
+	ue.DefaultEBI = 5
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:        "internet",
+			DefaultEBI: 5,
+			SGWAddress: "10.90.250.80:2123",
+			SGWC_TEID:  0x800a6003,
+			State:      "active",
+		},
+		"ims": {
+			APN:        "ims",
+			DefaultEBI: 6,
+			SGWAddress: "10.90.250.80:2123",
+			SGWC_TEID:  0x800a8003,
+			State:      "active",
+		},
+		"mms": {
+			APN:        "mms",
+			DefaultEBI: 7,
+			SGWAddress: "10.90.250.80:2123",
+			SGWC_TEID:  0x800aa003,
+			State:      "active",
+		},
+	}
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(3)},
+	}
+	srv.handleUEContextReleaseRequest(addr, nil, ieList)
+
+	if len(mock.rabrCalls) != 3 {
+		t.Fatalf("expected 3 RABR calls, got %d", len(mock.rabrCalls))
+	}
+	gotTEIDs := map[uint32]struct{}{}
+	for _, call := range mock.rabrCalls {
+		gotTEIDs[call.SGWC_TEID] = struct{}{}
+	}
+	for _, wantTEID := range []uint32{0x800a6003, 0x800a8003, 0x800aa003} {
+		if _, ok := gotTEIDs[wantTEID]; !ok {
+			t.Fatalf("missing RABR for SGW-C TEID %#x", wantTEID)
+		}
+	}
+
+	select {
+	case msg := <-ch:
+		t.Fatalf("unexpected UE Context Release Command before all RABRs complete: %x", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	srv.HandleRABRResult(mmeID, &gtpv2.ReleaseAccessBearersResult{
+		Peer:              "10.90.250.80:2123",
+		RequestedSGWCTEID: 0x800a6003,
+		Cause:             gtpv2.CauseRequestAccepted,
+	}, nil)
+	srv.HandleRABRResult(mmeID, &gtpv2.ReleaseAccessBearersResult{
+		Peer:              "10.90.250.80:2123",
+		RequestedSGWCTEID: 0x800a8003,
+		Cause:             gtpv2.CauseRequestAccepted,
+	}, nil)
+
+	select {
+	case msg := <-ch:
+		t.Fatalf("unexpected UE Context Release Command before final RABR result: %x", msg)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	srv.HandleRABRResult(mmeID, &gtpv2.ReleaseAccessBearersResult{
+		Peer:              "10.90.250.80:2123",
+		RequestedSGWCTEID: 0x800aa003,
+		Cause:             gtpv2.CauseRequestAccepted,
+	}, nil)
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("no UE Context Release Command sent after final RABR result")
+	}
+}
+
+func TestUEContextReleaseRequest_DeduplicatesPDNsSharingSameSession(t *testing.T) {
+	mock := &releaseAccessMockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.15:36412"
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.IMSI = "311435300070583"
+	ue.ENBS1APID = 4
+	ue.SGWAddress = "10.90.250.80:2123"
+	ue.SGWC_TEID = 0x800a6003
+	ue.DefaultEBI = 5
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:        "internet",
+			DefaultEBI: 5,
+			SGWAddress: "10.90.250.80:2123",
+			SGWC_TEID:  0x800a6003,
+			State:      "active",
+		},
+		"legacy-copy": {
+			APN:        "legacy-copy",
+			DefaultEBI: 9,
+			SGWAddress: "10.90.250.80:2123",
+			SGWC_TEID:  0x800a6003,
+			State:      "active",
+		},
+	}
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(4)},
+	}
+	srv.handleUEContextReleaseRequest(addr, nil, ieList)
+
+	if len(mock.rabrCalls) != 1 {
+		t.Fatalf("expected 1 deduplicated RABR call, got %d", len(mock.rabrCalls))
+	}
+}
+
+func TestUEContextReleaseRequest_BadENBUEIDSendErrorIndication(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.11:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.ENBS1APID = 1
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: []byte{0xff}},
+		{ID: pdu.IECause, Value: ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUserInactivity)},
+	}
+	srv.handleUEContextReleaseRequest(addr, &pdu.PDU{
+		Type:          pdu.PDUTypeInitiatingMessage,
+		ProcedureCode: pdu.ProcUEContextReleaseRequest,
+		Criticality:   aper.CriticalityIgnore,
+	}, ieList)
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+}
+
 func TestUEContextReleaseComplete_DoesNotClearReboundServiceRequestAccess(t *testing.T) {
 	mock := &mockS11{}
 	srv := newTestServer(mock)
@@ -561,6 +1128,39 @@ func TestUEContextReleaseComplete_DoesNotClearReboundServiceRequestAccess(t *tes
 	if releasePending {
 		t.Error("old S1 release should be acknowledged and cleared")
 	}
+}
+
+func TestUEContextReleaseComplete_WrongPairSendsErrorIndication(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+
+	const addr = "10.10.4.12:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.ENBGlobalID = addr
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.ENBS1APID = 1
+	mmeID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(2)},
+	}
+	srv.handleUEContextReleaseComplete(addr, &pdu.PDU{
+		Type:          pdu.PDUTypeSuccessfulOutcome,
+		ProcedureCode: pdu.ProcUEContextRelease,
+		Criticality:   aper.CriticalityReject,
+	}, ieList)
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcErrorIndication {
+		t.Fatalf("procedureCode: got %d, want ErrorIndication", msg.ProcedureCode)
+	}
+	assertErrorIndicationCause(t, msg, ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnknownPairUES1APID)
 }
 
 func TestUEContextRelease_DeregisteredIsRemoved(t *testing.T) {
@@ -668,7 +1268,7 @@ func TestUEContextRelease_ClearsENBGlobalID(t *testing.T) {
 
 // ── C-2 regression: nil TAI must not produce a malformed Paging PDU ──────────
 
-func TestPageUE_NilTAI_OmitsTAIListIE(t *testing.T) {
+func TestPageUE_NilTAIRejectsPaging(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.10.6.1:36412"
 
@@ -680,28 +1280,22 @@ func TestPageUE_NilTAI_OmitsTAIListIE(t *testing.T) {
 
 	ch := registerENBWithTAC(srv, addr, 1)
 
-	if err := srv.PageUE(ue.IMSI); err != nil {
-		t.Fatalf("PageUE: %v", err)
+	if err := srv.PageUE(ue.IMSI); err != ErrNoPagingTAI {
+		t.Fatalf("PageUE error: got %v, want %v", err, ErrNoPagingTAI)
 	}
 
 	select {
 	case raw := <-ch:
-		// Verify the PDU does not contain IEPagingTAIList (IE 46 = 0x002E).
-		// A brute-force scan suffices for this regression check.
-		for i := 0; i+1 < len(raw); i++ {
-			id := uint16(raw[i])<<8 | uint16(raw[i+1])
-			if id == pdu.IEPagingTAIList {
-				t.Errorf("IEPagingTAIList (IE 46) found in PDU at offset %d — should be omitted when TAI is nil", i)
-				break
-			}
-		}
+		t.Fatalf("unexpected Paging PDU sent despite nil TAI: %x", raw)
 	case <-time.After(200 * time.Millisecond):
-		t.Error("no Paging PDU sent")
 	}
 
 	ue.Lock()
-	ue.StopTimer(uecontext.TimerT3413)
+	attempts := ue.PagingAttempts
 	ue.Unlock()
+	if attempts != 0 {
+		t.Fatalf("PagingAttempts changed on rejected paging: got %d, want 0", attempts)
+	}
 }
 
 // ── S-2 regression: stale timer with non-zero attempt mismatch ───────────────
@@ -794,4 +1388,37 @@ func TestPagingMetrics_SentAndTimeout(t *testing.T) {
 	metrics.PagingTotal.WithLabelValues("sent").Inc()
 	metrics.PagingTotal.WithLabelValues("timeout").Inc()
 	metrics.PagingTotal.WithLabelValues("success").Inc()
+	metrics.PagingTotal.WithLabelValues("no_tai").Inc()
+}
+
+func assertPagingMessageHasMandatoryIEs(t *testing.T, raw []byte) {
+	t.Helper()
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode paging PDU: %v", err)
+	}
+	if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcPaging {
+		t.Fatalf("paging header got type=%s proc=%d, want initiating Paging", msg.Type, msg.ProcedureCode)
+	}
+	ieList, err := pdu.DecodeProcedureIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeProcedureIEContainer: %v", err)
+	}
+
+	want := map[uint16]bool{
+		pdu.IEUEIdentityIndexValue: false,
+		pdu.IEUEPagingID:           false,
+		pdu.IECNDomain:             false,
+		pdu.IEPagingTAIList:        false,
+	}
+	for _, ie := range ieList {
+		if _, ok := want[ie.ID]; ok {
+			want[ie.ID] = true
+		}
+	}
+	for ieID, seen := range want {
+		if !seen {
+			t.Fatalf("Paging missing mandatory IE %d", ieID)
+		}
+	}
 }

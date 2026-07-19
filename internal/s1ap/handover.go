@@ -76,6 +76,10 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 	ueNetCap := ue.UENetworkCapability
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
+	ueAMBRDown := ue.UEAMBRDown
+	ueAMBRUp := ue.UEAMBRUp
+	apn := ue.APN
+	apnCfg, haveAPNCfg := subscriberAPNConfigForResumeLocked(ue, ue.APN)
 	ue.Unlock()
 
 	if emmState != emm.StateRegistered {
@@ -109,6 +113,32 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 	}
 	if hoState != uecontext.HOStateNone {
 		log.Warn("s1ap: HandoverRequired: UE already in handover", zap.Uint8("ho_state", uint8(hoState)))
+		metrics.HandoverTotal.WithLabelValues("preparation", "wrong_state").Inc()
+		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
+			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
+		return
+	}
+	if ueAMBRDown == 0 || ueAMBRUp == 0 {
+		log.Warn("s1ap: HandoverRequired: missing UE AMBR",
+			zap.Uint32("ue_ambr_down", ueAMBRDown),
+			zap.Uint32("ue_ambr_up", ueAMBRUp))
+		metrics.HandoverTotal.WithLabelValues("preparation", "wrong_state").Inc()
+		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
+			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
+		return
+	}
+	if !haveAPNCfg {
+		log.Warn("s1ap: HandoverRequired: missing subscriber APN policy",
+			zap.String("apn", apn))
+		metrics.HandoverTotal.WithLabelValues("preparation", "wrong_state").Inc()
+		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
+			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
+		return
+	}
+	if missing := validateSubscriberAPNPolicy(&apnCfg); len(missing) != 0 {
+		log.Warn("s1ap: HandoverRequired: incomplete subscriber APN policy",
+			zap.String("apn", apn),
+			zap.Strings("missing_fields", missing))
 		metrics.HandoverTotal.WithLabelValues("preparation", "wrong_state").Inc()
 		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
 			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
@@ -149,11 +179,15 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 	ue.Unlock()
 
 	b := &BearerInfo{
-		EBI:       defaultEBI,
-		SGWU_TEID: sgwuTEID,
-		SGWU_IP:   sgwuIP,
+		EBI:                     defaultEBI,
+		QCI:                     apnCfg.QCI,
+		ARPPriority:             apnCfg.ARPPriority,
+		PreemptionCapability:    apnCfg.PreemptionCapability,
+		PreemptionVulnerability: apnCfg.PreemptionVulnerability,
+		SGWU_TEID:               sgwuTEID,
+		SGWU_IP:                 sgwuIP,
 	}
-	s.sendHandoverRequest(targetAddr, mmeUEID, b, nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg)
+	s.sendHandoverRequest(targetAddr, mmeUEID, b, uint64(ueAMBRDown), uint64(ueAMBRUp), nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg)
 }
 
 // handleHandoverRequestAck handles S1AP Handover Request Acknowledge from the target eNB.
@@ -576,7 +610,16 @@ func decodeERABAdmittedList(data []byte) (ebi uint8, teid uint32, ip net.IP, err
 
 // encodeHOERABList encodes an E-RABToBeSetupListHOReq (IE 53) with one item (IE 27).
 // The item body is identical to encodeERABList with no NAS-PDU; only the IE IDs differ.
-func encodeHOERABList(b *BearerInfo) []byte {
+func encodeHOERABList(b *BearerInfo) ([]byte, error) {
+	if b == nil {
+		return nil, fmt.Errorf("s1ap: handover E-RAB requires bearer info")
+	}
+	if b.QCI == 0 {
+		return nil, fmt.Errorf("s1ap: handover E-RAB missing bearer QCI")
+	}
+	if b.ARPPriority == 0 {
+		return nil, fmt.Errorf("s1ap: handover E-RAB missing bearer ARP priority")
+	}
 	w := aper.NewBitWriter()
 
 	// E-RABToBeSetupItemHOReq preamble: ext=0, data-fwd-not-possible opt=0, iE-Ext opt=0
@@ -588,16 +631,24 @@ func encodeHOERABList(b *BearerInfo) []byte {
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.EBI), 0, 15)
 
 	// E-RABLevelQoSParameters SEQUENCE
-	w.WriteBit(0)                                       // extension marker
-	w.WriteBit(0)                                       // gbrQosInformation absent
-	w.WriteBit(0)                                       // iE-Extensions absent
-	_ = aper.EncodeConstrainedWholeNumber(w, 9, 0, 255) // QCI=9
+	w.WriteBit(0) // extension marker
+	w.WriteBit(0) // gbrQosInformation absent
+	w.WriteBit(0) // iE-Extensions absent
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.QCI), 0, 255)
 	// AllocationAndRetentionPriority SEQUENCE
-	w.WriteBit(0)                                      // extension marker
-	w.WriteBit(0)                                      // iE-Extensions absent
-	_ = aper.EncodeConstrainedWholeNumber(w, 8, 0, 15) // priorityLevel=8
-	_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)  // pre-emptionCapability=shall-not-trigger
-	_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)  // pre-emptionVulnerability=pre-emptable
+	w.WriteBit(0) // extension marker
+	w.WriteBit(0) // iE-Extensions absent
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(b.ARPPriority), 0, 15)
+	if b.PreemptionCapability {
+		_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
+	} else {
+		_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
+	}
+	if b.PreemptionVulnerability {
+		_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
+	} else {
+		_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
+	}
 
 	// transportLayerAddress BIT STRING (SIZE 1..160)
 	w.WriteBit(0) // no extension
@@ -631,7 +682,7 @@ func encodeHOERABList(b *BearerInfo) []byte {
 	_ = aper.EncodeConstrainedWholeNumber(ow, 1, 1, 256)
 	ow.AlignToByte()
 	ow.WriteOctets(innerContainer)
-	return ow.Bytes()
+	return ow.Bytes(), nil
 }
 
 // sendHandoverRequest sends an S1AP Handover Request to the target eNB.
@@ -639,6 +690,8 @@ func (s *Server) sendHandoverRequest(
 	targetAddr string,
 	mmeUEID uint32,
 	b *BearerInfo,
+	ueAMBRDown uint64,
+	ueAMBRUp uint64,
 	nh []byte,
 	ncc uint8,
 	causeBytes []byte,
@@ -650,7 +703,11 @@ func (s *Server) sendHandoverRequest(
 		causeBytes = ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)
 	}
 
-	erabListValue := encodeHOERABList(b)
+	erabListValue, err := encodeHOERABList(b)
+	if err != nil {
+		s.log.Error("s1ap: failed to encode handover E-RAB list", zap.Error(err), zap.Uint32("mme_ue_id", mmeUEID))
+		return
+	}
 	secCtxValue := encodeSecurityContextIE(nh, ncc)
 
 	// UESecurityCapabilities: extract EEA/EIA bytes from stored UE network capability.
@@ -663,7 +720,7 @@ func (s *Server) sendHandoverRequest(
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 		{ID: pdu.IEHandoverType, Criticality: aper.CriticalityReject, Value: ies.EncodeHandoverType(0)}, // intralte
 		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: causeBytes},
-		{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ies.EncodeUEAggregateMaxBitrate(100000000, 100000000)},
+		{ID: pdu.IEUEAggregateMaxBitrate, Criticality: aper.CriticalityReject, Value: ies.EncodeUEAggregateMaxBitrate(ueAMBRDown, ueAMBRUp)},
 		{ID: pdu.IEERABToBeSetupListHOReq, Criticality: aper.CriticalityReject, Value: erabListValue},
 		{ID: pdu.IESourceToTargetTransparentContainer, Criticality: aper.CriticalityReject, Value: srcToTgt},
 		{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: ies.EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte)},

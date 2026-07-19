@@ -290,7 +290,7 @@ func TestIMSDefaultBearerReadyAfterNASERABAndMBR(t *testing.T) {
 	}
 	ue.Unlock()
 
-	srv.HandleMBRResult(ue.MMEUES1APID, nil)
+	srv.HandleMBRResult(ue.MMEUES1APID, "", nil, nil)
 
 	ue.Lock()
 	pdn := ue.PDNs["ims"]

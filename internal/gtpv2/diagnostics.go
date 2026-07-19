@@ -50,7 +50,8 @@ func describeIE(ie IE) string {
 			return base + " short_bearer_qos"
 		}
 		return fmt.Sprintf("%s arp=0x%02x qci=%d", base, ie.Value[0], ie.Value[1])
-	case IETypePCO, IETypeIndication, IETypeChargingChars, IETypeUETimeZone, IETypeAPNRestriction:
+	case IETypeARP, IETypeDelayValue, IETypeThrottling, IETypeEPCTimer, IETypeIntegerNumber,
+		IETypePagingSvcInfo, IETypePCO, IETypeIndication, IETypeChargingChars, IETypeUETimeZone, IETypeAPNRestriction:
 		return base + " value_hex=" + hex.EncodeToString(ie.Value)
 	default:
 		return base
@@ -122,6 +123,18 @@ func ieTypeName(t uint8) string {
 		return "APNRestriction"
 	case IETypeSelectionMode:
 		return "SelectionMode"
+	case IETypeARP:
+		return "ARP"
+	case IETypeDelayValue:
+		return "DelayValue"
+	case IETypeThrottling:
+		return "Throttling"
+	case IETypeEPCTimer:
+		return "EPCTimer"
+	case IETypePagingSvcInfo:
+		return "PagingAndServiceInformation"
+	case IETypeIntegerNumber:
+		return "IntegerNumber"
 	default:
 		return "IE"
 	}

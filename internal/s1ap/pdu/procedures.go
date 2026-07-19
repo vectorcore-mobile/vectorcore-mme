@@ -48,6 +48,8 @@ const (
 	ProcMMEConfigurationTransfer     uint8 = 41
 	ProcKill                         uint8 = 43
 	ProcCellTrafficTrace             uint8 = 44
+	ProcPWSRestartIndication         uint8 = 49
+	ProcERABModificationIndication   uint8 = 50
 )
 
 // S1AP IE identifiers (3GPP TS 36.413 Annex A).
@@ -65,9 +67,12 @@ const (
 	IEERABSetupItemBearerSURes                  uint16 = 39
 	IEERABItem                                  uint16 = 35
 	IEERABToBeModifiedListBearerModReq          uint16 = 30
+	IEERABModifyListBearerModRes                uint16 = 31
 	IEERABFailedToModifyList                    uint16 = 32
 	IEERABToBeReleasedList                      uint16 = 33
 	IEERABFailedToReleaseList                   uint16 = 34
+	IEERABToBeModifiedItemBearerModReq          uint16 = 36
+	IEERABModifyItemBearerModRes                uint16 = 37
 	IEERABReleaseItemBearerRelComp              uint16 = 15
 	IEERABReleaseListERABRelComp                uint16 = 69
 	IEERABToBeSetupListCtxtSUReq                uint16 = 24 // outer list (ICS Request)
@@ -82,7 +87,9 @@ const (
 	IECriticalityDiagnostics                    uint16 = 58
 	IEGlobal_ENB_ID                             uint16 = 59
 	IEeNBname                                   uint16 = 60
+	IEMMEname                                   uint16 = 61
 	IESupportedTAs                              uint16 = 64
+	IETimeToWait                                uint16 = 65
 	IEUEAggregateMaxBitrate                     uint16 = 66
 	IETAI                                       uint16 = 67
 	IESecurityKey                               uint16 = 73
@@ -104,10 +111,19 @@ const (
 	IEUES1APIDs                                 uint16 = 99  // UE-S1AP-IDs CHOICE (for UE Context Release Command)
 	IESTMSI                                     uint16 = 96  // S-TMSI (optional in Initial UE Message)
 	IEUEPagingID                                uint16 = 43  // UE-PagingID CHOICE (s-TMSI or IMSI)
+	IEPagingDRX                                 uint16 = 44  // Per-UE Paging DRX
 	IEPagingTAIList                             uint16 = 46  // TAI List for Paging message
 	IEUEIdentityIndexValue                      uint16 = 80  // UE Identity Index Value (10-bit BIT STRING)
-	IEPagingDRX                                 uint16 = 109 // Per-UE Paging DRX (≠ IEDefaultPagingDRX=137)
+	IECNDomain                                  uint16 = 109 // CN Domain (mandatory in Paging; ps or cs)
 	IEERABToBeSwitchedInUplinkList              uint16 = 22  // Path Switch Request: uplink E-RAB list
+	IEERABToBeModifiedListBearerModInd          uint16 = 199
+	IEERABToBeModifiedItemBearerModInd          uint16 = 200
+	IEERABNotToBeModifiedListBearerModInd       uint16 = 201
+	IEERABNotToBeModifiedItemBearerModInd       uint16 = 202
+	IEERABModifyListBearerModConf               uint16 = 203
+	IEERABModifyItemBearerModConf               uint16 = 204
+	IEERABFailedToModifyListBearerModConf       uint16 = 205
+	IEERABToBeReleasedListBearerModConf         uint16 = 210
 
 	// S1 Handover IEs (TS 36.413 Annex A)
 	IEERABToBeSetupListHOReq             uint16 = 53  // HandoverRequest: E-RAB list outer

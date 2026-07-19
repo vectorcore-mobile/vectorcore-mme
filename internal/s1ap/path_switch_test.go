@@ -23,13 +23,15 @@ type mbrMockS11 struct {
 	mu       sync.Mutex
 	mbrErr   error    // error returned from SendMBR (nil = success)
 	mbrCalls []uint32 // mmeUEIDs passed to SendMBR
+	reqs     []*gtpv2.ModifyBearerRequest
 }
 
 func (m *mbrMockS11) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
 func (m *mbrMockS11) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
-func (m *mbrMockS11) SendMBR(mmeUEID uint32, _ *gtpv2.ModifyBearerRequest) error {
+func (m *mbrMockS11) SendMBR(mmeUEID uint32, req *gtpv2.ModifyBearerRequest) error {
 	m.mu.Lock()
 	m.mbrCalls = append(m.mbrCalls, mmeUEID)
+	m.reqs = append(m.reqs, req)
 	err := m.mbrErr
 	m.mu.Unlock()
 	return err
@@ -68,52 +70,53 @@ func makeConnectedUEWithBearer(srv *Server, addr string) *uecontext.Context {
 	return ue
 }
 
-// buildPathSwitchUplinkListBytes encodes a one-item E-RABToBeSwitchedInUplinkList value.
-// The inner item uses a dummy IE ID (0x00B0=176) wrapping the E-RABToBeSwitchedInUplinkItem.
-func buildPathSwitchUplinkListBytes(ebi uint8, teid uint32, ip net.IP) []byte {
-	// Encode item body: E-RABToBeSwitchedInUplinkItem SEQUENCE
-	// ext=0, iE-Extensions opt=0, E-RAB-ID(0..15), BIT STRING addr, GTP-TEID
-	iw := aper.NewBitWriter()
-	iw.WriteBit(0) // extension marker
-	iw.WriteBit(0) // iE-Extensions absent
-	_ = aper.EncodeConstrainedWholeNumber(iw, int64(ebi), 0, 15)
-	// transportLayerAddress BIT STRING (1..160,...): ext=0, len=32, align, IPv4 bytes
-	iw.WriteBit(0)                                        // BIT STRING ext=0 (no extension)
-	_ = aper.EncodeConstrainedWholeNumber(iw, 32, 1, 160) // length = 32 bits
-	iw.AlignToByte()
-	ipv4 := ip.To4()
-	if ipv4 == nil {
-		ipv4 = []byte{0, 0, 0, 0}
-	}
-	iw.WriteOctets(ipv4)
-	// GTP-TEID OCTET STRING SIZE(4): fixed, no length prefix
-	iw.AlignToByte()
-	iw.WriteOctet(byte(teid >> 24))
-	iw.WriteOctet(byte(teid >> 16))
-	iw.WriteOctet(byte(teid >> 8))
-	iw.WriteOctet(byte(teid))
-	itemBody := iw.Bytes()
-
-	// Wrap item body in inner IE container (IE 176, criticality=ignore), without outer count.
-	innerIE := pdu.EncodeIEContainer([]pdu.ProtocolIE{
-		{ID: 176, Criticality: aper.CriticalityIgnore, Value: itemBody},
-	})
-	// Strip the 2-byte count prefix that EncodeIEContainer adds.
-	if len(innerIE) >= 2 {
-		innerIE = innerIE[2:]
-	}
-
-	// Outer: SEQUENCE OF count=1 constrained(1..256), align, then item.
+func buildPathSwitchUplinkListBytes(bearers ...pathSwitchBearer) []byte {
 	ow := aper.NewBitWriter()
-	_ = aper.EncodeConstrainedWholeNumber(ow, 1, 1, 256)
+	_ = aper.EncodeConstrainedWholeNumber(ow, int64(len(bearers)), 1, 256)
 	ow.AlignToByte()
-	ow.WriteOctets(innerIE)
+	for _, bearer := range bearers {
+		iw := aper.NewBitWriter()
+		iw.WriteBit(0)
+		iw.WriteBit(0)
+		_ = aper.EncodeConstrainedWholeNumber(iw, int64(bearer.EBI), 0, 15)
+		iw.WriteBit(0)
+		_ = aper.EncodeConstrainedWholeNumber(iw, 32, 1, 160)
+		iw.AlignToByte()
+		ipv4 := bearer.IP.To4()
+		if ipv4 == nil {
+			ipv4 = []byte{0, 0, 0, 0}
+		}
+		iw.WriteOctets(ipv4)
+		iw.AlignToByte()
+		iw.WriteOctet(byte(bearer.TEID >> 24))
+		iw.WriteOctet(byte(bearer.TEID >> 16))
+		iw.WriteOctet(byte(bearer.TEID >> 8))
+		iw.WriteOctet(byte(bearer.TEID))
+		itemBody := iw.Bytes()
+
+		innerIE := pdu.EncodeIEContainer([]pdu.ProtocolIE{
+			{ID: 176, Criticality: aper.CriticalityIgnore, Value: itemBody},
+		})
+		if len(innerIE) >= 2 {
+			innerIE = innerIE[2:]
+		}
+		ow.WriteOctets(innerIE)
+	}
 	return ow.Bytes()
 }
 
 // buildPathSwitchIEList constructs the top-level IE list for a Path Switch Request PDU.
 func buildPathSwitchIEList(mmeUEID, enbUEID uint32, ebi uint8, teid uint32, ip net.IP) []pdu.ProtocolIE {
-	uplinkList := buildPathSwitchUplinkListBytes(ebi, teid, ip)
+	uplinkList := buildPathSwitchUplinkListBytes(pathSwitchBearer{EBI: ebi, TEID: teid, IP: ip})
+	return []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbUEID)},
+		{ID: pdu.IEERABToBeSwitchedInUplinkList, Criticality: aper.CriticalityReject, Value: uplinkList},
+	}
+}
+
+func buildPathSwitchIEListMulti(mmeUEID, enbUEID uint32, bearers ...pathSwitchBearer) []pdu.ProtocolIE {
+	uplinkList := buildPathSwitchUplinkListBytes(bearers...)
 	return []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbUEID)},
@@ -257,6 +260,12 @@ func TestPathSwitch_S11Success(t *testing.T) {
 	if len(mock.mbrCalls) != 1 || mock.mbrCalls[0] != mmeID {
 		t.Errorf("MBR calls: got %v, want [%d]", mock.mbrCalls, mmeID)
 	}
+	if len(mock.reqs) != 1 || len(mock.reqs[0].Bearers) != 1 {
+		t.Fatalf("MBR bearer count: got %+v", mock.reqs)
+	}
+	if got := mock.reqs[0].Bearers[0]; got.EBI != 5 || got.ENBU_TEID != newTEID || !got.ENBU_IP.Equal(newIP) {
+		t.Errorf("MBR bearer: got %+v", got)
+	}
 }
 
 func TestPathSwitch_S11Failure(t *testing.T) {
@@ -293,6 +302,69 @@ func TestPathSwitch_S11Failure(t *testing.T) {
 	}
 	if !ip.Equal(oldIP) {
 		t.Errorf("ENBU_IP changed on MBR failure: got %v, want %v", ip, oldIP)
+	}
+}
+
+func TestPathSwitch_MultiBearerSuccess(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv := newPathSwitchTestServer(mock)
+	const addr = "10.20.0.6:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := makeConnectedUEWithBearer(srv, addr)
+	mmeID := ue.MMEUES1APID
+
+	ue.Lock()
+	ue.PDNs["internet"] = &uecontext.PDNContext{
+		APN:             "internet",
+		DefaultEBI:      ue.DefaultEBI,
+		SGWU_TEID:       ue.SGWU_TEID,
+		SGWU_IP:         append(net.IP(nil), ue.SGWU_IP...),
+		ERABEstablished: true,
+	}
+	ue.DedicatedBearers[6] = &uecontext.DedicatedBearerContext{
+		AssignedEBI:     6,
+		LinkedEBI:       ue.DefaultEBI,
+		SGWS1UTEID:      0x44556677,
+		SGWS1UIP:        net.ParseIP("10.99.1.3").To4(),
+		ERABEstablished: true,
+	}
+	ue.Unlock()
+
+	defaultBearer := pathSwitchBearer{EBI: 5, TEID: 0x01020304, IP: net.ParseIP("10.10.0.1").To4()}
+	dedicatedBearer := pathSwitchBearer{EBI: 6, TEID: 0x05060708, IP: net.ParseIP("10.10.0.2").To4()}
+	ieList := buildPathSwitchIEListMulti(mmeID, 600, defaultBearer, dedicatedBearer)
+	srv.handlePathSwitchRequest(addr, &pdu.PDU{ProcedureCode: pdu.ProcPathSwitchRequest}, ieList)
+
+	select {
+	case raw := <-ch:
+		if len(raw) < 4 || raw[0] != 0x20 {
+			t.Fatalf("expected SuccessfulOutcome PDU, got %02X", raw[0])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("no Ack PDU received after multi-bearer Path Switch")
+	}
+
+	if len(mock.reqs) != 1 {
+		t.Fatalf("expected one MBR, got %d", len(mock.reqs))
+	}
+	if len(mock.reqs[0].Bearers) != 2 {
+		t.Fatalf("expected two bearer updates, got %d", len(mock.reqs[0].Bearers))
+	}
+	if mock.reqs[0].Bearers[0].EBI != 5 || mock.reqs[0].Bearers[1].EBI != 6 {
+		t.Fatalf("unexpected bearer EBIs: %+v", mock.reqs[0].Bearers)
+	}
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.ENBU_TEID != defaultBearer.TEID || !ue.ENBU_IP.Equal(defaultBearer.IP) {
+		t.Fatalf("default bearer root state not updated: teid=%#x ip=%v", ue.ENBU_TEID, ue.ENBU_IP)
+	}
+	if pdn := ue.PDNs["internet"]; pdn == nil || pdn.ENBU_TEID != defaultBearer.TEID || !pdn.ENBU_IP.Equal(defaultBearer.IP) {
+		t.Fatalf("pdn bearer state not updated: %+v", pdn)
+	}
+	if bearer := ue.DedicatedBearers[6]; bearer == nil || bearer.ENBS1UTEID != dedicatedBearer.TEID || !bearer.ENBS1UIP.Equal(dedicatedBearer.IP) {
+		t.Fatalf("dedicated bearer state not updated: %+v", bearer)
 	}
 }
 
@@ -345,7 +417,7 @@ func TestDecodePathSwitchERABs_IPv4(t *testing.T) {
 	wantTEID := uint32(0xCAFEBEEF)
 	wantIP := net.ParseIP("192.168.1.99").To4()
 
-	data := buildPathSwitchUplinkListBytes(wantEBI, wantTEID, wantIP)
+	data := buildPathSwitchUplinkListBytes(pathSwitchBearer{EBI: wantEBI, TEID: wantTEID, IP: wantIP})
 	ebi, teid, ip, err := decodePathSwitchERABs(data)
 	if err != nil {
 		t.Fatalf("decodePathSwitchERABs error: %v", err)
@@ -378,19 +450,24 @@ func TestEncodeSecurityContextIE(t *testing.T) {
 	b := encodeSecurityContextIE(nh, ncc)
 
 	// Expected layout:
-	//   Byte 0: [ext=0][opt=0][ncc_b2=0][ncc_b1=1][ncc_b0=1][pad=0][pad=0][pad=0]
-	//           = 0b 00 011 000 = 0x18
-	//   Bytes 1-32: 32 bytes of 0xAA
+	//   The fixed-size BIT STRING follows immediately after the 3-bit NCC, so there is
+	//   no byte alignment between nextHopChainingCount and nextHopParameter.
+	//   For NH bytes 0xAA = 10101010..., the first output octet is:
+	//   [ext=0][opt=0][ncc=011][nh bits 101] = 0b00011101 = 0x1D
+	//   The shifted 0xAA bitstream then yields 0x55 bytes and a final 0x50 pad octet.
 	if len(b) != 33 {
 		t.Fatalf("length: got %d, want 33", len(b))
 	}
-	if b[0] != 0x18 {
-		t.Errorf("byte[0]: got 0x%02X, want 0x18 (ext=0,opt=0,ncc=3,pad)", b[0])
+	if b[0] != 0x1D {
+		t.Errorf("byte[0]: got 0x%02X, want 0x1D", b[0])
 	}
-	for i := 1; i <= 32; i++ {
-		if b[i] != 0xAA {
-			t.Errorf("NH byte[%d]: got 0x%02X, want 0xAA", i, b[i])
+	for i := 1; i < 32; i++ {
+		if b[i] != 0x55 {
+			t.Errorf("shifted NH byte[%d]: got 0x%02X, want 0x55", i, b[i])
 		}
+	}
+	if b[32] != 0x50 {
+		t.Errorf("final padded byte: got 0x%02X, want 0x50", b[32])
 	}
 }
 
@@ -480,7 +557,7 @@ func TestPathSwitch_DecodeRoundtrip(t *testing.T) {
 		{15, 0xABCD1234, net.ParseIP("172.16.0.42").To4()},
 	}
 	for _, tc := range cases {
-		data := buildPathSwitchUplinkListBytes(tc.ebi, tc.teid, tc.ip)
+		data := buildPathSwitchUplinkListBytes(pathSwitchBearer{EBI: tc.ebi, TEID: tc.teid, IP: tc.ip})
 		gotEBI, gotTEID, gotIP, err := decodePathSwitchERABs(data)
 		if err != nil {
 			t.Errorf("ebi=%d: decode error: %v", tc.ebi, err)
@@ -494,6 +571,25 @@ func TestPathSwitch_DecodeRoundtrip(t *testing.T) {
 		}
 		if !gotIP.Equal(tc.ip) {
 			t.Errorf("ebi=%d: ip got %v, want %v", tc.ebi, gotIP, tc.ip)
+		}
+	}
+}
+
+func TestDecodePathSwitchERABList_MultiItem(t *testing.T) {
+	want := []pathSwitchBearer{
+		{EBI: 5, TEID: 0x11111111, IP: net.ParseIP("10.0.0.1").To4()},
+		{EBI: 6, TEID: 0x22222222, IP: net.ParseIP("10.0.0.2").To4()},
+	}
+	got, err := decodePathSwitchERABList(buildPathSwitchUplinkListBytes(want...))
+	if err != nil {
+		t.Fatalf("decodePathSwitchERABList error: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d bearers, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].EBI != want[i].EBI || got[i].TEID != want[i].TEID || !got[i].IP.Equal(want[i].IP) {
+			t.Fatalf("bearer[%d]: got %+v want %+v", i, got[i], want[i])
 		}
 	}
 }
@@ -547,6 +643,8 @@ func TestSendInitialContextSetup_DeriveNH(t *testing.T) {
 	ue.KNASint = make([]byte, 16)
 	ue.KNASenc = make([]byte, 16)
 	ue.UENetworkCapability = make([]byte, 2)
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
 	mmeID := ue.MMEUES1APID
 	ue.Unlock()
 

@@ -2,13 +2,18 @@ package s1ap
 
 import (
 	"bytes"
+	"net"
+	"reflect"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
+	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
@@ -38,10 +43,63 @@ func newTAUTestServer() *Server {
 	}
 }
 
+func newObservedLogger() (*zap.Logger, *observer.ObservedLogs) {
+	core, logs := observer.New(zap.DebugLevel)
+	return zap.New(core), logs
+}
+
+func findObservedEvent(t *testing.T, logs *observer.ObservedLogs, event string) map[string]interface{} {
+	t.Helper()
+	for _, entry := range logs.All() {
+		ctx := entry.ContextMap()
+		if ctx["event"] == event {
+			return ctx
+		}
+	}
+	t.Fatalf("event %q not found in logs", event)
+	return nil
+}
+
+func findObservedEventWhere(t *testing.T, logs *observer.ObservedLogs, event string, pred func(map[string]interface{}) bool) map[string]interface{} {
+	t.Helper()
+	for _, entry := range logs.All() {
+		ctx := entry.ContextMap()
+		if ctx["event"] == event && pred(ctx) {
+			return ctx
+		}
+	}
+	t.Fatalf("event %q with predicate not found in logs", event)
+	return nil
+}
+
+func decodeICSSecurityKeyBytes(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode ICS PDU: %v", err)
+	}
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("decode ICS IE list: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID != pdu.IESecurityKey {
+			continue
+		}
+		bs, err := aper.DecodeBitString(aper.NewBitReader(ie.Value), 256, 256)
+		if err != nil {
+			t.Fatalf("decode SecurityKey BIT STRING: %v", err)
+		}
+		return append([]byte(nil), bs.Bytes...)
+	}
+	t.Fatal("ICS missing SecurityKey IE")
+	return nil
+}
+
 // setupSendCapture registers an eNB and returns a bidirectional channel for reading PDUs.
 func setupSendCapture(srv *Server, remoteAddr string) chan []byte {
 	ch := make(chan []byte, 16)
-	enb := &ENBContext{RemoteAddr: remoteAddr}
+	enb := &ENBContext{RemoteAddr: remoteAddr, SetupComplete: true}
 	srv.enbs.Store(remoteAddr, enb)
 	// Store as send-only so type assertion in sendToAddr succeeds
 	srv.sends.Store(remoteAddr, (chan<- []byte)(ch))
@@ -57,16 +115,23 @@ func makeRegisteredUEWithNullKeys(srv *Server, remoteAddr string) (*uecontext.Co
 	ue.KNASenc = make([]byte, 16) // EEA0 null key (all zeros)
 	ue.IntAlg = 0
 	ue.EncAlg = 0
+	ue.KASME = make([]byte, 32) // required for DeriveKeNB when TAU active flag resumes user plane
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
 	ue.Unlock()
 	srv.ueManager.UpdateGUTI(ue, guti)
 	return ue, guti
 }
 
 // buildPlainTAUNASPDU returns a plain (unprotected) NAS PDU containing a TAU Request.
-func buildPlainTAUNASPDU(updateType uint8, guti *emm.GUTI) []byte {
+func buildPlainTAUNASPDUWithActiveFlag(updateType uint8, active bool, guti *emm.GUTI) []byte {
 	// NAS header: [PD=0x07 (EMM, plain), msgType=0x48 (TAU Request)]
 	// Body: byte0=(eKSI<<4)|updateType, LV=mobile identity (GUTI), LV=UE net cap
-	body := []byte{(0x07 << 4) | (updateType & 0x07)}
+	firstOctet := (0x07 << 4) | (updateType & 0x07)
+	if active {
+		firstOctet |= 0x08
+	}
+	body := []byte{firstOctet}
 	// LV: GUTI mobile identity
 	gutiLV := guti.Encode() // [len=0x0B, 0xF6, PLMN(3), MMEGI(2), MMEC(1), MTMSI(4)]
 	body = append(body, gutiLV...)
@@ -74,6 +139,10 @@ func buildPlainTAUNASPDU(updateType uint8, guti *emm.GUTI) []byte {
 	body = append(body, 0x02, 0xE0, 0xE0)
 	// Full NAS PDU: [PD|SHT, msgType, body...]
 	return append([]byte{emm.PDEPSMobilityMgmt, emm.MsgTrackingAreaUpdateRequest}, body...)
+}
+
+func buildPlainTAUNASPDU(updateType uint8, guti *emm.GUTI) []byte {
+	return buildPlainTAUNASPDUWithActiveFlag(updateType, false, guti)
 }
 
 // ── validateTAI tests ─────────────────────────────────────────────────────────
@@ -285,6 +354,44 @@ func TestHandleIdleTAUMessage_UnknownGUTI(t *testing.T) {
 	}
 }
 
+func TestBuildTAUAcceptNAS_UsesNASPLMNEncodingForConfiguredTAIList(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.nfCfg.MCC = "311"
+	srv.nfCfg.MNC = "435"
+	srv.nfCfg.TAIList = []config.TAIItem{{MCC: "311", MNC: "435", TAC: 1}}
+
+	ue, _ := makeRegisteredUEWithNullKeys(srv, "10.0.0.30:36412")
+	ue.Lock()
+	ue.TAI = &emm.TAI{TAC: 1}
+	ue.Unlock()
+
+	pdu, err := srv.buildTAUAcceptNAS(ue, zap.NewNop(), tauAcceptOptions{
+		UpdateResult:    emm.EPSUpdateResultCombinedTALAUpdated,
+		EPSBearerStatus: &emm.EPSBearerContextStatus{Bitmap: 1 << 5},
+	})
+	if err != nil {
+		t.Fatalf("buildTAUAcceptNAS: %v", err)
+	}
+	plain := pdu
+	if pdu[0]>>4 == emm.SecurityHeaderIntegrityProtected {
+		plain = pdu[6:]
+	}
+	accept, err := emm.DecodeTAUAccept(plain)
+	if err != nil {
+		t.Fatalf("DecodeTAUAccept: %v", err)
+	}
+	if len(accept.TAIList) != 1 {
+		t.Fatalf("TAU Accept TAI list count got %d, want 1", len(accept.TAIList))
+	}
+	wantPLMN, err := security.EncodePLMN("311", "435")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := accept.TAIList[0].PLMN[:]; !bytes.Equal(got, wantPLMN) {
+		t.Fatalf("TAU Accept TAI PLMN got %x, want %x", got, wantPLMN)
+	}
+}
+
 func TestHandleIdleTAUMessage_KnownGUTI_Plain(t *testing.T) {
 	srv := newTAUTestServer()
 	const remoteAddr = "10.0.0.3:36412"
@@ -333,6 +440,62 @@ func TestHandleIdleTAUMessage_KnownGUTI_Plain(t *testing.T) {
 	}
 }
 
+func TestHandleIdleTAUMessage_KnownGUTI_PlainReleasesS1Context(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.30:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 2030
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	select {
+	case <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no PDU sent after TAU Accept")
+	}
+
+	releaseMsg, ok := <-ch
+	if !ok {
+		t.Fatal("send capture channel closed before UE Context Release Command")
+	}
+	p, err := pdu.Decode(releaseMsg)
+	if err != nil {
+		t.Fatalf("decode UE Context Release Command: %v", err)
+	}
+	if p == nil {
+		t.Fatal("decoded PDU is nil")
+	}
+	if p.Type != pdu.PDUTypeInitiatingMessage {
+		t.Fatalf("PDU type got %d, want %d (initiatingMessage)", p.Type, pdu.PDUTypeInitiatingMessage)
+	}
+	if p.ProcedureCode != pdu.ProcUEContextRelease {
+		t.Fatalf("procedure code got %d, want %d (UE Context Release)", p.ProcedureCode, pdu.ProcUEContextRelease)
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if !realUE.S1ReleasePending {
+		t.Fatal("S1ReleasePending was not set for non-active idle TAU release")
+	}
+	if realUE.S1ReleaseENBAddr != remoteAddr {
+		t.Fatalf("S1ReleaseENBAddr got %q, want %q", realUE.S1ReleaseENBAddr, remoteAddr)
+	}
+	if realUE.S1ReleaseENBID != 2030 {
+		t.Fatalf("S1ReleaseENBID got %d, want %d", realUE.S1ReleaseENBID, 2030)
+	}
+	if realUE.S1BindingState != uecontext.S1BindingReleasePending {
+		t.Fatalf("S1BindingState got %s, want %s", realUE.S1BindingState, uecontext.S1BindingReleasePending)
+	}
+}
+
 // ── handleIdleTAUMessage: ECMState fix (review fix 1) ────────────────────────
 
 func TestHandleIdleTAUMessage_SetsECMConnected(t *testing.T) {
@@ -368,6 +531,661 @@ func TestHandleIdleTAUMessage_SetsECMConnected(t *testing.T) {
 
 	if ecm != emm.ECMConnected {
 		t.Errorf("ECMState after idle TAU: got %v, want ECMConnected", ecm)
+	}
+}
+
+func TestHandleIdleTAUMessage_ActiveFlagTriggersInitialContextSetup(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.20:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.SGWAddress = "10.0.0.9:2123"
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.SGWU_IP = bytes.Repeat([]byte{10}, 4)
+	realUE.DefaultEBI = 5
+	realUE.APN = "internet"
+	realUE.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 1,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5005
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := buildPlainTAUNASPDUWithActiveFlag(emm.EPSUpdateTypePeriodic, true, guti)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	select {
+	case first := <-ch:
+		msg, err := pdu.Decode(first)
+		if err != nil {
+			t.Fatalf("decode ICS PDU: %v", err)
+		}
+		if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+		}
+		gotNAS := decodeNASPDUFromInitialContextSetup(t, msg)
+		if len(gotNAS) == 0 {
+			t.Fatal("InitialContextSetup missing embedded TAU Accept NAS")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no Initial Context Setup sent for active-flag idle TAU")
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if realUE.AttachStep != uecontext.AttachStepWaitingICSRespTAU {
+		t.Fatalf("AttachStep got %d, want WaitingICSRespTAU", realUE.AttachStep)
+	}
+}
+
+func TestHandleIdleTAUMessage_DuplicateActiveFlagResumeRebindsAndRetransmitsICS(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.24:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.SGWAddress = "10.0.0.9:2123"
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.SGWU_IP = []byte{10, 99, 0, 1}
+	realUE.DefaultEBI = 5
+	realUE.APN = "internet"
+	realUE.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 1,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+		"ims": {
+			ServiceSelection:        "ims",
+			PDNType:                 1,
+			QCI:                     5,
+			ARPPriority:             1,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+	}
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                     "internet",
+			DefaultEBI:              5,
+			PDNType:                 1,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			SGWC_TEID:               0x1001,
+			SGWU_TEID:               0x2002,
+			SGWU_IP:                 []byte{10, 99, 0, 1},
+			NASAccepted:             true,
+			ERABEstablished:         true,
+			ModifyBearerSent:        true,
+			ModifyBearerAccepted:    true,
+		},
+		"ims": {
+			APN:                     "ims",
+			DefaultEBI:              6,
+			PDNType:                 1,
+			QCI:                     5,
+			ARPPriority:             1,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			SGWC_TEID:               0x3003,
+			SGWU_TEID:               0x4004,
+			SGWU_IP:                 []byte{10, 99, 0, 2},
+			NASAccepted:             true,
+			ERABEstablished:         true,
+			ModifyBearerSent:        true,
+			ModifyBearerAccepted:    true,
+		},
+	}
+	realUE.Unlock()
+
+	tempUE1 := srv.ueManager.Allocate()
+	tempUE1.Lock()
+	tempUE1.ENBS1APID = 5101
+	tempUE1.ENBGlobalID = remoteAddr
+	tempUE1.Unlock()
+
+	nasPDU := buildPlainTAUNASPDUWithActiveFlag(emm.EPSUpdateTypePeriodic, true, guti)
+	srv.handleIdleTAUMessage(tempUE1, nil, nasPDU)
+
+	select {
+	case first := <-ch:
+		msg, err := pdu.Decode(first)
+		if err != nil {
+			t.Fatalf("decode first ICS PDU: %v", err)
+		}
+		if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("first PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no first Initial Context Setup sent for active-flag idle TAU")
+	}
+
+	tempUE2 := srv.ueManager.Allocate()
+	tempUE2.Lock()
+	tempUE2.ENBS1APID = 5102
+	tempUE2.ENBGlobalID = remoteAddr
+	tempUE2.Unlock()
+
+	srv.handleIdleTAUMessage(tempUE2, nil, nasPDU)
+
+	select {
+	case second := <-ch:
+		msg, err := pdu.Decode(second)
+		if err != nil {
+			t.Fatalf("decode retransmitted ICS PDU: %v", err)
+		}
+		if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("retransmit PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+		}
+		gotNAS := decodeNASPDUFromInitialContextSetup(t, msg)
+		if len(gotNAS) == 0 {
+			t.Fatal("retransmitted InitialContextSetup missing embedded TAU Accept NAS")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no retransmitted Initial Context Setup sent for duplicate active-flag idle TAU")
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if realUE.ENBS1APID != 5102 {
+		t.Fatalf("ENBS1APID got %d, want 5102", realUE.ENBS1APID)
+	}
+	if realUE.AttachStep != uecontext.AttachStepWaitingICSRespTAU {
+		t.Fatalf("AttachStep got %d, want WaitingICSRespTAU", realUE.AttachStep)
+	}
+	if realUE.ECMState != emm.ECMConnected {
+		t.Fatalf("ECMState got %v, want ECMConnected", realUE.ECMState)
+	}
+}
+
+func TestHandleIdleTAUMessage_ActiveFlagResumesRetainedActiveBearers(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.23:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.SGWAddress = "10.0.0.9:2123"
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.SGWU_IP = []byte{10, 99, 0, 1}
+	realUE.DefaultEBI = 5
+	realUE.APN = "internet"
+	realUE.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 1,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+		"ims": {
+			ServiceSelection:        "ims",
+			PDNType:                 1,
+			QCI:                     5,
+			ARPPriority:             1,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+		"mms": {
+			ServiceSelection:        "mms",
+			PDNType:                 1,
+			QCI:                     8,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+	}
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                  "internet",
+			DefaultEBI:           5,
+			SGWC_TEID:            0x1001,
+			SGWU_TEID:            0x2002,
+			SGWU_IP:              []byte{10, 99, 0, 1},
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+		"ims": {
+			APN:                  "ims",
+			DefaultEBI:           6,
+			SGWC_TEID:            0x3003,
+			SGWU_TEID:            0x4004,
+			SGWU_IP:              []byte{10, 99, 0, 2},
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+		"mms": {
+			APN:                  "mms",
+			DefaultEBI:           9,
+			SGWC_TEID:            0x5005,
+			SGWU_TEID:            0x6006,
+			SGWU_IP:              []byte{10, 99, 0, 3},
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+	}
+	realUE.DedicatedBearers = map[uint8]*uecontext.DedicatedBearerContext{
+		7: {
+			AssignedEBI:     7,
+			LinkedEBI:       6,
+			QCI:             2,
+			ARP:             0x10,
+			SGWS1UTEID:      0x11111111,
+			SGWS1UIP:        []byte{10, 99, 0, 4},
+			NASAccepted:     true,
+			ERABEstablished: true,
+			State:           "active",
+		},
+		8: {
+			AssignedEBI:     8,
+			LinkedEBI:       6,
+			QCI:             1,
+			ARP:             0x08,
+			SGWS1UTEID:      0x22222222,
+			SGWS1UIP:        []byte{10, 99, 0, 5},
+			NASAccepted:     true,
+			ERABEstablished: true,
+			State:           "active",
+		},
+	}
+	clearUEAccessPathsLocked(realUE)
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5008
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := append(
+		buildPlainTAUNASPDUWithActiveFlag(emm.EPSUpdateTypeCombinedIMSIAttach, true, guti),
+		0x57, 0x02, 0x20, 0x00, // UE reports only EBI 5 active
+	)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	select {
+	case second := <-ch:
+		msg, err := pdu.Decode(second)
+		if err != nil {
+			t.Fatalf("decode ICS PDU: %v", err)
+		}
+		if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
+		}
+		gotNAS := decodeNASPDUFromInitialContextSetup(t, msg)
+		if len(gotNAS) == 0 {
+			t.Fatal("resume ICS missing embedded TAU Accept NAS")
+		}
+		plain := gotNAS
+		if gotNAS[0]>>4 != 0 {
+			plain = gotNAS[6:]
+		}
+		accept, err := emm.DecodeTAUAccept(plain)
+		if err != nil {
+			t.Fatalf("DecodeTAUAccept from resume ICS: %v plain=%x", err, plain)
+		}
+		if accept.EPSBearerStatus == nil {
+			t.Fatal("resume ICS TAU Accept missing EPS bearer context status")
+		}
+		if got, want := accept.EPSBearerStatus.Bitmap, uint16(1<<5); got != want {
+			t.Fatalf("resume ICS TAU Accept EPS bearer status got %#x, want %#x", got, want)
+		}
+
+		ieList, err := pdu.DecodeIEContainer(msg.Value)
+		if err != nil {
+			t.Fatalf("decode ICS IE list: %v", err)
+		}
+		var erabList []byte
+		for _, ie := range ieList {
+			if ie.ID == pdu.IEERABToBeSetupListCtxtSUReq {
+				erabList = ie.Value
+				break
+			}
+		}
+		if len(erabList) == 0 {
+			t.Fatal("resume ICS missing E-RABToBeSetupListCtxtSUReq")
+		}
+		items := decodeResumeICSErabList(t, erabList)
+		if got, want := len(items), 1; got != want {
+			t.Fatalf("resume ICS item count got %d, want %d", got, want)
+		}
+		gotEBIs := []uint8{items[0].EBI}
+		if got, want := gotEBIs, []uint8{5}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("resume ICS EBIs got %v, want %v", got, want)
+		}
+		if !items[0].NASPDUPresent {
+			t.Fatal("resume ICS first item missing embedded TAU Accept NAS")
+		}
+		if items[0].EBI != 5 {
+			t.Fatalf("resume ICS first EBI got %d, want 5", items[0].EBI)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no Initial Context Setup sent for active-flag idle TAU")
+	}
+}
+
+func TestHandleIdleTAUMessage_BearerStatusMismatchIncludesTAUAcceptStatus(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.21:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.DefaultEBI = 5
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                  "internet",
+			DefaultEBI:           5,
+			SGWC_TEID:            0x1001,
+			SGWU_TEID:            0x2002,
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+		"ims": {
+			APN:                  "ims",
+			DefaultEBI:           6,
+			SGWC_TEID:            0x3003,
+			SGWU_TEID:            0x4004,
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5006
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := append(
+		buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti),
+		0x57, 0x02, 0x20, 0x00, // UE reports only EBI 5 active; MME also has stale extra bearers
+	)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	select {
+	case first := <-ch:
+		gotNAS := decodeDownlinkNASFromRawPDU(t, first)
+		if len(gotNAS) < 7 {
+			t.Fatalf("TAU Accept NAS too short: %x", gotNAS)
+		}
+		plain := gotNAS
+		if gotNAS[0]>>4 != 0 {
+			plain = gotNAS[6:]
+		}
+		accept, err := emm.DecodeTAUAccept(plain)
+		if err != nil {
+			t.Fatalf("DecodeTAUAccept: %v plain=%x", err, plain)
+		}
+		if accept.EPSBearerStatus == nil {
+			t.Fatal("TAU Accept missing EPS bearer context status on mismatch")
+		}
+		if got, want := accept.EPSBearerStatus.Bitmap, uint16(1<<5); got != want {
+			t.Fatalf("TAU Accept EPS bearer status got %#x, want %#x", got, want)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Accept sent")
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if got := realUE.PDNs["internet"].State; got != "active" {
+		t.Fatalf("internet PDN state got %q, want active", got)
+	}
+	if got := realUE.PDNs["ims"].State; got != "tau-suspended" {
+		t.Fatalf("ims PDN state got %q, want tau-suspended", got)
+	}
+	if realUE.PDNs["ims"].NASAccepted || realUE.PDNs["ims"].ERABEstablished || realUE.PDNs["ims"].ModifyBearerAccepted {
+		t.Fatal("ims PDN should be suspended in MME state after TAU mismatch")
+	}
+}
+
+func TestHandleIdleTAUMessage_CombinedTAUMismatchPreservesRetainedBearers(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.24:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.DefaultEBI = 5
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                  "internet",
+			DefaultEBI:           5,
+			SGWC_TEID:            0x1001,
+			SGWU_TEID:            0x2002,
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "idle",
+		},
+		"ims": {
+			APN:                  "ims",
+			DefaultEBI:           6,
+			SGWC_TEID:            0x3003,
+			SGWU_TEID:            0x4004,
+			NASAccepted:          true,
+			ERABEstablished:      false,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "idle",
+		},
+		"mms": {
+			APN:                  "mms",
+			DefaultEBI:           9,
+			SGWC_TEID:            0x5005,
+			SGWU_TEID:            0x6006,
+			NASAccepted:          true,
+			ERABEstablished:      false,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "idle",
+		},
+	}
+	realUE.DedicatedBearers = map[uint8]*uecontext.DedicatedBearerContext{
+		7: {
+			AssignedEBI:     7,
+			LinkedEBI:       6,
+			QCI:             2,
+			ARP:             0x10,
+			SGWS1UTEID:      0x11111111,
+			NASAccepted:     true,
+			ERABEstablished: false,
+			State:           "idle",
+		},
+		8: {
+			AssignedEBI:     8,
+			LinkedEBI:       6,
+			QCI:             1,
+			ARP:             0x08,
+			SGWS1UTEID:      0x22222222,
+			NASAccepted:     true,
+			ERABEstablished: false,
+			State:           "idle",
+		},
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5009
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := append(
+		buildPlainTAUNASPDU(emm.EPSUpdateTypeCombined, guti),
+		0x57, 0x02, 0x20, 0x00,
+	)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	select {
+	case first := <-ch:
+		gotNAS := decodeDownlinkNASFromRawPDU(t, first)
+		if len(gotNAS) < 7 {
+			t.Fatalf("TAU Accept NAS too short: %x", gotNAS)
+		}
+		plain := gotNAS
+		if gotNAS[0]>>4 != 0 {
+			plain = gotNAS[6:]
+		}
+		accept, err := emm.DecodeTAUAccept(plain)
+		if err != nil {
+			t.Fatalf("DecodeTAUAccept: %v plain=%x", err, plain)
+		}
+		if accept.EPSBearerStatus == nil {
+			t.Fatal("TAU Accept missing EPS bearer context status on mismatch")
+		}
+		if got, want := accept.EPSBearerStatus.Bitmap, uint16((1<<5)|(1<<6)|(1<<7)|(1<<8)|(1<<9)); got != want {
+			t.Fatalf("TAU Accept EPS bearer status got %#x, want %#x", got, want)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Accept sent")
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if got := realUE.PDNs["ims"].State; got != "idle" {
+		t.Fatalf("ims PDN state got %q, want idle", got)
+	}
+	if got := realUE.PDNs["mms"].State; got != "idle" {
+		t.Fatalf("mms PDN state got %q, want idle", got)
+	}
+	if got := realUE.DedicatedBearers[7].State; got != "idle" {
+		t.Fatalf("dedicated bearer 7 state got %q, want idle", got)
+	}
+	if got := realUE.DedicatedBearers[8].State; got != "idle" {
+		t.Fatalf("dedicated bearer 8 state got %q, want idle", got)
+	}
+}
+
+func TestHandleIdleTAUMessage_IncludesMMEBearerStatusByDefault(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.22:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.DefaultEBI = 5
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                  "internet",
+			DefaultEBI:           5,
+			SGWC_TEID:            0x1001,
+			SGWU_TEID:            0x2002,
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+		"ims": {
+			APN:                  "ims",
+			DefaultEBI:           6,
+			SGWC_TEID:            0x3003,
+			SGWU_TEID:            0x4004,
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+	}
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5007
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	srv.handleIdleTAUMessage(tempUE, nil, buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti))
+
+	select {
+	case first := <-ch:
+		gotNAS := decodeDownlinkNASFromRawPDU(t, first)
+		if len(gotNAS) < 7 {
+			t.Fatalf("TAU Accept NAS too short: %x", gotNAS)
+		}
+		plain := gotNAS
+		if gotNAS[0]>>4 != 0 {
+			plain = gotNAS[6:]
+		}
+		accept, err := emm.DecodeTAUAccept(plain)
+		if err != nil {
+			t.Fatalf("DecodeTAUAccept: %v plain=%x", err, plain)
+		}
+		if accept.EPSBearerStatus == nil {
+			t.Fatal("TAU Accept missing EPS bearer context status")
+		}
+		if got, want := accept.EPSBearerStatus.Bitmap, uint16((1<<5)|(1<<6)); got != want {
+			t.Fatalf("TAU Accept EPS bearer status got %#x, want %#x", got, want)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Accept sent")
 	}
 }
 
@@ -724,5 +1542,263 @@ func TestConnectedTAUSendFailureDoesNotAdvanceTAUState(t *testing.T) {
 	}
 	if ue.EMMState != emm.StateRegistered {
 		t.Fatalf("EMM state got %s, want registered after failed TAU Accept send", ue.EMMState)
+	}
+}
+
+func TestActiveFlagResumeICSPreservesKeNBSnapshotAcrossLaterULCountChange(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.25:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.SetECMState(emm.ECMConnected)
+	ue.ENBS1APID = 0x4401
+	ue.ENBGlobalID = remoteAddr
+	ue.S1BindingGeneration = 9
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.KASME = bytes.Repeat([]byte{0x11}, 32)
+	ue.ULNASCount = security.NASCount(7)
+	ue.UENetworkCapability = []byte{0xf0, 0x70}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	if _, _, err := deriveAndStoreASContextLocked(ue); err != nil {
+		ue.Unlock()
+		t.Fatalf("deriveAndStoreASContextLocked: %v", err)
+	}
+	expectedKeNB := append([]byte(nil), ue.KeNB...)
+	expectedULCount := ue.KeNBULCount
+	ue.ULNASCount = security.NASCount(11)
+	mmeUEID := ue.MMEUES1APID
+	ue.Unlock()
+
+	if err := srv.SendInitialContextSetupWithBearers(mmeUEID, []byte{0x07, 0x49, 0x01}, []BearerInfo{{
+		EBI:         5,
+		QCI:         9,
+		ARPPriority: 8,
+		SGWU_TEID:   0x1cf513e2,
+		SGWU_IP:     net.ParseIP("10.90.250.59").To4(),
+	}}); err != nil {
+		t.Fatalf("SendInitialContextSetupWithBearers: %v", err)
+	}
+
+	raw := <-ch
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode ICS PDU: %v", err)
+	}
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("decode ICS IE list: %v", err)
+	}
+	var gotSecurityKey []byte
+	for _, ie := range ieList {
+		if ie.ID == pdu.IESecurityKey {
+			gotSecurityKey = append([]byte(nil), ie.Value...)
+			break
+		}
+	}
+	if len(gotSecurityKey) == 0 {
+		t.Fatal("ICS missing SecurityKey IE")
+	}
+	if want := ies.EncodeSecurityKey(expectedKeNB); !bytes.Equal(gotSecurityKey, want) {
+		t.Fatalf("ICS SecurityKey got %x, want %x", gotSecurityKey, want)
+	}
+
+	ue.Lock()
+	defer ue.Unlock()
+	if got := ue.KeNBULCount; got != expectedULCount {
+		t.Fatalf("KeNB UL count snapshot got %d, want %d", got, expectedULCount)
+	}
+	if got := uint32(ue.ULNASCount); got != 11 {
+		t.Fatalf("current UL NAS COUNT got %d, want 11", got)
+	}
+}
+
+func TestActiveFlagTAUSecuritySnapshotLoggingAndICSKeySelection(t *testing.T) {
+	srv := newTAUTestServer()
+	logger, logs := newObservedLogger()
+	srv.log = logger
+	const remoteAddr = "10.0.0.26:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.SetECMState(emm.ECMIdle)
+	realUE.SGWAddress = "10.0.0.9:2123"
+	realUE.SGWC_TEID = 0x1001
+	realUE.SGWU_TEID = 0x2002
+	realUE.SGWU_IP = []byte{10, 99, 0, 1}
+	realUE.DefaultEBI = 5
+	realUE.APN = "internet"
+	realUE.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 1,
+			QCI:                     9,
+			ARPPriority:             8,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: false,
+			APNAMBRDown:             100000,
+			APNAMBRUp:               100000,
+		},
+	}
+	realUE.UEAMBRDown = 100000000
+	realUE.UEAMBRUp = 100000000
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {
+			APN:                  "internet",
+			DefaultEBI:           5,
+			SGWC_TEID:            0x1001,
+			SGWU_TEID:            0x2002,
+			SGWU_IP:              []byte{10, 99, 0, 1},
+			NASAccepted:          true,
+			ERABEstablished:      true,
+			ModifyBearerSent:     true,
+			ModifyBearerAccepted: true,
+			State:                "active",
+		},
+	}
+	clearUEAccessPathsLocked(realUE)
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 5012
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	nasPDU := append(buildPlainTAUNASPDUWithActiveFlag(emm.EPSUpdateTypePeriodic, true, guti), 0x57, 0x02, 0x20, 0x00)
+	srv.handleIdleTAUMessage(tempUE, nil, nasPDU)
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no Initial Context Setup sent for active-flag TAU security snapshot test")
+	}
+	securityKey := decodeICSSecurityKeyBytes(t, raw)
+	created := findObservedEventWhere(t, logs, "as_security_snapshot_created", func(m map[string]interface{}) bool {
+		return m["procedure"] == "active_flag_tau"
+	})
+	selected := findObservedEventWhere(t, logs, "ics_security_key_selected", func(m map[string]interface{}) bool {
+		return m["procedure"] == "active_flag_tau"
+	})
+	if got, want := selected["security_key_source"], "snapshot"; got != want {
+		t.Fatalf("security_key_source got %v want %v", got, want)
+	}
+	_ = created
+	if len(securityKey) == 0 {
+		t.Fatal("expected ICS SecurityKey IE bytes")
+	}
+}
+
+func TestResumeSecurityKeyComparisonAndDisabledLogging(t *testing.T) {
+	srv := newTAUTestServer()
+	logger, logs := newObservedLogger()
+	srv.log = logger
+	const remoteAddr = "10.0.0.27:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.SetECMState(emm.ECMConnected)
+	ue.ENBS1APID = 0x4402
+	ue.ENBGlobalID = remoteAddr
+	ue.S1BindingGeneration = 11
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.KASME = bytes.Repeat([]byte{0x23}, 32)
+	ue.ULNASCount = security.NASCount(7)
+	ue.UENetworkCapability = []byte{0xf0, 0x70}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	if err := srv.createASSecuritySnapshotLocked(ue, "active_flag_tau"); err != nil {
+		ue.Unlock()
+		t.Fatalf("createASSecuritySnapshotLocked: %v", err)
+	}
+	expected := append([]byte(nil), ue.KeNB...)
+	ue.ULNASCount = security.NASCount(15)
+	ue.AttachStep = uecontext.AttachStepWaitingICSRespTAU
+	mmeUEID := ue.MMEUES1APID
+	ue.Unlock()
+
+	if err := srv.SendInitialContextSetupWithBearers(mmeUEID, []byte{0x07, 0x49, 0x01}, []BearerInfo{{
+		EBI:         5,
+		QCI:         9,
+		ARPPriority: 8,
+		SGWU_TEID:   0x11112222,
+		SGWU_IP:     net.ParseIP("10.90.250.59").To4(),
+	}}); err != nil {
+		t.Fatalf("SendInitialContextSetupWithBearers: %v", err)
+	}
+	raw := <-ch
+	if got := decodeICSSecurityKeyBytes(t, raw); !bytes.Equal(got, expected) {
+		t.Fatalf("ICS key got %x want %x", got, expected)
+	}
+	selected := findObservedEvent(t, logs, "ics_security_key_selected")
+	reused := findObservedEvent(t, logs, "as_security_snapshot_reused")
+	if got, want := selected["security_key_source"], "snapshot"; got != want {
+		t.Fatalf("security_key_source got %v want %v", got, want)
+	}
+	if _, ok := reused["ul_nas_count_at_snapshot"]; !ok {
+		t.Fatal("expected ul_nas_count_at_snapshot in snapshot reuse log")
+	}
+}
+
+func TestServiceRequestSnapshotsKeNBAndStaleReleaseCannotClearIt(t *testing.T) {
+	srv := newTAUTestServer()
+	logger, logs := newObservedLogger()
+	srv.log = logger
+	const addr = "10.0.0.28:36412"
+	ch := setupSendCapture(srv, addr)
+
+	realUE, mmec, mtmsi := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.KASME = bytes.Repeat([]byte{0x45}, 32)
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 6001
+	tempUE.ENBGlobalID = addr
+	tempUE.Unlock()
+
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
+	raw := <-ch
+	created := findObservedEventWhere(t, logs, "as_security_snapshot_created", func(m map[string]interface{}) bool {
+		return m["procedure"] == "service_request"
+	})
+	key1 := decodeICSSecurityKeyBytes(t, raw)
+	_ = created
+	if len(key1) == 0 {
+		t.Fatal("expected service-request ICS SecurityKey IE bytes")
+	}
+
+	realUE.Lock()
+	mmeUEID := realUE.MMEUES1APID
+	enbUEID := realUE.ENBS1APID
+	snapshot := append([]byte(nil), realUE.KeNB...)
+	if realUE.S1BindingGeneration < 2 {
+		realUE.S1BindingGeneration = 2
+	}
+	realUE.S1ReleasePending = true
+	realUE.S1ReleaseENBID = enbUEID
+	realUE.S1ReleaseENBAddr = addr
+	realUE.S1ReleaseGeneration = realUE.S1BindingGeneration - 1
+	realUE.Unlock()
+
+	srv.handleUEContextReleaseComplete(addr, nil, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(enbUEID)},
+	})
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if !bytes.Equal(realUE.KeNB, snapshot) {
+		t.Fatalf("stale release changed snapshot: got %x want %x", realUE.KeNB, snapshot)
+	}
+	stale := findObservedEvent(t, logs, "stale_binding_mutation_rejected")
+	if got, want := stale["mutation_type"], "ue-context-release-complete"; got != want {
+		t.Fatalf("stale mutation_type got %v want %v", got, want)
 	}
 }

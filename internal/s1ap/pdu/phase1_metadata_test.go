@@ -21,6 +21,7 @@ func TestRel16Phase1IEConstants(t *testing.T) {
 		{"E-RABFailedToSetupListCtxtSURes", IEERABFailedToSetupListCtxtSURes, 48},
 		{"E-RABSetupListCtxtSURes", IEERABSetupListCtxtSURes, 51},
 		{"Global-ENB-ID", IEGlobal_ENB_ID, 59},
+		{"MMEname", IEMMEname, 61},
 		{"SupportedTAs", IESupportedTAs, 64},
 		{"TAI", IETAI, 67},
 		{"RelativeMMECapacity", IERelativeMMECapacity, 87},
@@ -46,6 +47,11 @@ func TestPhase1MetadataMandatoryIEs(t *testing.T) {
 		key  ProcedureIEKey
 		info IEInfo
 	}{
+		{
+			name: "S1SetupResponse MMEname",
+			key:  ProcedureIEKey{ProcedureCode: ProcS1Setup, PDUType: PDUTypeSuccessfulOutcome, IEID: IEMMEname},
+			info: IEInfo{"MMEname", IEMMEname, aper.CriticalityIgnore, IEPresenceOptional, "MMEname"},
+		},
 		{
 			name: "S1SetupResponse ServedGUMMEIs",
 			key:  ProcedureIEKey{ProcedureCode: ProcS1Setup, PDUType: PDUTypeSuccessfulOutcome, IEID: IEServedGUMMEIs},

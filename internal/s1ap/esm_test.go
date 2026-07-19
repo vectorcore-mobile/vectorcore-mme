@@ -9,6 +9,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/gtpv2"
+	"github.com/vectorcore/mme/internal/peertracker"
 	"go.uber.org/zap"
 
 	nas "github.com/vectorcore/mme/internal/nas"
@@ -87,6 +88,51 @@ func TestProcessESM_PDNDisconnectRequestMarksTargetPDN(t *testing.T) {
 	}
 	if pdn.State != "pdn-disconnect-deactivate-sent" {
 		t.Fatalf("state got %q, want pdn-disconnect-deactivate-sent", pdn.State)
+	}
+}
+
+func TestPendingPDNDefaultEBIIsReservedForDedicatedAllocation(t *testing.T) {
+	ue := uecontext.NewContext(1)
+	ue.Lock()
+	ue.PendingPDN = &uecontext.PDNContext{
+		APN:                    "mms",
+		ProcedureTransactionID: 5,
+		DefaultEBI:             9,
+		State:                  "csr-sent",
+	}
+	ue.Unlock()
+
+	bearers := []gtpv2.CreateBearerBearer{
+		{RequestedEBI: 0},
+	}
+
+	ue.Lock()
+	if err := assignDedicatedEBIsLocked(ue, bearers); err != nil {
+		ue.Unlock()
+		t.Fatalf("assignDedicatedEBIsLocked: %v", err)
+	}
+	got := bearers[0].AssignedEBI
+	ue.Unlock()
+
+	if got == 9 {
+		t.Fatalf("assigned EBI got %d, want value other than pending PDN default EBI 9", got)
+	}
+}
+
+func TestAllocateDefaultBearerIDSkipsPendingPDNDefaultEBI(t *testing.T) {
+	ue := uecontext.NewContext(1)
+	ue.Lock()
+	ue.PendingPDN = &uecontext.PDNContext{
+		APN:                    "ims",
+		ProcedureTransactionID: 2,
+		DefaultEBI:             6,
+		State:                  "csr-sent",
+	}
+	got := allocateDefaultBearerIDLocked(ue)
+	ue.Unlock()
+
+	if got == 6 {
+		t.Fatalf("allocated default EBI got %d, want value other than pending PDN default EBI 6", got)
 	}
 }
 
@@ -594,8 +640,22 @@ func TestProcessESM_PDNConnectivityRequestAllocatesDefaultBearerAroundDedicatedB
 	ue.DefaultEBI = 5
 	ue.SubscriberAPNs = []string{"ims", "mms"}
 	ue.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
-		"ims": {ServiceSelection: "ims"},
-		"mms": {ServiceSelection: "mms"},
+		"ims": {
+			ServiceSelection: "ims",
+			PDNType:          gtpv2.PDNTypeIPv4,
+			QCI:              5,
+			ARPPriority:      8,
+			APNAMBRUp:        384,
+			APNAMBRDown:      512,
+		},
+		"mms": {
+			ServiceSelection: "mms",
+			PDNType:          gtpv2.PDNTypeIPv4,
+			QCI:              9,
+			ARPPriority:      8,
+			APNAMBRUp:        384,
+			APNAMBRDown:      512,
+		},
 	}
 	ue.PDNs = map[string]*uecontext.PDNContext{
 		"internet": {
@@ -746,6 +806,78 @@ func TestProcessESM_PDNConnectivityRequestUsesSubscribedQoSAndAMBR(t *testing.T)
 	}
 }
 
+func TestHandlePendingPDNCSRResult_UsesPDNQoSForERABSetup(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	srv.enbTracker = peertracker.New()
+	const remoteAddr = "10.0.0.25:36412"
+	ch := registerTestENBWithChan(srv, remoteAddr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "311435000070572"
+	ue.ENBGlobalID = remoteAddr
+	ue.ENBS1APID = 225
+	ue.ECMState = emm.ECMConnected
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.KNASint = make([]byte, 16)
+	ue.KNASenc = make([]byte, 16)
+	ue.IntAlg = 0
+	ue.EncAlg = 0
+	ue.PendingPDN = &uecontext.PDNContext{
+		APN:                     "mms",
+		ProcedureTransactionID:  5,
+		PDNType:                 gtpv2.PDNTypeIPv4,
+		DefaultEBI:              9,
+		QCI:                     8,
+		ARPPriority:             8,
+		PreemptionCapability:    false,
+		PreemptionVulnerability: false,
+		State:                   "csr-sent",
+	}
+	ue.Unlock()
+
+	resp := &gtpv2.CreateSessionResponse{
+		Cause:     gtpv2.CauseRequestAccepted,
+		EBI:       9,
+		SGWC_TEID: 0xa8495b5e,
+		SGWC_IP:   []byte{10, 90, 250, 59},
+		SGWU_TEID: 0x1c455a86,
+		SGWU_IP:   []byte{10, 90, 250, 59},
+		UEIPv4:    []byte{10, 150, 6, 93},
+	}
+
+	srv.handlePendingPDNCSRResult(ue, resp, nil, zap.NewNop())
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no S1AP message sent")
+	}
+
+	req := decodeERABSetupRequest(t, raw)
+	if len(req.Items) != 1 {
+		t.Fatalf("E-RAB item count got %d, want 1", len(req.Items))
+	}
+	item := req.Items[0]
+	if got, want := item.EBI, uint8(9); got != want {
+		t.Fatalf("E-RAB ID got %d, want %d", got, want)
+	}
+	if got, want := item.QCI, uint8(8); got != want {
+		t.Fatalf("QCI got %d, want %d", got, want)
+	}
+	if got, want := item.ARPPriority, uint8(8); got != want {
+		t.Fatalf("ARP priority got %d, want %d", got, want)
+	}
+	if got, want := item.PreemptionCapability, false; got != want {
+		t.Fatalf("PreemptionCapability got %t, want %t", got, want)
+	}
+	if got, want := item.PreemptionVulnerability, false; got != want {
+		t.Fatalf("PreemptionVulnerability got %t, want %t", got, want)
+	}
+}
+
 func TestProcessESM_PDNConnectivityRequestMatchesAPNCaseInsensitively(t *testing.T) {
 	mock := &capturingCSRS11{}
 	srv := newTestServer(mock)
@@ -759,6 +891,9 @@ func TestProcessESM_PDNConnectivityRequestMatchesAPNCaseInsensitively(t *testing
 			ServiceSelection: "ims",
 			PDNType:          gtpv2.PDNTypeIPv4,
 			QCI:              5,
+			ARPPriority:      8,
+			APNAMBRUp:        384,
+			APNAMBRDown:      512,
 		},
 	}
 	ue.Unlock()

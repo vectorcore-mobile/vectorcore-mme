@@ -34,17 +34,13 @@ type CreateSessionRequest struct {
 
 // Encode returns the wire bytes for this CSR with the given sequence number.
 func (r *CreateSessionRequest) Encode(seqNum uint32) []byte {
-	bearerQCI := r.BearerQCI
-	if bearerQCI == 0 {
-		bearerQCI = 9
-	}
 	bearerPriorityLevel := r.BearerPriorityLevel
 	if bearerPriorityLevel == 0 {
 		bearerPriorityLevel = 8
 	}
 	bearerCtx := EncodeGrouped(IETypeBearerContext, 0, []IE{
 		EncodeEBI(r.DefaultEBI, 0),
-		EncodeBearerQoS(bearerQCI, bearerPriorityLevel, r.PreemptionCapability, r.PreemptionVulnerability),
+		EncodeBearerQoS(r.BearerQCI, bearerPriorityLevel, r.PreemptionCapability, r.PreemptionVulnerability),
 	})
 
 	ies := []IE{
@@ -164,9 +160,14 @@ func DecodeCreateSessionResponse(m *Message) (*CreateSessionResponse, error) {
 	}
 
 	ebiIE := FindIE(bcIEs, IETypeEBI, 0)
-	if ebi, e := DecodeEBI(ebiIE); e == nil {
-		resp.EBI = ebi
+	ebi, e := DecodeEBI(ebiIE)
+	if e != nil {
+		return nil, fmt.Errorf("gtpv2: CSRsp missing Bearer Context EBI: %w", e)
 	}
+	if ebi == 0 {
+		return nil, fmt.Errorf("gtpv2: CSRsp invalid Bearer Context EBI 0")
+	}
+	resp.EBI = ebi
 
 	// S-GW S1-U GTP-U F-TEID is instance 0 inside Bearer Context
 	sgwuFTEID := FindIE(bcIEs, IETypeFTEID, 0)

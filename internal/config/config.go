@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	nastimer "github.com/vectorcore/mme/internal/nas/timer"
 	"gopkg.in/yaml.v3"
 )
 
@@ -14,6 +15,7 @@ type Config struct {
 	S6a              S6aConfig              `yaml:"s6a"`
 	S10              S10Config              `yaml:"s10"`
 	S11              S11Config              `yaml:"s11"`
+	Paging           PagingConfig           `yaml:"paging"`
 	GatewaySelection GatewaySelectionConfig `yaml:"gateway_selection"`
 	Database         DatabaseConfig         `yaml:"database"`
 	Logging          LoggingConfig          `yaml:"logging"`
@@ -25,10 +27,18 @@ type Config struct {
 
 type NASConfig struct {
 	EPSNetworkFeatureSupport EPSNetworkFeatureSupportConfig `yaml:"eps_network_feature_support"`
+	Timers                   NASTimersConfig                `yaml:"timers"`
 }
 
 type EPSNetworkFeatureSupportConfig struct {
 	IMSVoiceOverPS bool `yaml:"ims_voice_over_ps"`
+}
+
+type NASTimersConfig struct {
+	T3402 int `yaml:"t3402"`
+	T3396 int `yaml:"t3396"`
+	T3412 int `yaml:"t3412"`
+	T3423 int `yaml:"t3423"`
 }
 
 // OperatorConfig holds network identity and NITZ settings pushed to UEs via EMM Information.
@@ -87,6 +97,13 @@ type S11Config struct {
 	RecoveryRestartCounter uint8  `yaml:"recovery_restart_counter"` // GTPv2 Recovery IE value used in Echo Response
 }
 
+type PagingConfig struct {
+	DDNEnabled         bool          `yaml:"ddn_enabled"`
+	RetryInterval      time.Duration `yaml:"retry_interval"`
+	MaxAttempts        uint8         `yaml:"max_attempts"`
+	TransactionTimeout time.Duration `yaml:"transaction_timeout"`
+}
+
 type GatewaySelectionConfig struct {
 	DNS GatewaySelectionDNSConfig `yaml:"dns"`
 	SGW GatewaySelectionSGWConfig `yaml:"sgw"`
@@ -126,13 +143,15 @@ type GatewaySelectionPGWConfig struct {
 }
 
 type NFConfig struct {
-	OriginHost  string    `yaml:"origin_host"`
-	OriginRealm string    `yaml:"origin_realm"`
-	MCC         string    `yaml:"mcc"`
-	MNC         string    `yaml:"mnc"`
-	MMEGI       uint16    `yaml:"mmegi"` // MME Group ID
-	MMEC        uint8     `yaml:"mmec"`  // MME Code
-	TAIList     []TAIItem `yaml:"tai_list"`
+	OriginHost          string    `yaml:"origin_host"`
+	OriginRealm         string    `yaml:"origin_realm"`
+	MMEName             string    `yaml:"mme_name"` // optional S1AP MMEname VisibleString
+	MCC                 string    `yaml:"mcc"`
+	MNC                 string    `yaml:"mnc"`
+	MMEGI               uint16    `yaml:"mmegi"`                 // MME Group ID
+	MMEC                uint8     `yaml:"mmec"`                  // MME Code
+	RelativeMMECapacity uint8     `yaml:"relative_mme_capacity"` // S1AP RelativeMMECapacity
+	TAIList             []TAIItem `yaml:"tai_list"`
 }
 
 type TAIItem struct {
@@ -148,15 +167,33 @@ type S1APConfig struct {
 }
 
 type S6aConfig struct {
-	PeerAddress string        `yaml:"peer_address"` // client mode: connect outbound to Diameter peer
-	BindAddress string        `yaml:"bind_address"` // server mode: listen for inbound Diameter connections
-	BindPort    int           `yaml:"bind_port"`    // server mode port (default 3868)
-	OriginHost  string        `yaml:"origin_host"`
-	OriginRealm string        `yaml:"origin_realm"`
-	RetryDelay  time.Duration `yaml:"retry_delay"`
+	PeerAddress     string           `yaml:"peer_address"` // client mode: connect outbound to Diameter peer
+	BindAddress     string           `yaml:"bind_address"` // server mode: listen for inbound Diameter connections
+	BindPort        int              `yaml:"bind_port"`    // server mode port (default 3868)
+	OriginHost      string           `yaml:"origin_host"`
+	OriginRealm     string           `yaml:"origin_realm"`
+	RetryDelay      time.Duration    `yaml:"retry_delay"`
+	SendPUROnDetach bool             `yaml:"send_pur_on_detach"`
+	Routing         S6aRoutingConfig `yaml:"routing"`
+	AIR             S6aAIRConfig     `yaml:"air"`
+	ULR             S6aULRConfig     `yaml:"ulr"`
+}
+
+type S6aRoutingConfig struct {
+	SendDestinationHost bool `yaml:"send_destination_host"`
+}
+
+type S6aAIRConfig struct {
+	RequestedVectors           uint32 `yaml:"requested_vectors"`
+	ImmediateResponsePreferred bool   `yaml:"immediate_response_preferred"`
+}
+
+type S6aULRConfig struct {
+	Flags uint32 `yaml:"flags"`
 }
 
 type DatabaseConfig struct {
+	Mode            string `yaml:"mode"`
 	Type            string `yaml:"db_type"`
 	Host            string `yaml:"server"`
 	Port            int    `yaml:"port"`
@@ -196,8 +233,9 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		NF: NFConfig{
-			MMEGI: 1,
-			MMEC:  1,
+			MMEGI:               1,
+			MMEC:                1,
+			RelativeMMECapacity: 255,
 		},
 		S1AP: S1APConfig{
 			BindAddress: "0.0.0.0",
@@ -205,7 +243,18 @@ func Load(path string) (*Config, error) {
 			SCTPStreams: 2,
 		},
 		S6a: S6aConfig{
-			RetryDelay: 5 * time.Second,
+			RetryDelay:      5 * time.Second,
+			SendPUROnDetach: true,
+			Routing: S6aRoutingConfig{
+				SendDestinationHost: true,
+			},
+			AIR: S6aAIRConfig{
+				RequestedVectors:           1,
+				ImmediateResponsePreferred: true,
+			},
+			ULR: S6aULRConfig{
+				Flags: 0x02,
+			},
 		},
 		S10: S10Config{
 			BindAddress: "0.0.0.0",
@@ -214,6 +263,12 @@ func Load(path string) (*Config, error) {
 		S11: S11Config{
 			BindAddress: "0.0.0.0",
 			BindPort:    2123,
+		},
+		Paging: PagingConfig{
+			DDNEnabled:         true,
+			RetryInterval:      2 * time.Second,
+			MaxAttempts:        3,
+			TransactionTimeout: 8 * time.Second,
 		},
 		GatewaySelection: GatewaySelectionConfig{
 			DNS: GatewaySelectionDNSConfig{
@@ -233,6 +288,7 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		Database: DatabaseConfig{
+			Mode:            "persistent",
 			Type:            "postgres",
 			Port:            5432,
 			MaxOpenConns:    30,
@@ -248,6 +304,14 @@ func Load(path string) (*Config, error) {
 		Security: SecurityConfig{
 			IntegrityAlgorithms: []string{"EIA2", "EIA1", "EIA0"},
 			CipheringAlgorithms: []string{"EEA2", "EEA1", "EEA0"},
+		},
+		NAS: NASConfig{
+			Timers: NASTimersConfig{
+				T3402: nastimer.DefaultT3402,
+				T3396: nastimer.DefaultT3396,
+				T3412: nastimer.DefaultT3412,
+				T3423: nastimer.DefaultT3423,
+			},
 		},
 	}
 
@@ -270,8 +334,32 @@ func Load(path string) (*Config, error) {
 	if cfg.S6a.BindAddress == "" && cfg.S6a.PeerAddress == "" {
 		return nil, fmt.Errorf("config: s6a.peer_address is required when s6a.bind_address is not set")
 	}
+	if cfg.S6a.AIR.RequestedVectors == 0 {
+		return nil, fmt.Errorf("config: s6a.air.requested_vectors must be greater than 0")
+	}
 	if cfg.Operator.Name.Encoding == "" {
 		cfg.Operator.Name.Encoding = "gsm7"
+	}
+	if cfg.NAS.Timers.T3412 <= 0 {
+		return nil, fmt.Errorf("config: nas.timers.t3412 must be greater than 0")
+	}
+	if _, err := nastimer.EncodeGPRSTimer(cfg.NAS.Timers.T3412); err != nil {
+		return nil, fmt.Errorf("config: nas.timers.t3412: %w", err)
+	}
+	if cfg.NAS.Timers.T3402 > 0 {
+		if _, err := nastimer.EncodeGPRSTimer(cfg.NAS.Timers.T3402); err != nil {
+			return nil, fmt.Errorf("config: nas.timers.t3402: %w", err)
+		}
+	}
+	if cfg.NAS.Timers.T3423 > 0 {
+		if _, err := nastimer.EncodeGPRSTimer(cfg.NAS.Timers.T3423); err != nil {
+			return nil, fmt.Errorf("config: nas.timers.t3423: %w", err)
+		}
+	}
+	if cfg.NAS.Timers.T3396 > 0 {
+		if _, err := nastimer.EncodeGPRSTimer3(cfg.NAS.Timers.T3396); err != nil {
+			return nil, fmt.Errorf("config: nas.timers.t3396: %w", err)
+		}
 	}
 	switch cfg.Operator.Name.Encoding {
 	case "gsm7", "ucs2":

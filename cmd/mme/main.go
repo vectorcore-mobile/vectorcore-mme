@@ -27,6 +27,7 @@ import (
 	s11client "github.com/vectorcore/mme/internal/gtpv2/s11"
 	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/peertracker"
+	"github.com/vectorcore/mme/internal/repository"
 	dbstore "github.com/vectorcore/mme/internal/repository/postgres"
 	"github.com/vectorcore/mme/internal/s1ap"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -60,22 +61,22 @@ func main() {
 	log.Info("nas feature configuration",
 		zap.Bool("ims_voice_over_ps", cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS))
 
-	db, err := openDB(cfg.Database)
+	restartEpoch := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	store, err := buildRepository(cfg.Database, log, restartEpoch)
 	if err != nil {
-		log.Fatal("database open failed", zap.Error(err))
-	}
-	if err := db.AutoMigrate(models.AllModels()...); err != nil {
-		log.Fatal("database migrate failed", zap.Error(err))
+		log.Fatal("database init failed", zap.Error(err))
 	}
 
-	store := dbstore.New(db)
-	restartEpoch := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
-	if n, err := store.MarkRecoveryRecordsStaleAfterRestart(context.Background(), restartEpoch); err != nil {
-		log.Warn("database recovery stale marking failed", zap.Error(err))
+	if databaseMode(cfg.Database) == "memory" {
+		log.Info("database disabled; using in-memory repository mode")
 	} else {
-		log.Info("database recovery records marked stale",
-			zap.String("restart_epoch", restartEpoch),
-			zap.Int64("records_marked", n))
+		if n, err := store.MarkRecoveryRecordsStaleAfterRestart(context.Background(), restartEpoch); err != nil {
+			log.Warn("database recovery stale marking failed", zap.Error(err))
+		} else {
+			log.Info("database recovery records marked stale",
+				zap.String("restart_epoch", restartEpoch),
+				zap.Int64("records_marked", n))
+		}
 	}
 	ueManager := uecontext.NewManager()
 	enbTracker := peertracker.New()
@@ -117,7 +118,7 @@ func main() {
 
 	// S1AP server (accepts eNB SCTP connections)
 	gatewaySelector := gateway.NewSelector(*cfg, log)
-	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 
@@ -219,6 +220,32 @@ func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	return db, nil
 }
 
+func buildRepository(cfg config.DatabaseConfig, log *zap.Logger, restartEpoch string) (repository.Repository, error) {
+	if databaseMode(cfg) == "memory" {
+		return noopRepository{}, nil
+	}
+	db, err := openDB(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := db.AutoMigrate(models.AllModels()...); err != nil {
+		return nil, fmt.Errorf("database migrate failed: %w", err)
+	}
+	log.Info("database persistent mode enabled",
+		zap.String("mode", databaseMode(cfg)),
+		zap.String("db_type", strings.ToLower(strings.TrimSpace(cfg.Type))),
+		zap.String("restart_epoch", restartEpoch))
+	return dbstore.New(db), nil
+}
+
+func databaseMode(cfg config.DatabaseConfig) string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if mode == "" {
+		return "persistent"
+	}
+	return mode
+}
+
 func databaseDialector(cfg config.DatabaseConfig) (gorm.Dialector, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 	case "", "postgres", "postgresql":
@@ -236,4 +263,42 @@ func databaseDialector(cfg config.DatabaseConfig) (gorm.Dialector, error) {
 	default:
 		return nil, fmt.Errorf("unsupported database db_type %q", cfg.Type)
 	}
+}
+
+type noopRepository struct{}
+
+func (noopRepository) UpsertUERecoveryRecord(_ context.Context, _ *models.UERecoveryRecord) error {
+	return nil
+}
+func (noopRepository) GetUERecoveryByIMSI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
+	return nil, repository.ErrNotFound
+}
+func (noopRepository) GetUERecoveryByGUTI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
+	return nil, repository.ErrNotFound
+}
+func (noopRepository) ListUERecoveryRecords(_ context.Context, _ repository.UERecoveryFilter) ([]models.UERecoveryRecord, error) {
+	return nil, nil
+}
+func (noopRepository) DeleteUERecoveryRecordsByIMSI(_ context.Context, _ []string) error { return nil }
+func (noopRepository) MarkRecoveryRecordsStaleAfterRestart(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+func (noopRepository) UpsertSessionRecoveryRecord(_ context.Context, _ *models.SessionRecoveryRecord) error {
+	return nil
+}
+func (noopRepository) ListSessionRecoveryRecords(_ context.Context, _ string) ([]models.SessionRecoveryRecord, error) {
+	return nil, nil
+}
+func (noopRepository) AppendRecoveryEvent(_ context.Context, _ *models.RecoveryEvent) error {
+	return nil
+}
+func (noopRepository) ListRecoveryEvents(_ context.Context, _ string, _ int) ([]models.RecoveryEvent, error) {
+	return nil, nil
+}
+func (noopRepository) UpsertENBRegistration(_ context.Context, _ *models.ENBRegistration) error {
+	return nil
+}
+func (noopRepository) DeleteENBRegistration(_ context.Context, _ string) error { return nil }
+func (noopRepository) ListENBRegistrations(_ context.Context) ([]models.ENBRegistration, error) {
+	return nil, nil
 }

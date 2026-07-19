@@ -3,8 +3,11 @@ nf:
   origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
   mcc: "001"
   mnc: "01"
+  # Optional S1SetupResponse MMEname (TS 36.413 IE id 61). Leave empty to omit.
+  mme_name: "vectorcore-mme"
   mmegi: 1
   mmec: 1
+  relative_mme_capacity: 255
   tai_list:
     - mcc: "001"
       mnc: "01"
@@ -22,6 +25,17 @@ s6a:
   # bind_address: "127.0.0.2"
   # bind_port: 3868
   retry_delay: "5s"
+  # Send Purge-UE-Request on UE detach. Some deployments leave this disabled.
+  send_pur_on_detach: true
+  routing:
+    # Route by Destination-Realm only when a DRA or peer policy should choose the HSS.
+    send_destination_host: true
+  air:
+    requested_vectors: 1
+    immediate_response_preferred: true
+  ulr:
+    # Default initial attach behavior: only S6a/S6d-Indicator (bit 2).
+    flags: 2
 
 s10:
   enabled: false
@@ -36,6 +50,13 @@ s11:
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
   recovery_restart_counter: 0    # GTPv2 Recovery IE value used in Echo Response
+
+paging:
+  # Enable S11 Downlink Data Notification driven S1AP paging for idle UEs.
+  ddn_enabled: true
+  retry_interval: "2s"
+  max_attempts: 3
+  transaction_timeout: "8s"
 
 gateway_selection:
   dns:
@@ -60,6 +81,7 @@ gateway_selection:
     prefer_s6a_static: true
 
 database:
+  mode: "persistent"   # memory | persistent
   # Supported values: "postgres", "sqlite".
   db_type: "postgres"
   server: "localhost"
@@ -90,6 +112,11 @@ nas:
     # Advertise IMS voice-over-PS session support in Attach Accept and TAU Accept.
     # Keep false unless IMS service and the ims APN are available.
     ims_voice_over_ps: false
+  timers:
+    t3402: 720
+    t3396: 720
+    t3412: 3240
+    t3423: 720
 
 # operator:
 #   name:

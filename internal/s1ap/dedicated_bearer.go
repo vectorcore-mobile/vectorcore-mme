@@ -120,18 +120,7 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 			continue
 		}
 		if createBearerCanSupersedeTransport(existing.CreateState) {
-			existing.PeerAddress = peer
-			existing.LocalTEID = req.TEID
-			existing.SequenceNum = req.SeqNum
-			for i := range req.Bearers {
-				if i >= len(existing.EBIs) {
-					break
-				}
-				if proc := existing.Bearers[existing.EBIs[i]]; proc != nil {
-					proc.SGWS1UTEID = req.Bearers[i].SGWS1UTEID
-					proc.SGWS1UIP = append(net.IP(nil), req.Bearers[i].SGWS1UIP...)
-				}
-			}
+			refreshEquivalentCreateBearerTransport(existing, peer, req)
 		}
 		s.log.Warn("s11: equivalent Create Bearer already pending",
 			zap.String("imsi", ue.IMSI),
@@ -237,7 +226,7 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 			zap.String("transaction_state", tx.State),
 		}
 		fields = append(fields, dedicatedBearerQoSLogFields(b.BearerQoS, qci)...)
-		s.log.Info("s1ap: Create Bearer procedure started", fields...)
+		s.log.Debug("s1ap: Create Bearer procedure started", fields...)
 	}
 	sort.Slice(tx.EBIs, func(i, j int) bool { return tx.EBIs[i] < tx.EBIs[j] })
 	ue.PendingBearerTransactions[key] = tx
@@ -249,7 +238,7 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 	if !linkedBearerReadyLocked(ue, req.LinkedEBI) {
 		tx.CreateState = uecontext.CreateBearerWaitingForLink
 		tx.State = string(tx.CreateState)
-		s.log.Info("s11: Create Bearer Request waiting for linked bearer readiness",
+		s.log.Debug("s11: Create Bearer Request waiting for linked bearer readiness",
 			zap.String("imsi", imsi),
 			zap.Uint32("mme_ue_id", mmeID),
 			zap.Uint32("sequence_number", req.SeqNum),
@@ -262,7 +251,7 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 		pageIMSI = imsi
 		shouldPage = ue.PagingAttempts == 0
 		tx.PagingAttempts = ue.PagingAttempts
-		s.log.Info("s11: Create Bearer Request held for idle UE",
+		s.log.Debug("s11: Create Bearer Request held for idle UE",
 			zap.String("imsi", imsi),
 			zap.Uint32("mme_ue_id", mmeID),
 			zap.Uint32("sequence_number", req.SeqNum),
@@ -423,7 +412,7 @@ func (s *Server) resumeCreateBearerTransaction(ue *uecontext.Context, key string
 	sequence := tx.SequenceNum
 	ue.Unlock()
 
-	s.log.Info("s1ap: resuming pending Create Bearer after S1 binding restored",
+	s.log.Debug("s1ap: resuming pending Create Bearer after S1 binding restored",
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeID),
 		zap.String("transaction_id", transactionID),
@@ -460,35 +449,53 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 		ue.Unlock()
 		return
 	}
+	if existingTx, existingEBI, conflict := findConflictingPendingNetworkUpdateLocked(ue, req.Bearers); conflict {
+		imsi := ue.IMSI
+		mmeUEID := ue.MMEUES1APID
+		ue.Unlock()
+		s.log.Warn("s11: overlapping Update Bearer Request rejected",
+			zap.String("imsi", imsi),
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.Uint32("sequence_number", req.SeqNum),
+			zap.Uint8("assigned_ebi", existingEBI),
+			zap.String("conflicting_transaction_id", existingTx.ID),
+			zap.String("conflicting_transaction_kind", existingTx.Kind))
+		s.sendUpdateBearerResponse(peer, req.TEID, req.SeqNum, gtpv2.CauseRequestDenied, req.Bearers)
+		return
+	}
 	tx := &uecontext.DedicatedBearerTransaction{
+		ID:          fmt.Sprintf("ubr-%d-%08x-%06x", ue.MMEUES1APID, req.TEID, req.SeqNum),
 		Kind:        bearerTxUpdate,
 		PeerAddress: peer,
 		LocalTEID:   req.TEID,
 		SequenceNum: req.SeqNum,
 		Bearers:     map[uint8]*uecontext.DedicatedBearerContext{},
 		State:       "modifying",
+		CreatedAt:   time.Now(),
 	}
 	mmeID := ue.MMEUES1APID
 	var nasToSend [][]byte
+	var erabItems []ERABModifyItem
+	erabModifyRequired := hasActiveS1BindingLocked(ue)
 	for _, b := range req.Bearers {
 		active := ue.DedicatedBearers[b.EBI]
 		if active == nil {
 			continue
 		}
 		next := *active
+		next.TransactionID = tx.ID
 		next.PTI = 0
-		if len(b.BearerQoS) > 0 {
-			next.BearerQoS = append([]byte(nil), b.BearerQoS...)
-			next.QCI = b.QCI
-			next.ARP = b.ARP
+		next.NASAccepted = false
+		next.NASRejected = false
+		next.FailureCause = 0
+		applyUpdateBearerRequestToDedicatedBearer(&next, b)
+		if erabModifyRequired && active.ERABEstablished {
+			next.ERABEstablished = false
+			next.ERABFailed = false
 		}
-		if len(b.TFT) > 0 {
-			next.TFT = append([]byte(nil), b.TFT...)
-		}
-		if len(b.PCO) > 0 {
-			next.PCO = append([]byte(nil), b.PCO...)
-		}
+		next.State = "update-pending"
 		tx.Bearers[b.EBI] = &next
+		tx.EBIs = append(tx.EBIs, b.EBI)
 		plain := esm.EncodeModifyEPSBearerContextRequest(b.EBI, 0, next.QCI, b.BearerQoS, b.TFT, b.PCO)
 		protected, _, err := protectNASLocked(ue, plain)
 		if err != nil {
@@ -498,6 +505,17 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 		}
 		ue.DLNASCount.Increment()
 		nasToSend = append(nasToSend, protected)
+		if erabModifyRequired && active.ERABEstablished {
+			erabItems = append(erabItems, ERABModifyItem{
+				EBI:                     b.EBI,
+				QCI:                     next.QCI,
+				ARPPriority:             arpPriority(next.ARP),
+				PreemptionCapability:    preemptionCapability(next.ARP),
+				PreemptionVulnerability: preemptionVulnerability(next.ARP),
+				BearerQoS:               append([]byte(nil), next.BearerQoS...),
+				NASPDU:                  protected,
+			})
+		}
 		fields := []zap.Field{
 			zap.String("imsi", ue.IMSI),
 			zap.Uint32("mme_ue_id", mmeID),
@@ -507,7 +525,7 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 			zap.String("tft_hex", hex.EncodeToString(b.TFT)),
 		}
 		fields = append(fields, dedicatedBearerQoSLogFields(b.BearerQoS, next.QCI)...)
-		s.log.Info("s1ap: Update Bearer NAS Modify sent", fields...)
+		s.log.Debug("s1ap: Update Bearer NAS Modify sent", fields...)
 	}
 	if len(tx.Bearers) == 0 {
 		ue.Unlock()
@@ -516,10 +534,23 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 	}
 	ue.PendingBearerTransactions[key] = tx
 	ue.LastDownlinkNASMessage = "Modify EPS Bearer Context Request"
+	ue.StartTimer(uecontext.TimerUpdateBearerPrefix+key, createBearerOverallTimeout, func() {
+		s.onUpdateBearerTimeout(ue, key)
+	})
 	ue.Unlock()
 	for _, protected := range nasToSend {
 		if err := s.SendDownlinkNAS(mmeID, protected); err != nil {
-			s.sendUpdateBearerResponse(peer, req.TEID, req.SeqNum, gtpv2.CauseRequestDenied, req.Bearers)
+			s.failUpdateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
+			return
+		}
+	}
+	if len(erabItems) > 0 {
+		if err := s.SendERABModifyRequestTracked(mmeID, erabItems, "dedicated_update_bearer", tx.ID); err != nil {
+			s.log.Warn("s1ap: E-RAB Modify Request for Update Bearer failed",
+				zap.Uint32("mme_ue_id", mmeID),
+				zap.String("transaction_id", tx.ID),
+				zap.Error(err))
+			s.failUpdateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
 			return
 		}
 	}
@@ -541,19 +572,21 @@ func (s *Server) HandleLocalBearerResourceModification(ue *uecontext.Context, re
 		return nil
 	}
 	next := *active
+	next.TransactionID = fmt.Sprintf("brm-%d-%02x-%02x", ue.MMEUES1APID, req.LinkedEPSBearerID, req.ProcedureTransactionID)
 	next.PTI = req.ProcedureTransactionID
 	if len(req.TFA) > 0 {
 		next.TFT = append([]byte(nil), req.TFA...)
 	}
 	tx := &uecontext.DedicatedBearerTransaction{
-		ID:        fmt.Sprintf("brm-%d-%02x-%02x", ue.MMEUES1APID, req.LinkedEPSBearerID, req.ProcedureTransactionID),
+		ID:        next.TransactionID,
 		Kind:      bearerTxLocalUpdate,
 		LinkedEBI: active.LinkedEBI,
 		EBIs:      []uint8{req.LinkedEPSBearerID},
 		Bearers: map[uint8]*uecontext.DedicatedBearerContext{
 			req.LinkedEPSBearerID: &next,
 		},
-		State: "ue-initiated-modifying",
+		State:     "ue-initiated-modifying",
+		CreatedAt: time.Now(),
 	}
 	plain := esm.EncodeModifyEPSBearerContextRequest(active.AssignedEBI, req.ProcedureTransactionID, next.QCI, next.BearerQoS, next.TFT, next.PCO)
 	protected, _, err := protectNASLocked(ue, plain)
@@ -583,7 +616,7 @@ func (s *Server) HandleLocalBearerResourceModification(ue *uecontext.Context, re
 		zap.String("tft_hex", hex.EncodeToString(tft)),
 	}
 	fields = append(fields, dedicatedBearerQoSLogFields(bearerQoS, qci)...)
-	s.log.Info("s1ap: Bearer Resource Modification NAS Modify sent", fields...)
+	s.log.Debug("s1ap: Bearer Resource Modification NAS Modify sent", fields...)
 
 	if err := s.SendDownlinkNAS(mmeID, protected); err != nil {
 		ue.Lock()
@@ -618,6 +651,7 @@ func (s *Server) HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerR
 		EBIs:        append([]uint8(nil), req.EBIs...),
 		Bearers:     map[uint8]*uecontext.DedicatedBearerContext{},
 		State:       "deleting",
+		CreatedAt:   time.Now(),
 	}
 	mmeID := ue.MMEUES1APID
 	var nasToSend [][]byte
@@ -627,7 +661,9 @@ func (s *Server) HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerR
 			continue
 		}
 		copyBearer := *active
+		copyBearer.TransactionID = tx.ID
 		copyBearer.PTI = 0
+		copyBearer.State = "delete-pending"
 		tx.Bearers[ebi] = &copyBearer
 		plain := esm.EncodeDeactivateEPSBearerContextRequest(ebi, 0, esm.ESMCauseRegularDeactivation)
 		protected, _, err := protectNASLocked(ue, plain)
@@ -663,29 +699,27 @@ func (s *Server) HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerR
 func (s *Server) handleDedicatedBearerNASResponse(ue *uecontext.Context, resp *esm.BearerProcedureResponse, log *zap.Logger) {
 	ue.Lock()
 	defer ue.Unlock()
-	for key, tx := range ue.PendingBearerTransactions {
+	key, tx, ok := findPendingBearerTransactionForResponseLocked(ue, resp)
+	if ok {
 		proc := tx.Bearers[resp.EPSBearerID]
-		if proc == nil {
-			continue
-		}
 		switch resp.MessageType {
 		case esm.MsgActivateDedicatedEPSBearerContextAccept:
-			res, ok := ue.EBIReservations[resp.EPSBearerID]
-			if !ok || res.TransactionID != tx.ID || proc.TransactionID != tx.ID {
+			res, hasReservation := ue.EBIReservations[resp.EPSBearerID]
+			if !hasReservation || res.TransactionID != tx.ID || proc.TransactionID != tx.ID {
 				log.Warn("s1ap: stale Activate Dedicated EPS Bearer Context Accept ignored",
 					zap.Uint8("assigned_ebi", resp.EPSBearerID),
 					zap.String("transaction_id", tx.ID))
 				return
 			}
 			proc.NASAccepted = true
-			log.Info("s1ap: Activate Dedicated EPS Bearer Context Accept received",
+			log.Debug("s1ap: Activate Dedicated EPS Bearer Context Accept received",
 				zap.Uint8("assigned_ebi", resp.EPSBearerID),
 				zap.Uint8("linked_ebi", proc.LinkedEBI),
 				zap.Uint8("pti", resp.ProcedureTransactionID))
 			s.maybeCompleteCreateBearerLocked(ue, key, tx)
 		case esm.MsgActivateDedicatedEPSBearerContextReject:
-			res, ok := ue.EBIReservations[resp.EPSBearerID]
-			if !ok || res.TransactionID != tx.ID || proc.TransactionID != tx.ID {
+			res, hasReservation := ue.EBIReservations[resp.EPSBearerID]
+			if !hasReservation || res.TransactionID != tx.ID || proc.TransactionID != tx.ID {
 				log.Warn("s1ap: stale Activate Dedicated EPS Bearer Context Reject ignored",
 					zap.Uint8("assigned_ebi", resp.EPSBearerID),
 					zap.String("transaction_id", tx.ID))
@@ -695,21 +729,24 @@ func (s *Server) handleDedicatedBearerNASResponse(ue *uecontext.Context, resp *e
 			proc.FailureCause = resp.Cause
 			s.maybeCompleteCreateBearerLocked(ue, key, tx)
 		case esm.MsgModifyEPSBearerContextAccept:
-			ue.DedicatedBearers[resp.EPSBearerID] = proc
-			delete(ue.PendingBearerTransactions, key)
 			if tx.Kind == bearerTxUpdate {
-				go s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, gtpv2.CauseRequestAccepted, updateBearersFromTx(tx))
+				proc.NASAccepted = true
+				s.maybeCompleteUpdateBearerLocked(ue, key, tx)
 			} else {
-				log.Info("s1ap: Bearer Resource Modification accepted",
+				ue.DedicatedBearers[resp.EPSBearerID] = proc
+				delete(ue.PendingBearerTransactions, key)
+				log.Debug("s1ap: Bearer Resource Modification accepted",
 					zap.Uint8("assigned_ebi", resp.EPSBearerID),
 					zap.Uint8("pti", resp.ProcedureTransactionID))
 			}
 		case esm.MsgModifyEPSBearerContextReject:
-			delete(ue.PendingBearerTransactions, key)
 			if tx.Kind == bearerTxUpdate {
+				delete(ue.PendingERABProcedures, tx.ID)
+				delete(ue.PendingBearerTransactions, key)
 				go s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, gtpv2.CauseUERefuses, updateBearersFromTx(tx))
 			} else {
-				log.Info("s1ap: Bearer Resource Modification rejected",
+				delete(ue.PendingBearerTransactions, key)
+				log.Debug("s1ap: Bearer Resource Modification rejected",
 					zap.Uint8("assigned_ebi", resp.EPSBearerID),
 					zap.Uint8("pti", resp.ProcedureTransactionID),
 					zap.Uint8("esm_cause", resp.Cause))
@@ -748,9 +785,20 @@ func (s *Server) handleDedicatedBearerNASResponse(ue *uecontext.Context, resp *e
 		}
 		return
 	}
+	if resp.MessageType == esm.MsgModifyEPSBearerContextAccept || resp.MessageType == esm.MsgModifyEPSBearerContextReject {
+		if bearer := ue.DedicatedBearers[resp.EPSBearerID]; bearer != nil {
+			log.Debug("s1ap: stale dedicated bearer NAS modify response ignored",
+				zap.Uint8("assigned_ebi", resp.EPSBearerID),
+				zap.Uint8("message_type", resp.MessageType),
+				zap.String("bearer_state", bearer.State),
+				zap.String("last_transaction_id", bearer.TransactionID))
+			return
+		}
+	}
 	log.Warn("s1ap: bearer NAS response for unknown EBI",
 		zap.Uint8("assigned_ebi", resp.EPSBearerID),
-		zap.Uint8("message_type", resp.MessageType))
+		zap.Uint8("message_type", resp.MessageType),
+		zap.Strings("pending_bearer_transactions", pendingBearerTransactionSummariesLocked(ue)))
 }
 
 func (s *Server) completeDedicatedERABSetupForBearer(ue *uecontext.Context, result ERABSetupResult, log *zap.Logger) bool {
@@ -775,7 +823,7 @@ func (s *Server) completeDedicatedERABSetupForBearer(ue *uecontext.Context, resu
 		proc.ENBS1UIP = append(net.IP(nil), result.ENBS1UIPv4...)
 		proc.ERABEstablished = result.Success
 		proc.ERABFailed = !result.Success
-		log.Info("s1ap: dedicated E-RAB Setup Response item",
+		log.Debug("s1ap: dedicated E-RAB Setup Response item",
 			zap.Uint8("assigned_ebi", result.EBI),
 			zap.Uint8("qci", proc.QCI),
 			zap.Uint32("sgw_s1u_teid", proc.SGWS1UTEID),
@@ -843,6 +891,83 @@ func (s *Server) failCreateBearerTransaction(ue *uecontext.Context, key string, 
 	if tx != nil {
 		s.sendFinalCreateBearerResponse(tx, cause, createBearersFromTx(tx), time.Since(tx.CreatedAt), 0, len(tx.Bearers))
 	}
+}
+
+func (s *Server) failUpdateBearerTransaction(ue *uecontext.Context, key string, cause uint8) {
+	ue.Lock()
+	tx := ue.PendingBearerTransactions[key]
+	if tx != nil {
+		ue.StopTimer(uecontext.TimerUpdateBearerPrefix + key)
+		delete(ue.PendingERABProcedures, tx.ID)
+		delete(ue.PendingBearerTransactions, key)
+	}
+	ue.Unlock()
+	if tx != nil {
+		s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, cause, updateBearersFromTx(tx))
+	}
+}
+
+func (s *Server) failUpdateBearerTransactionByID(ue *uecontext.Context, txID string, cause uint8) {
+	ue.Lock()
+	key, tx := findPendingBearerTransactionByIDLocked(ue, txID)
+	if tx != nil {
+		ue.StopTimer(uecontext.TimerUpdateBearerPrefix + key)
+		delete(ue.PendingERABProcedures, tx.ID)
+		delete(ue.PendingBearerTransactions, key)
+	}
+	ue.Unlock()
+	if tx != nil {
+		s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, cause, updateBearersFromTx(tx))
+	}
+}
+
+func (s *Server) maybeCompleteUpdateBearerLocked(ue *uecontext.Context, key string, tx *uecontext.DedicatedBearerTransaction) {
+	if tx == nil || tx.Kind != bearerTxUpdate {
+		return
+	}
+	waitingForERAB := ue.PendingERABProcedures[tx.ID] != nil
+	for _, proc := range tx.Bearers {
+		if proc == nil {
+			continue
+		}
+		if proc.ERABFailed {
+			ue.StopTimer(uecontext.TimerUpdateBearerPrefix + key)
+			delete(ue.PendingERABProcedures, tx.ID)
+			delete(ue.PendingBearerTransactions, key)
+			go s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, gtpv2.CauseRequestRejected, updateBearersFromTx(tx))
+			return
+		}
+		if !proc.NASAccepted {
+			return
+		}
+		if waitingForERAB && !proc.ERABEstablished {
+			return
+		}
+	}
+	for ebi, proc := range tx.Bearers {
+		ue.DedicatedBearers[ebi] = proc
+	}
+	ue.StopTimer(uecontext.TimerUpdateBearerPrefix + key)
+	delete(ue.PendingERABProcedures, tx.ID)
+	delete(ue.PendingBearerTransactions, key)
+	go s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, gtpv2.CauseRequestAccepted, updateBearersFromTx(tx))
+}
+
+func (s *Server) onUpdateBearerTimeout(ue *uecontext.Context, key string) {
+	ue.Lock()
+	tx := ue.PendingBearerTransactions[key]
+	if tx == nil || tx.Kind != bearerTxUpdate {
+		ue.Unlock()
+		return
+	}
+	ue.StopTimer(uecontext.TimerUpdateBearerPrefix + key)
+	delete(ue.PendingERABProcedures, tx.ID)
+	delete(ue.PendingBearerTransactions, key)
+	ue.Unlock()
+	s.log.Warn("s11: pending Update Bearer timed out",
+		zap.String("transaction_id", tx.ID),
+		zap.Duration("duration", time.Since(tx.CreatedAt)))
+	s.sendUpdateBearerResponse(tx.PeerAddress, tx.LocalTEID, tx.SequenceNum, gtpv2.CauseRequestDenied, updateBearersFromTx(tx))
 }
 
 func (s *Server) finalizeCreateBearerTransactionLocked(ue *uecontext.Context, key string, tx *uecontext.DedicatedBearerTransaction) {
@@ -927,7 +1052,7 @@ func (s *Server) sendFinalCreateBearerResponse(tx *uecontext.DedicatedBearerTran
 		s.sendCreateBearerResponseWithMeta(tx.PeerAddress, responseTEID, tx.SequenceNum, cause, bearers, meta)
 	}
 	s.advanceLinkedDefaultBearerAfterCreateBearerResponse(tx, cause)
-	s.log.Info("s11: Create Bearer transaction completed",
+	s.log.Debug("s11: Create Bearer transaction completed",
 		zap.String("transaction_id", tx.ID),
 		zap.Duration("duration", duration),
 		zap.Int("bearer_count", len(bearers)),
@@ -979,7 +1104,7 @@ func (s *Server) sendCreateBearerResponseWithOptionalPiggyback(tx *uecontext.Ded
 			zap.Error(err))
 		return false
 	}
-	s.log.Info("s1ap: Create Bearer Response sent; standalone IMS Modify Bearer remains deferred",
+	s.log.Debug("s1ap: Create Bearer Response sent; standalone IMS Modify Bearer remains deferred",
 		zap.String("transaction_id", tx.ID),
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeUEID),
@@ -996,7 +1121,7 @@ func (s *Server) advanceLinkedDefaultBearerAfterCreateBearerResponse(tx *ueconte
 	if ue == nil {
 		return
 	}
-	s.log.Info("s1ap: evaluating linked default bearer after Create Bearer response",
+	s.log.Debug("s1ap: evaluating linked default bearer after Create Bearer response",
 		zap.String("transaction_id", tx.ID),
 		zap.String("imsi", ue.IMSI),
 		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
@@ -1080,6 +1205,9 @@ func assignDedicatedEBIsLocked(ue *uecontext.Context, bearers []gtpv2.CreateBear
 		if pdn.DefaultEBI != 0 {
 			used[pdn.DefaultEBI] = true
 		}
+	}
+	if ue.PendingPDN != nil && ue.PendingPDN.DefaultEBI != 0 {
+		used[ue.PendingPDN.DefaultEBI] = true
 	}
 	for ebi := range ue.DedicatedBearers {
 		used[ebi] = true
@@ -1334,11 +1462,24 @@ func isCreateBearerTerminal(state uecontext.CreateBearerState) bool {
 }
 
 func createBearerCanSupersedeTransport(state uecontext.CreateBearerState) bool {
-	switch state {
-	case uecontext.CreateBearerReceived, uecontext.CreateBearerWaitingForUE, uecontext.CreateBearerPaging:
-		return true
-	default:
-		return false
+	return !isCreateBearerTerminal(state)
+}
+
+func refreshEquivalentCreateBearerTransport(tx *uecontext.DedicatedBearerTransaction, peer string, req *gtpv2.CreateBearerRequest) {
+	if tx == nil || req == nil {
+		return
+	}
+	tx.PeerAddress = peer
+	tx.LocalTEID = req.TEID
+	tx.SequenceNum = req.SeqNum
+	for i := range req.Bearers {
+		if i >= len(tx.EBIs) {
+			break
+		}
+		if proc := tx.Bearers[tx.EBIs[i]]; proc != nil {
+			proc.SGWS1UTEID = req.Bearers[i].SGWS1UTEID
+			proc.SGWS1UIP = append(net.IP(nil), req.Bearers[i].SGWS1UIP...)
+		}
 	}
 }
 
@@ -1492,7 +1633,7 @@ func (s *Server) sendCreateBearerResponseWithMeta(peer string, teid uint32, seq 
 		s.log.Warn("s1ap: Create Bearer Response send failed", zap.String("peer", peer), zap.Uint32("seq", seq), zap.Error(err))
 		return
 	}
-	s.log.Info("s1ap: Create Bearer Response sent",
+	s.log.Debug("s1ap: Create Bearer Response sent",
 		zap.String("peer", peer),
 		zap.Uint32("response_teid", teid),
 		zap.Uint32("sequence_number", seq),
@@ -1536,6 +1677,91 @@ func arpPriority(raw uint8) uint8 {
 		return 8
 	}
 	return pl
+}
+
+func applyUpdateBearerRequestToDedicatedBearer(next *uecontext.DedicatedBearerContext, req gtpv2.UpdateBearerBearer) {
+	if next == nil {
+		return
+	}
+	if len(req.BearerQoS) > 0 {
+		next.BearerQoS = append([]byte(nil), req.BearerQoS...)
+	}
+	if req.QCI != 0 {
+		next.QCI = req.QCI
+	}
+	if req.ARP != 0 {
+		next.ARP = req.ARP
+	}
+	if len(req.TFT) > 0 {
+		next.TFT = append([]byte(nil), req.TFT...)
+	}
+	if len(req.PCO) > 0 {
+		next.PCO = append([]byte(nil), req.PCO...)
+	}
+}
+
+func findPendingBearerTransactionForResponseLocked(ue *uecontext.Context, resp *esm.BearerProcedureResponse) (string, *uecontext.DedicatedBearerTransaction, bool) {
+	if ue == nil || resp == nil {
+		return "", nil, false
+	}
+	var preferredKinds []string
+	switch resp.MessageType {
+	case esm.MsgActivateDedicatedEPSBearerContextAccept, esm.MsgActivateDedicatedEPSBearerContextReject:
+		preferredKinds = []string{bearerTxCreate}
+	case esm.MsgModifyEPSBearerContextAccept, esm.MsgModifyEPSBearerContextReject:
+		preferredKinds = []string{bearerTxUpdate, bearerTxLocalUpdate}
+	case esm.MsgDeactivateEPSBearerContextAccept:
+		preferredKinds = []string{bearerTxDelete}
+	default:
+		return "", nil, false
+	}
+	for _, kind := range preferredKinds {
+		for key, tx := range ue.PendingBearerTransactions {
+			if tx == nil || tx.Kind != kind {
+				continue
+			}
+			if tx.Bearers[resp.EPSBearerID] != nil {
+				return key, tx, true
+			}
+		}
+	}
+	return "", nil, false
+}
+
+func pendingBearerTransactionSummariesLocked(ue *uecontext.Context) []string {
+	if ue == nil {
+		return nil
+	}
+	out := make([]string, 0, len(ue.PendingBearerTransactions))
+	for key, tx := range ue.PendingBearerTransactions {
+		if tx == nil {
+			continue
+		}
+		ebis := sortedTxBearerEBIs(tx)
+		out = append(out, fmt.Sprintf("%s:%s:%v", key, tx.Kind, ebis))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func findConflictingPendingNetworkUpdateLocked(ue *uecontext.Context, bearers []gtpv2.UpdateBearerBearer) (*uecontext.DedicatedBearerTransaction, uint8, bool) {
+	if ue == nil {
+		return nil, 0, false
+	}
+	for _, bearer := range bearers {
+		for _, tx := range ue.PendingBearerTransactions {
+			if tx == nil {
+				continue
+			}
+			if tx.Kind != bearerTxUpdate {
+				continue
+			}
+			if tx.Bearers[bearer.EBI] != nil {
+				return tx, bearer.EBI, true
+			}
+		}
+	}
+	return nil, 0, false
 }
 
 func preemptionCapability(raw uint8) bool {
