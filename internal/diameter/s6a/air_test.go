@@ -12,15 +12,19 @@ import (
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
+func testDiameterConfig() config.DiameterConfig {
+	return config.DiameterConfig{OriginHost: "mme.example.net", OriginRealm: "example.net", Peers: []config.DiameterPeerConfig{{Name: "peer", Address: "127.0.0.1:3868"}}}
+}
+
 func TestBuildAIRUsesConfiguredRoutingAndRequestedVectors(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{
-			Routing: config.S6aRoutingConfig{SendDestinationHost: true},
 			AIR: config.S6aAIRConfig{
 				RequestedVectors:           3,
 				ImmediateResponsePreferred: false,
 			},
 		},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
@@ -60,22 +64,22 @@ func TestBuildAIRUsesConfiguredRoutingAndRequestedVectors(t *testing.T) {
 	}
 }
 
-func TestBuildAIROmitsDestinationHostWhenDisabled(t *testing.T) {
+func TestBuildAIROmitsDestinationHostForRelay(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{
-			Routing: config.S6aRoutingConfig{SendDestinationHost: false},
 			AIR: config.S6aAIRConfig{
 				RequestedVectors:           1,
 				ImmediateResponsePreferred: true,
 			},
 		},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
 	)
 
-	msg := h.buildAIR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "hss.remote.net", "remote.net")
+	msg := h.buildAIR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
 
 	if findAVP(msg, avp.DestinationHost) != nil {
 		t.Fatal("Destination-Host present, want omitted")

@@ -18,20 +18,51 @@ s1ap:
   bind_port: 36412
   sctp_streams: 2
 
-s6a:
-  # Client mode: connect outbound to the Diameter peer.
-  peer_address: "127.0.0.2:3868"
-  # Server mode (alternative): uncomment to listen instead.
-  # bind_address: "127.0.0.2"
-  # bind_port: 3868
+diameter:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  # Optional local listener; outbound peer connections are maintained either way.
+  # bind_addr: "0.0.0.0:3868"
+  # bind_transport: "sctp" # tcp is the default
   retry_delay: "5s"
+  # The deployed peer is a DRA relay. Relay capability is learned from CEA.
+  peers:
+    - name: "dra-1"
+      address: "127.0.0.2:3868"
+      transport: "tcp" # tcp is the default
+
+  # Dual-DRA active/standby: without priority, configuration order is primary/fallback.
+  # peers:
+  #   - name: "dra-1"
+  #     address: "10.90.250.35:3868"
+  #   - name: "dra-2"
+  #     address: "10.90.250.36:3868"
+
+  # Explicit priority: lower number wins, but only among peers of the same route class.
+  # peers:
+  #   - name: "dra-1"
+  #     address: "10.90.250.35:3868"
+  #     priority: 10
+  #   - name: "dra-2"
+  #     address: "10.90.250.36:3868"
+  #     priority: 20
+
+  # Mixed direct HSS plus DRA: discovered direct S6a capability beats relay.
+  # peers:
+  #   - name: "dra-1"
+  #     address: "10.90.250.35:3868"
+  #   - name: "hss-1"
+  #     address: "10.90.250.40:3868"
+  #     transport: "sctp"
+
+s6a:
   # Send Purge-UE-Request on UE detach. Some deployments leave this disabled.
   send_pur_on_detach: true
-  routing:
-    # Route by Destination-Realm only when a DRA or peer policy should choose the HSS.
-    send_destination_host: true
+  # Optional request shaping; these are the MME defaults and may be omitted.
   air:
+    # Number of LTE authentication vectors requested from the HSS per AIR.
     requested_vectors: 1
+    # Ask the HSS to return authentication data in the immediate answer.
     immediate_response_preferred: true
   ulr:
     # Default initial attach behavior: only S6a/S6d-Indicator (bit 2).

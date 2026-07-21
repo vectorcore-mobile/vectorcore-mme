@@ -6,19 +6,16 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/fiorix/go-diameter/v4/diam"
 	"github.com/fiorix/go-diameter/v4/diam/avp"
 	"github.com/fiorix/go-diameter/v4/diam/datatype"
-	"github.com/fiorix/go-diameter/v4/diam/dict"
 	"github.com/fiorix/go-diameter/v4/diam/sm"
-	"github.com/fiorix/go-diameter/v4/diam/sm/smpeer"
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/diameter/peer"
 	"github.com/vectorcore/mme/internal/gateway"
-	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -38,17 +35,17 @@ type ResultHandler interface {
 // Handlers is the S6a Diameter client.
 // It implements the s1ap.S6aClient interface (SendAIR, SendULR, SendPUR).
 type Handlers struct {
-	cfg       config.S6aConfig
-	nfCfg     config.NFConfig
-	ueManager *uecontext.Manager
-	nas       ResultHandler
-	detachFn  func(ue *uecontext.Context) // optional; wired from S1AP for CLR cleanup
-	log       *zap.Logger
+	cfg         config.S6aConfig
+	diameterCfg config.DiameterConfig
+	nfCfg       config.NFConfig
+	ueManager   *uecontext.Manager
+	nas         ResultHandler
+	detachFn    func(ue *uecontext.Context) // optional; wired from S1AP for CLR cleanup
+	log         *zap.Logger
 
 	settings *sm.Settings
 
-	connMu sync.RWMutex
-	conn   diam.Conn
+	peers *peer.Manager
 
 	pendingAIR sync.Map // sessionID string → uint32 (mmeUEID)
 	pendingULR sync.Map // sessionID string → uint32 (mmeUEID)
@@ -59,26 +56,30 @@ type Handlers struct {
 // NewHandlers creates a new S6a handler set.
 func NewHandlers(
 	cfg config.S6aConfig,
+	diameterCfg config.DiameterConfig,
 	nfCfg config.NFConfig,
 	ueManager *uecontext.Manager,
 	nas ResultHandler,
 	log *zap.Logger,
 ) *Handlers {
 	settings := &sm.Settings{
-		OriginHost:       datatype.DiameterIdentity(nfCfg.OriginHost),
-		OriginRealm:      datatype.DiameterIdentity(nfCfg.OriginRealm),
+		OriginHost:       datatype.DiameterIdentity(diameterCfg.OriginHost),
+		OriginRealm:      datatype.DiameterIdentity(diameterCfg.OriginRealm),
 		VendorID:         vendor3GPP,
 		ProductName:      "VectorCore MME",
 		FirmwareRevision: 1,
 	}
-	return &Handlers{
-		cfg:       cfg,
-		nfCfg:     nfCfg,
-		ueManager: ueManager,
-		nas:       nas,
-		log:       log,
-		settings:  settings,
+	h := &Handlers{
+		cfg:         cfg,
+		diameterCfg: diameterCfg,
+		nfCfg:       nfCfg,
+		ueManager:   ueManager,
+		nas:         nas,
+		log:         log,
+		settings:    settings,
 	}
+	h.peers = peer.New(diameterCfg, log, h.buildMux)
+	return h
 }
 
 // SetResultHandler wires the NAS result callback after construction.
@@ -93,33 +94,14 @@ func (h *Handlers) SetDetachFn(fn func(ue *uecontext.Context)) {
 	h.detachFn = fn
 }
 
-// Start runs the Diameter layer. Two modes:
-//   - If s6a.bind_address is set: listen for inbound connections (DRA or HSS connects to us).
-//   - Otherwise: connect outbound to s6a.peer_address and reconnect on failure.
-//
-// Blocking in both cases.
+// Start runs the shared Diameter peer manager. It maintains every configured
+// outbound peer and any configured TCP/SCTP listeners concurrently.
 func (h *Handlers) Start() error {
-	if h.cfg.BindAddress != "" {
-		return h.listen()
-	}
-	for {
-		if err := h.connect(); err != nil {
-			h.log.Warn("s6a: connection failed, retrying",
-				zap.String("peer", h.cfg.PeerAddress), zap.Error(err))
-		}
-		time.Sleep(h.retryDelay())
-	}
-}
-
-func (h *Handlers) retryDelay() time.Duration {
-	if h.cfg.RetryDelay > 0 {
-		return h.cfg.RetryDelay
-	}
-	return 5 * time.Second
+	return h.peers.Start()
 }
 
 func (h *Handlers) addDestinationRouting(m *diam.Message, host, realm string) {
-	if h.cfg.Routing.SendDestinationHost && host != "" {
+	if host != "" {
 		m.NewAVP(avp.DestinationHost, avp.Mbit, 0, datatype.DiameterIdentity(host))
 	}
 	m.NewAVP(avp.DestinationRealm, avp.Mbit, 0, datatype.DiameterIdentity(realm))
@@ -133,8 +115,10 @@ func boolToUint32(v bool) uint32 {
 }
 
 // buildMux constructs the sm.StateMachine and registers all S6a message handlers.
-func (h *Handlers) buildMux() *sm.StateMachine {
-	mux := sm.New(h.settings)
+func (h *Handlers) buildMux(onCER diam.HandlerFunc) *sm.StateMachine {
+	settings := *h.settings
+	settings.OnCER = onCER
+	mux := sm.New(&settings)
 	mux.HandleIdx(
 		diam.CommandIndex{AppID: appIDS6a, Code: diam.AuthenticationInformation, Request: false},
 		diam.HandlerFunc(h.handleAIA))
@@ -163,120 +147,18 @@ func (h *Handlers) buildMux() *sm.StateMachine {
 	return mux
 }
 
-// connCapture wraps a diam.Handler so every incoming message records the peer connection.
-// Used in server/listen mode so we can send requests on the DRA-initiated connection.
-type connCapture struct {
-	h    *Handlers
-	next diam.Handler
+func (h *Handlers) selectPeer(realm string) (*peer.Peer, error) {
+	return h.peers.SelectPeer(appIDS6a, realm)
 }
 
-func (cc *connCapture) ServeDIAM(c diam.Conn, m *diam.Message) {
-	cc.next.ServeDIAM(c, m) // sm processes CER first, setting smpeer on the context
-	cc.h.storeConn(c)       // now peerMeta(c) returns the populated Origin-Host/Realm
+func (h *Handlers) reportTransactionFailure(selected *peer.Peer) {
+	h.peers.ReportTransactionFailure(selected.Name)
 }
 
-// storeConn records c as the active connection and starts a goroutine that nils it on close.
-func (h *Handlers) storeConn(c diam.Conn) {
-	h.connMu.Lock()
-	if h.conn == c {
-		h.connMu.Unlock()
-		return
-	}
-	h.conn = c
-	h.connMu.Unlock()
-
-	host, realm, _ := peerMeta(c)
-	h.log.Info("s6a: Diameter peer connected",
-		zap.String("origin_host", host),
-		zap.String("origin_realm", realm),
-		zap.String("remote_addr", c.RemoteAddr().String()))
-	metrics.S6aRequestsTotal.WithLabelValues("connect", "ok").Inc()
-
-	if cn, ok := c.(diam.CloseNotifier); ok {
-		go func() {
-			<-cn.CloseNotify()
-			h.connMu.Lock()
-			if h.conn == c {
-				h.conn = nil
-			}
-			h.connMu.Unlock()
-			h.log.Warn("s6a: Diameter peer disconnected",
-				zap.String("origin_host", host), zap.String("origin_realm", realm))
-		}()
-	}
-}
-
-// listen starts a Diameter server so the DRA (or HSS directly) can connect inbound.
-func (h *Handlers) listen() error {
-	mux := h.buildMux()
-	port := h.cfg.BindPort
-	if port == 0 {
-		port = 3868
-	}
-	addr := fmt.Sprintf("%s:%d", h.cfg.BindAddress, port)
-	h.log.Info("s6a: listening for Diameter connections", zap.String("addr", addr))
-	return diam.ListenAndServe(addr, &connCapture{h: h, next: mux}, dict.Default)
-}
-
-// connect establishes one outbound Diameter connection to the HSS or DRA.
-func (h *Handlers) connect() error {
-	mux := h.buildMux()
-
-	cli := &sm.Client{
-		Dict:               dict.Default,
-		Handler:            mux,
-		MaxRetransmits:     3,
-		RetransmitInterval: time.Second,
-		EnableWatchdog:     true,
-		WatchdogInterval:   5 * time.Second,
-		SupportedVendorID: []*diam.AVP{
-			diam.NewAVP(avp.SupportedVendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP)),
-		},
-		VendorSpecificApplicationID: []*diam.AVP{
-			diam.NewAVP(avp.VendorSpecificApplicationID, avp.Mbit, 0, &diam.GroupedAVP{
-				AVP: []*diam.AVP{
-					diam.NewAVP(avp.AuthApplicationID, avp.Mbit, 0, datatype.Unsigned32(appIDS6a)),
-					diam.NewAVP(avp.VendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP)),
-				},
-			}),
-		},
-	}
-
-	conn, err := cli.DialNetwork("tcp", h.cfg.PeerAddress)
-	if err != nil {
-		return fmt.Errorf("s6a: dial %s: %w", h.cfg.PeerAddress, err)
-	}
-
-	h.connMu.Lock()
-	h.conn = conn
-	h.connMu.Unlock()
-
-	h.log.Info("s6a: connected to peer", zap.String("peer", h.cfg.PeerAddress))
-	metrics.S6aRequestsTotal.WithLabelValues("connect", "ok").Inc()
-
-	<-conn.(diam.CloseNotifier).CloseNotify()
-	h.connMu.Lock()
-	h.conn = nil
-	h.connMu.Unlock()
-	h.log.Warn("s6a: peer connection lost", zap.String("peer", h.cfg.PeerAddress))
-	return nil
-}
-
-// Connected reports whether a Diameter peer is currently connected.
+// Connected reports whether an S6a-capable or relay Diameter peer is ready.
 func (h *Handlers) Connected() bool {
-	h.connMu.RLock()
-	defer h.connMu.RUnlock()
-	return h.conn != nil
-}
-
-// getConn returns the current Diameter connection, or an error if not connected.
-func (h *Handlers) getConn() (diam.Conn, error) {
-	h.connMu.RLock()
-	defer h.connMu.RUnlock()
-	if h.conn == nil {
-		return nil, fmt.Errorf("s6a: not connected to HSS")
-	}
-	return h.conn, nil
+	_, err := h.selectPeer(h.diameterCfg.OriginRealm)
+	return err == nil
 }
 
 // handleDPR handles Disconnect-Peer-Request from the remote end.
@@ -300,15 +182,6 @@ func (h *Handlers) handleDPR(c diam.Conn, m *diam.Message) {
 		h.log.Warn("s6a: DPA write failed", zap.Error(err))
 	}
 	c.Close()
-}
-
-// peerMeta retrieves the HSS peer metadata from the connection context.
-func peerMeta(c diam.Conn) (host, realm string, ok bool) {
-	meta, found := smpeer.FromContext(c.Context())
-	if !found {
-		return "", "", false
-	}
-	return string(meta.OriginHost), string(meta.OriginRealm), true
 }
 
 // newSessionID generates a unique Session-ID.

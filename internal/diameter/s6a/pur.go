@@ -19,19 +19,16 @@ func (h *Handlers) SendPUR(imsi string) error {
 		return nil
 	}
 
-	conn, err := h.getConn()
+	destinationRealm := h.diameterCfg.OriginRealm
+	selected, err := h.selectPeer(destinationRealm)
 	if err != nil {
 		return err
 	}
 
-	host, realm, ok := peerMeta(conn)
-	if !ok {
-		return fmt.Errorf("s6a: peer metadata unavailable")
-	}
+	m := h.buildPUR(imsi, selected.DestinationHost, destinationRealm)
 
-	m := h.buildPUR(imsi, host, realm)
-
-	if _, err := m.WriteTo(conn); err != nil {
+	if _, err := m.WriteTo(selected.Connection); err != nil {
+		h.reportTransactionFailure(selected)
 		return fmt.Errorf("s6a: PUR write: %w", err)
 	}
 
@@ -44,8 +41,8 @@ func (h *Handlers) buildPUR(imsi, destHost, destRealm string) *diam.Message {
 	sid := h.newSessionID(imsi)
 	m := diam.NewRequest(diam.PurgeUE, appIDS6a, dict.Default)
 	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sid))
-	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
 	h.addDestinationRouting(m, destHost, destRealm)
 	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
 	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1))

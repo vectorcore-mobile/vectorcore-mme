@@ -17,23 +17,20 @@ import (
 // SendULR sends an Update-Location-Request to the HSS.
 // The result arrives asynchronously via handleULA → nas.HandleULAResult.
 func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
-	conn, err := h.getConn()
+	destinationRealm := h.diameterCfg.OriginRealm
+	selected, err := h.selectPeer(destinationRealm)
 	if err != nil {
 		return err
-	}
-
-	hssHost, hssRealm, ok := peerMeta(conn)
-	if !ok {
-		return fmt.Errorf("s6a: peer metadata unavailable")
 	}
 
 	sid := h.newSessionID(imsi)
 	h.pendingULR.Store(sid, mmeUEID)
 
-	m := h.buildULR(sid, imsi, plmn, hssHost, hssRealm)
+	m := h.buildULR(sid, imsi, plmn, selected.DestinationHost, destinationRealm)
 
-	if _, err := m.WriteTo(conn); err != nil {
+	if _, err := m.WriteTo(selected.Connection); err != nil {
 		h.pendingULR.Delete(sid)
+		h.reportTransactionFailure(selected)
 		return fmt.Errorf("s6a: ULR write: %w", err)
 	}
 
@@ -48,8 +45,8 @@ func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 func (h *Handlers) buildULR(sessionID, imsi string, plmn [3]byte, destHost, destRealm string) *diam.Message {
 	m := diam.NewRequest(diam.UpdateLocation, appIDS6a, dict.Default)
 	m.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(sessionID))
-	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	m.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	m.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
 	h.addDestinationRouting(m, destHost, destRealm)
 	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(imsi))
 	m.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1)) // NO_STATE_MAINTAINED

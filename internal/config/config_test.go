@@ -9,6 +9,28 @@ import (
 	"github.com/vectorcore/mme/internal/gateway"
 )
 
+// load appends the mandatory shared Diameter configuration to legacy-focused
+// test fixtures. Individual tests can stay focused on the setting under test.
+func load(t *testing.T, path string) (*config.Config, error) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, []byte(`
+diameter:
+  origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
+  origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"
+  peers:
+    - name: "dra-1"
+      address: "127.0.0.1:3868"
+`)...)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return nil, err
+	}
+	return config.Load(path)
+}
+
 func TestLoadGatewaySelectionConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mme.yaml")
@@ -38,7 +60,7 @@ gateway_selection:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -74,7 +96,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -108,7 +130,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -133,7 +155,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -158,7 +180,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -182,12 +204,9 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
-	}
-	if !cfg.S6a.Routing.SendDestinationHost {
-		t.Fatal("s6a.routing.send_destination_host default got false, want true")
 	}
 	if cfg.S6a.AIR.RequestedVectors != 1 {
 		t.Fatalf("s6a.air.requested_vectors default got %d, want 1", cfg.S6a.AIR.RequestedVectors)
@@ -210,9 +229,6 @@ nf:
   mcc: "001"
   mnc: "01"
 s6a:
-  peer_address: "127.0.0.1:3868"
-  routing:
-    send_destination_host: false
   air:
     requested_vectors: 3
     immediate_response_preferred: false
@@ -222,12 +238,9 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
-	}
-	if cfg.S6a.Routing.SendDestinationHost {
-		t.Fatal("s6a.routing.send_destination_host got true, want false")
 	}
 	if cfg.S6a.AIR.RequestedVectors != 3 {
 		t.Fatalf("s6a.air.requested_vectors got %d, want 3", cfg.S6a.AIR.RequestedVectors)
@@ -257,7 +270,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(path); err == nil {
+	if _, err := load(t, path); err == nil {
 		t.Fatal("Load() expected invalid s6a.air.requested_vectors error")
 	}
 }
@@ -280,7 +293,7 @@ nas:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -304,7 +317,7 @@ s6a:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -335,7 +348,7 @@ nas:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := config.Load(path)
+	cfg, err := load(t, path)
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
@@ -363,7 +376,7 @@ nas:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(path); err == nil {
+	if _, err := load(t, path); err == nil {
 		t.Fatal("Load() expected invalid nas.timers.t3412 error")
 	}
 }
@@ -386,7 +399,7 @@ operator:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(path); err == nil {
+	if _, err := load(t, path); err == nil {
 		t.Fatal("Load() expected invalid operator.name.encoding error")
 	}
 }
@@ -410,7 +423,7 @@ operator:
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(path); err == nil {
+	if _, err := load(t, path); err == nil {
 		t.Fatal("Load() expected invalid operator.nitz.timezone error")
 	}
 }

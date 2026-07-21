@@ -14,9 +14,9 @@ import (
 func TestBuildULRUsesConfiguredFlags(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{
-			Routing: config.S6aRoutingConfig{SendDestinationHost: true},
-			ULR:     config.S6aULRConfig{Flags: 18},
+			ULR: config.S6aULRConfig{Flags: 18},
 		},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
@@ -34,19 +34,19 @@ func TestBuildULRUsesConfiguredFlags(t *testing.T) {
 	}
 }
 
-func TestBuildULROmitsDestinationHostWhenDisabled(t *testing.T) {
+func TestBuildULROmitsDestinationHostForRelay(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{
-			Routing: config.S6aRoutingConfig{SendDestinationHost: false},
-			ULR:     config.S6aULRConfig{Flags: 2},
+			ULR: config.S6aULRConfig{Flags: 2},
 		},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
 	)
 
-	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "hss.remote.net", "remote.net")
+	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
 
 	if findAVP(msg, avp.DestinationHost) != nil {
 		t.Fatal("Destination-Host present, want omitted")

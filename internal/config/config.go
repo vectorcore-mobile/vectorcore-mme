@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	NF               NFConfig               `yaml:"nf"`
+	Diameter         DiameterConfig         `yaml:"diameter"`
 	S1AP             S1APConfig             `yaml:"s1ap"`
 	S6a              S6aConfig              `yaml:"s6a"`
 	S10              S10Config              `yaml:"s10"`
@@ -166,21 +167,29 @@ type S1APConfig struct {
 	SCTPStreams int    `yaml:"sctp_streams"`
 }
 
-type S6aConfig struct {
-	PeerAddress     string           `yaml:"peer_address"` // client mode: connect outbound to Diameter peer
-	BindAddress     string           `yaml:"bind_address"` // server mode: listen for inbound Diameter connections
-	BindPort        int              `yaml:"bind_port"`    // server mode port (default 3868)
-	OriginHost      string           `yaml:"origin_host"`
-	OriginRealm     string           `yaml:"origin_realm"`
-	RetryDelay      time.Duration    `yaml:"retry_delay"`
-	SendPUROnDetach bool             `yaml:"send_pur_on_detach"`
-	Routing         S6aRoutingConfig `yaml:"routing"`
-	AIR             S6aAIRConfig     `yaml:"air"`
-	ULR             S6aULRConfig     `yaml:"ulr"`
+// DiameterConfig contains shared Diameter transport and peer-routing settings.
+// Peer capability is learned during CER/CEA; applications are deliberately not
+// configured here.
+type DiameterConfig struct {
+	OriginHost    string               `yaml:"origin_host"`
+	OriginRealm   string               `yaml:"origin_realm"`
+	BindAddress   string               `yaml:"bind_addr"`
+	BindTransport string               `yaml:"bind_transport"` // tcp (default) or sctp; applies only with bind_addr
+	RetryDelay    time.Duration        `yaml:"retry_delay"`
+	Peers         []DiameterPeerConfig `yaml:"peers"`
 }
 
-type S6aRoutingConfig struct {
-	SendDestinationHost bool `yaml:"send_destination_host"`
+type DiameterPeerConfig struct {
+	Name      string `yaml:"name"`
+	Address   string `yaml:"address"`
+	Transport string `yaml:"transport"` // tcp (default) or sctp
+	Priority  *int   `yaml:"priority"`  // lower wins; nil falls back to config order
+}
+
+type S6aConfig struct {
+	SendPUROnDetach bool         `yaml:"send_pur_on_detach"`
+	AIR             S6aAIRConfig `yaml:"air"`
+	ULR             S6aULRConfig `yaml:"ulr"`
 }
 
 type S6aAIRConfig struct {
@@ -243,11 +252,7 @@ func Load(path string) (*Config, error) {
 			SCTPStreams: 2,
 		},
 		S6a: S6aConfig{
-			RetryDelay:      5 * time.Second,
 			SendPUROnDetach: true,
-			Routing: S6aRoutingConfig{
-				SendDestinationHost: true,
-			},
 			AIR: S6aAIRConfig{
 				RequestedVectors:           1,
 				ImmediateResponsePreferred: true,
@@ -255,6 +260,9 @@ func Load(path string) (*Config, error) {
 			ULR: S6aULRConfig{
 				Flags: 0x02,
 			},
+		},
+		Diameter: DiameterConfig{
+			RetryDelay: 5 * time.Second,
 		},
 		S10: S10Config{
 			BindAddress: "0.0.0.0",
@@ -325,14 +333,31 @@ func Load(path string) (*Config, error) {
 	if cfg.NF.MCC == "" || cfg.NF.MNC == "" {
 		return nil, fmt.Errorf("config: nf.mcc and nf.mnc are required")
 	}
-	if cfg.S6a.OriginHost == "" {
-		cfg.S6a.OriginHost = cfg.NF.OriginHost
+	if cfg.Diameter.OriginHost == "" || cfg.Diameter.OriginRealm == "" {
+		return nil, fmt.Errorf("config: diameter.origin_host and diameter.origin_realm are required")
 	}
-	if cfg.S6a.OriginRealm == "" {
-		cfg.S6a.OriginRealm = cfg.NF.OriginRealm
+	if len(cfg.Diameter.Peers) == 0 {
+		return nil, fmt.Errorf("config: diameter.peers must contain at least one peer")
 	}
-	if cfg.S6a.BindAddress == "" && cfg.S6a.PeerAddress == "" {
-		return nil, fmt.Errorf("config: s6a.peer_address is required when s6a.bind_address is not set")
+	if cfg.Diameter.BindAddress != "" {
+		if cfg.Diameter.BindTransport == "" {
+			cfg.Diameter.BindTransport = "tcp"
+		}
+		if cfg.Diameter.BindTransport != "tcp" && cfg.Diameter.BindTransport != "sctp" {
+			return nil, fmt.Errorf("config: diameter.bind_transport must be tcp or sctp")
+		}
+	}
+	for i := range cfg.Diameter.Peers {
+		peer := &cfg.Diameter.Peers[i]
+		if peer.Name == "" || peer.Address == "" {
+			return nil, fmt.Errorf("config: diameter.peers[%d] name and address are required", i)
+		}
+		if peer.Transport == "" {
+			peer.Transport = "tcp"
+		}
+		if peer.Transport != "tcp" && peer.Transport != "sctp" {
+			return nil, fmt.Errorf("config: diameter.peers[%d].transport must be tcp or sctp", i)
+		}
 	}
 	if cfg.S6a.AIR.RequestedVectors == 0 {
 		return nil, fmt.Errorf("config: s6a.air.requested_vectors must be greater than 0")

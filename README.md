@@ -54,7 +54,7 @@ Key fields:
 |---|---|
 | `nf.mcc` / `nf.mnc` | Your PLMN |
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
-| `s6a.peer_address` | S6a Diameter peer endpoint |
+| `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
 | `database.db_type` | Database driver: `postgres` or `sqlite` |
@@ -62,6 +62,93 @@ Key fields:
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 | `operator.name.encoding` | Network name encoding: `gsm7` (default) or `ucs2` |
 | `operator.nitz.timezone` | IANA timezone used for EMM Information NITZ fields, preferred over static offsets |
+
+### Diameter peer routing
+
+Diameter peers are shared by S6a today and S13, SGd, and future applications
+later. Configure peer endpoints once under `diameter.peers`; do not configure a
+peer or application list per Diameter application. The MME learns direct
+application and Relay support from CER/CEA.
+
+```yaml
+diameter:
+  origin_host: mme2.epc.mnc435.mcc311.3gppnetwork.org
+  origin_realm: epc.mnc435.mcc311.3gppnetwork.org
+  peers:
+    - name: dra-1
+      address: 10.90.250.35:3868
+```
+
+This is sufficient for a single DRA. A relay-capable DRA is the default route:
+it receives an application only when no healthy direct peer advertises that
+application. Think of direct application support as a more-specific IP route,
+Relay support as the default route, and priority/configuration order as the
+route metric. A direct S6a HSS therefore always beats a DRA for S6a, even if
+the DRA has a lower priority number.
+
+For two DRAs, configuration order is active/standby when priority is omitted:
+
+```yaml
+diameter:
+  peers:
+    - name: dra-1
+      address: 10.90.250.35:3868
+    - name: dra-2
+      address: 10.90.250.36:3868
+```
+
+Both peers are connected and monitored; traffic uses `dra-2` only when `dra-1`
+is not usable. To set the metric explicitly, use a lower `priority` number.
+Priority applies only among direct peers or only among relay peers; it never
+makes a relay win over a direct application peer.
+
+```yaml
+diameter:
+  peers:
+    - name: dra-1
+      address: 10.90.250.35:3868
+      priority: 10
+    - name: dra-2
+      address: 10.90.250.36:3868
+      priority: 20
+```
+
+Mixed direct HSS and DRA deployments need no per-app configuration:
+
+```yaml
+diameter:
+  peers:
+    - name: dra-1
+      address: 10.90.250.35:3868
+    - name: hss-1
+      address: 10.90.250.40:3868
+      transport: sctp
+```
+
+If `hss-1` advertises S6a and `dra-1` advertises Relay, S6a uses `hss-1`;
+S13 and SGd use `dra-1` until direct peers advertise those applications. If
+`hss-1` becomes unavailable, S6a falls back to the healthy DRA.
+
+`transport` is `tcp` by default and may be `sctp`. To accept peer-initiated
+Diameter connections, set both `diameter.bind_addr` and
+`diameter.bind_transport` (`tcp` or `sctp`; TCP is the default). Direct requests use the learned direct peer Origin-Host as
+Destination-Host. Relay requests use Destination-Realm only: the DRA's own
+Origin-Host is never used as Destination-Host.
+
+### S6a request defaults
+
+The `s6a.air` and `s6a.ulr` blocks shape requests after a Diameter peer has
+already been selected; they do not select or configure peers. They may be
+omitted when the defaults are appropriate:
+
+```yaml
+s6a:
+  air:
+    requested_vectors: 1              # one LTE authentication vector per AIR
+    immediate_response_preferred: true # request immediate HSS answer
+  ulr:
+    flags: 2 # S6a/S6d-Indicator (bit 2), normal LTE attach/update location
+```
 
 ### EMM Information Operator Names
 

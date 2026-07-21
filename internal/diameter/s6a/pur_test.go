@@ -15,6 +15,7 @@ import (
 func TestSendPURDisabledSkipsConnectionLookup(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{SendPUROnDetach: false},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
@@ -28,10 +29,8 @@ func TestSendPURDisabledSkipsConnectionLookup(t *testing.T) {
 
 func TestBuildPURUsesPeerRealm(t *testing.T) {
 	h := NewHandlers(
-		config.S6aConfig{
-			SendPUROnDetach: true,
-			Routing:         config.S6aRoutingConfig{SendDestinationHost: true},
-		},
+		config.S6aConfig{SendPUROnDetach: true},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
@@ -65,19 +64,17 @@ func TestBuildPURUsesPeerRealm(t *testing.T) {
 	}
 }
 
-func TestBuildPUROmitsDestinationHostWhenDisabled(t *testing.T) {
+func TestBuildPUROmitsDestinationHostForRelay(t *testing.T) {
 	h := NewHandlers(
-		config.S6aConfig{
-			SendPUROnDetach: true,
-			Routing:         config.S6aRoutingConfig{SendDestinationHost: false},
-		},
+		config.S6aConfig{SendPUROnDetach: true},
+		testDiameterConfig(),
 		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
 	)
 
-	msg := h.buildPUR("001010123456789", "hss.remote.net", "remote.net")
+	msg := h.buildPUR("001010123456789", "", "remote.net")
 
 	if findAVP(msg, avp.DestinationHost) != nil {
 		t.Fatal("Destination-Host present, want omitted")
