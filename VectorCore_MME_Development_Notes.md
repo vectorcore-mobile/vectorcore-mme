@@ -379,7 +379,7 @@ Additional requirements:
 * Roaming-specific metrics
 * Partner-specific reject causes
 * Per-partner gateway selection
-* Per-partner DNS policy
+* Per-partner DNS policy   - S8 records + Home Realm or Static Realm  from map.
 * Home-routed versus local-breakout policy
 
 ---
