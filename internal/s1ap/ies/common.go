@@ -763,28 +763,40 @@ func DecodeSTMSI(data []byte) (mmec uint8, mtmsi uint32, err error) {
 
 // ── Paging IEs ───────────────────────────────────────────────────────────────
 
-// EncodeUEIdentityIndexValue encodes the UE Identity Index Value IE.
-// Value = IMSI (as integer) % 1024, packed into a 10-bit BIT STRING (2 bytes,
-// top-10-bit aligned: bit[15..6] hold the value, bits[5..0] = 0).
-func EncodeUEIdentityIndexValue(imsi string) []byte {
-	n, _ := strconv.ParseUint(imsi, 10, 64)
-	v := uint16(n % 1024)
+// EncodeUEIdentityIndexValue encodes a numeric UE identity modulo 1024 as the
+// 10-bit Paging Frame index (TS 36.413 references TS 36.304). It is left
+// aligned in two octets; the low six bits are spare.
+func EncodeUEIdentityIndexValue(identity uint32) []byte {
+	v := uint16(identity & 0x03ff)
 	return []byte{byte(v >> 2), byte((v & 0x03) << 6)}
+}
+
+// EncodeUEIdentityIndexValueFromIMSI is the S1AP Paging form. The paging
+// resource index is IMSI modulo 1024, even when UEPagingID uses an S-TMSI.
+func EncodeUEIdentityIndexValueFromIMSI(imsi string) []byte {
+	n, err := strconv.ParseUint(imsi, 10, 64)
+	if err != nil {
+		return EncodeUEIdentityIndexValue(0)
+	}
+	return EncodeUEIdentityIndexValue(uint32(n & 0x03ff))
 }
 
 // EncodeUEPagingIDSTMSI encodes the UE-PagingID IE as CHOICE s-TMSI.
 //
-// CHOICE encoding (ext=0, index=0): 0b00, then align.
-// S-TMSI SEQUENCE: ext=0, iE-Extensions absent (0 bit), align, MMEC (1B), M-TMSI (4B).
+// CHOICE encoding (ext=0, index=0) is immediately followed by the S-TMSI
+// SEQUENCE header.  The SEQUENCE's extension and optional-presence bits share
+// the first octet with the CHOICE. MMEC itself follows immediately after those
+// four header bits; APER aligns only before the M-TMSI BIT STRING. Aligning
+// before MMEC inserts a spurious shift, which Ericsson rejects as transfer
+// syntax.
 func EncodeUEPagingIDSTMSI(mmec uint8, mtmsi uint32) []byte {
 	w := aper.NewBitWriter()
 	w.WriteBit(0) // CHOICE extension marker = 0
 	w.WriteBit(0) // CHOICE index = 0 (s-TMSI)
-	w.AlignToByte()
 	w.WriteBit(0) // SEQUENCE extension marker = 0
 	w.WriteBit(0) // iE-Extensions absent
+	w.WriteBits(uint64(mmec), 8)
 	w.AlignToByte()
-	w.WriteOctet(mmec)
 	mtmsiBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(mtmsiBytes, mtmsi)
 	w.WriteOctets(mtmsiBytes)
@@ -829,26 +841,59 @@ func EncodeGlobalENBID(g GlobalENBID) ([]byte, error) {
 	return w.Bytes(), nil
 }
 
-// EncodePagingTAIList encodes the TAI List for Paging IE (SEQUENCE OF TAI).
-//
-// Outer: ext=0 (1 bit), count-1 as 8-bit constrained (0..255), align.
-// Per TAI: ext=0 (1 bit), iE-Extensions absent (1 bit), align, PLMN (3B), TAC (2B).
+// EncodePagingTAIList encodes Paging's TAIList.  Unlike other TAI lists,
+// Paging TAIList is a SEQUENCE OF ProtocolIE-SingleContainer { TAIItemIEs },
+// not a direct SEQUENCE OF TAI.  Each item therefore has IE ID 47 (TAIItem),
+// criticality ignore, and an open-type wrapped TAIItem value.
 func EncodePagingTAIList(tais []emm.TAI) []byte {
 	if len(tais) == 0 {
 		return nil
 	}
 	w := aper.NewBitWriter()
-	w.WriteBit(0) // SEQUENCE OF extension marker = 0
-	_ = aper.EncodeConstrainedWholeNumber(w, int64(len(tais)-1), 0, 255)
-	w.AlignToByte()
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(len(tais)), 1, 256)
 	for _, tai := range tais {
-		w.WriteBit(0) // TAI SEQUENCE extension marker = 0
-		w.WriteBit(0) // iE-Extensions absent
-		w.AlignToByte()
-		w.WriteOctets(tai.PLMN[:])
-		tacBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(tacBytes, tai.TAC)
-		w.WriteOctets(tacBytes)
+		_ = aper.EncodeConstrainedWholeNumber(w, 47, 0, 65535) // id-TAIItem
+		aper.EncodeCriticality(w, aper.CriticalityIgnore)
+		aper.WriteOpenType(w, encodePagingTAIItem(tai))
 	}
 	return w.Bytes()
+}
+
+func encodePagingTAIItem(tai emm.TAI) []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0) // TAIItem SEQUENCE extension marker = 0
+	w.WriteBit(0) // TAIItem iE-Extensions absent
+	w.WriteBit(0) // TAI SEQUENCE extension marker = 0
+	w.WriteBit(0) // TAI iE-Extensions absent
+	w.AlignToByte()
+	// The Ericsson S1 Setup capture uses the legacy S1AP PLMN ordering already
+	// represented by EncodePLMN.  The UE's TAI is retained in NAS TBCD order;
+	// normalize it through digits before emitting the S1AP TAIItem.
+	plmn := pagingS1APPLMN(tai.PLMN)
+	w.WriteOctets(plmn)
+	tacBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(tacBytes, tai.TAC)
+	w.WriteOctets(tacBytes)
+	return w.Bytes()
+}
+
+func pagingS1APPLMN(nasPLMN [3]byte) []byte {
+	d1, d2 := nasPLMN[0]&0x0f, nasPLMN[0]>>4
+	d3, d4 := nasPLMN[1]&0x0f, nasPLMN[1]>>4
+	d5, d6 := nasPLMN[2]&0x0f, nasPLMN[2]>>4
+	valid := func(d byte) bool { return d <= 9 }
+	if !valid(d1) || !valid(d2) || !valid(d3) || !valid(d5) || !valid(d6) || (d4 != 0x0f && !valid(d4)) {
+		return nasPLMN[:]
+	}
+	mcc := fmt.Sprintf("%d%d%d", d1, d2, d3)
+	mnc := ""
+	if d4 == 0x0f {
+		mnc = fmt.Sprintf("%d%d", d5, d6)
+	} else {
+		mnc = fmt.Sprintf("%d%d%d", d5, d6, d4)
+	}
+	if wire, err := EncodePLMN(mcc, mnc); err == nil {
+		return wire
+	}
+	return nasPLMN[:]
 }

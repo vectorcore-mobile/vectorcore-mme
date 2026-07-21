@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -93,8 +94,19 @@ func (s *Server) PageUE(imsi string) error {
 
 	log.Info("s1ap: Paging UE", zap.Int("enb_count", len(targets)), zap.Uint8("attempt", 1))
 
+	sent := 0
 	for _, addr := range targets {
-		s.sendPaging(addr, ue, log)
+		if err := s.sendPaging(addr, ue, log); err != nil {
+			continue
+		}
+		sent++
+	}
+	if sent == 0 {
+		ue.Lock()
+		ue.PagingAttempts = 0
+		ue.Unlock()
+		metrics.PagingTotal.WithLabelValues("no_enb").Inc()
+		return ErrNoENB
 	}
 	metrics.PagingTotal.WithLabelValues("sent").Inc()
 
@@ -110,6 +122,10 @@ func (s *Server) findENBsForTAI(tai *emm.TAI) []string {
 	}
 
 	var matched []string
+	ueMCC, ueMNC, validPLMN := decodePagingPLMN(tai.PLMN)
+	if !validPLMN {
+		return nil
+	}
 	s.enbs.Range(func(key, val any) bool {
 		enb := val.(*ENBContext)
 		enb.mu.Lock()
@@ -119,11 +135,7 @@ func (s *Server) findENBsForTAI(tai *emm.TAI) []string {
 				continue
 			}
 			for _, bp := range sta.BroadcastPLMNs {
-				plmn, err := ies.EncodePLMN(bp.MCC, bp.MNC)
-				if err != nil {
-					continue
-				}
-				if len(plmn) == 3 && plmn[0] == tai.PLMN[0] && plmn[1] == tai.PLMN[1] && plmn[2] == tai.PLMN[2] {
+				if bp.MCC == ueMCC && bp.MNC == ueMNC {
 					matched = append(matched, enb.RemoteAddr)
 					return true // one match per eNB is enough
 				}
@@ -149,34 +161,59 @@ func (s *Server) allENBAddrs() []string {
 }
 
 // sendPaging encodes and sends one S1AP Paging PDU to a single eNB.
-func (s *Server) sendPaging(enbAddr string, ue *uecontext.Context, log *zap.Logger) {
+func (s *Server) sendPaging(enbAddr string, ue *uecontext.Context, log *zap.Logger) error {
 	ue.Lock()
-	imsi := ue.IMSI
 	guti := ue.GUTI
 	tai := ue.TAI
 	ue.Unlock()
+	if guti == nil {
+		return ErrNoPagingIdentity
+	}
+	if tai == nil {
+		return ErrNoPagingTAI
+	}
 
-	// UEIdentityIndexValue: 10-bit BIT STRING, value = IMSI%1024
-	idxValue := ies.EncodeUEIdentityIndexValue(imsi)
+	// UEIdentityIndexValue: IMSI modulo 1024. This is independent of the
+	// S-TMSI used in UEPagingID and determines the UE's paging frame.
+	idxValue := ies.EncodeUEIdentityIndexValueFromIMSI(ue.IMSI)
 
 	// UE-PagingID: CHOICE s-TMSI (MMEC + M-TMSI from GUTI)
 	pagingIDValue := ies.EncodeUEPagingIDSTMSI(guti.MMEC, guti.MTMSI)
 	taiListValue := ies.EncodePagingTAIList([]emm.TAI{*tai})
 	if taiListValue == nil {
 		log.Warn("s1ap: paging skipped because TAI list encoding failed", zap.String("enb", enbAddr))
-		return
+		return ErrNoPagingTAI
 	}
 
 	ieList := []pdu.ProtocolIE{
-		{ID: pdu.IEUEIdentityIndexValue, Criticality: aper.CriticalityReject, Value: idxValue},
-		{ID: pdu.IEUEPagingID, Criticality: aper.CriticalityReject, Value: pagingIDValue},
+		{ID: pdu.IEUEIdentityIndexValue, Criticality: aper.CriticalityIgnore, Value: idxValue},
+		{ID: pdu.IEUEPagingID, Criticality: aper.CriticalityIgnore, Value: pagingIDValue},
 		{ID: pdu.IECNDomain, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCNDomain(0)},
 		{ID: pdu.IEPagingTAIList, Criticality: aper.CriticalityIgnore, Value: taiListValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcPaging, aper.CriticalityIgnore, ieList)
+	identityIndex := uint16(idxValue[0])<<2 | uint16(idxValue[1]>>6)
+	log.Debug("s1ap: Paging PDU encoded",
+		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+		zap.Uint8("mmec", guti.MMEC),
+		zap.Uint32("mtmsi", guti.MTMSI),
+		zap.Uint16("ue_identity_index", identityIndex),
+		zap.String("tai_plmn_hex", hex.EncodeToString(tai.PLMN[:])),
+		zap.Uint16("tac", tai.TAC),
+		zap.String("ue_identity_index_hex", hex.EncodeToString(idxValue)),
+		zap.String("ue_paging_id_hex", hex.EncodeToString(pagingIDValue)),
+		zap.String("cn_domain_hex", hex.EncodeToString(ieList[2].Value)),
+		zap.String("tai_list_hex", hex.EncodeToString(taiListValue)),
+		zap.String("paging_ie_container_hex", hex.EncodeToString(pdu.EncodeProcedureIEContainer(ieList))),
+		zap.Int("encoded_length", len(msg)),
+		zap.String("s1ap_hex", hex.EncodeToString(msg)))
 
-	s.sendToAddr(enbAddr, msg)
-	log.Info("s1ap: Paging sent", zap.String("enb", enbAddr))
+	if err := s.sendToAddr(enbAddr, msg); err != nil {
+		log.Warn("s1ap: Paging transmit failed", zap.String("enb", enbAddr), zap.Error(err))
+		return err
+	}
+	log.Info("s1ap: Paging sent", zap.String("enb", enbAddr), zap.Int("encoded_length", len(msg)))
+	return nil
 }
 
 // startPagingTimer schedules T3413. On expiry it retries (if attempt < maxPagingAttempts)
@@ -213,8 +250,20 @@ func (s *Server) onPagingTimeout(ue *uecontext.Context, attempt uint8, log *zap.
 		targets := s.findENBsForTAI(tai)
 		log.Info("s1ap: Paging retry", zap.Uint8("attempt", nextAttempt), zap.Int("enb_count", len(targets)))
 
+		sent := 0
 		for _, addr := range targets {
-			s.sendPaging(addr, ue, log)
+			if err := s.sendPaging(addr, ue, log); err != nil {
+				continue
+			}
+			sent++
+		}
+		if sent == 0 {
+			ue.Lock()
+			ue.PagingAttempts = 0
+			ue.Unlock()
+			metrics.PagingTotal.WithLabelValues("no_enb").Inc()
+			log.Warn("s1ap: Paging retry has no usable eNB association")
+			return
 		}
 		metrics.PagingTotal.WithLabelValues("retry").Inc()
 

@@ -657,6 +657,9 @@ func (s *Server) handleErrorIndication(remoteAddr string, p *pdu.PDU, ieList []p
 	}
 	var mmeUEID uint32
 	var enbUEID uint32
+	var causeGroup ies.CauseGroup
+	var cause uint8
+	var causePresent bool
 	for _, ie := range ieList {
 		switch ie.ID {
 		case pdu.IEMMEUES1APID:
@@ -670,21 +673,55 @@ func (s *Server) handleErrorIndication(remoteAddr string, p *pdu.PDU, ieList []p
 				fields = append(fields, zap.Uint32("enb_ue_id", id))
 			}
 		case pdu.IECause:
-			if group, cause, err := ies.DecodeCause(ie.Value); err == nil {
+			if group, decodedCause, err := ies.DecodeCause(ie.Value); err == nil {
+				causeGroup, cause, causePresent = group, decodedCause, true
 				fields = append(fields,
 					zap.String("cause_raw_hex", hex.EncodeToString(ie.Value)),
 					zap.String("cause_group_name", ies.CauseGroupName(group)),
 					zap.Uint8("cause_group", uint8(group)),
-					zap.Uint8("cause", cause),
-					zap.String("cause_name", ies.CauseName(group, cause)))
+					zap.Uint8("cause", decodedCause),
+					zap.String("cause_name", ies.CauseName(group, decodedCause)))
 			}
 		case pdu.IECriticalityDiagnostics:
 			fields = append(fields, decodeCriticalityDiagnosticsFields(ie.Value)...)
 		}
 	}
 	s.log.Warn("s1ap: ErrorIndication received", fields...)
+	if causePresent && causeGroup == ies.CauseGroupProtocol && cause == ies.CauseProtocolTransferSyntaxError {
+		s.failDDNPagingForSyntaxError(remoteAddr)
+	}
 	s.rollbackResumeICSOnErrorIndication(remoteAddr, mmeUEID, enbUEID)
 	metrics.S1APMessagesTotal.WithLabelValues("ErrorIndication", "inbound", "ok").Inc()
+}
+
+// failDDNPagingForSyntaxError correlates a connectionless ErrorIndication with
+// an active DDN paging transaction by its selected eNB association.  Paging
+// ErrorIndications do not carry UE-associated IDs, so the remote association
+// and current TAI targets are the only reliable correlation keys.
+func (s *Server) failDDNPagingForSyntaxError(remoteAddr string) {
+	for _, ue := range s.ueManager.List() {
+		ue.Lock()
+		tx := ue.DDNPaging
+		if tx == nil || ddnPagingTerminal(tx.Status) {
+			ue.Unlock()
+			continue
+		}
+		txID := tx.ID
+		targets := s.findStrictENBsForTAILocked(ue)
+		ue.Unlock()
+		for _, target := range targets {
+			if target != remoteAddr {
+				continue
+			}
+			s.log.Warn("s1ap: eNB rejected DDN Paging PDU",
+				zap.String("event", "ddn_paging_rejected"),
+				zap.String("transaction_id", txID),
+				zap.String("target_enb", remoteAddr),
+				zap.String("reason", "transfer_syntax_error"))
+			s.failDDNPaging(ue, txID, gtpv2.CauseSystemFailure, "enb_transfer_syntax_error")
+			break
+		}
+	}
 }
 
 func (s *Server) rollbackResumeICSOnErrorIndication(remoteAddr string, mmeUEID, enbUEID uint32) {

@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net"
 	"strings"
@@ -11,7 +12,6 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/nas/emm"
-	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -151,8 +151,8 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 		zap.Stringer("emm_state", emmState),
 		zap.Stringer("ecm_state", ecmState))
 
-	s.sendDDNAck(peer, req.TEID, req.SeqNum, cause, nil)
 	if cause != gtpv2.CauseRequestAccepted {
+		s.sendDDNAck(peer, req.TEID, req.SeqNum, cause, nil)
 		s.log.Info("s11: Downlink Data Notification response sent",
 			zap.String("event", "ddn_response_sent"),
 			zap.String("response_type", "ack"),
@@ -167,6 +167,7 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 	}
 
 	if ecmState == emm.ECMConnected {
+		s.sendDDNAck(peer, req.TEID, req.SeqNum, cause, nil)
 		s.log.Info("s11: DDN paging suppressed because UE is already connected",
 			zap.String("event", "ddn_response_sent"),
 			zap.String("response_type", "ack"),
@@ -177,6 +178,7 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 		return
 	}
 	if joined {
+		s.sendDDNAck(peer, req.TEID, req.SeqNum, cause, nil)
 		s.log.Info("s11: DDN joined existing paging transaction",
 			zap.String("event", "ddn_duplicate"),
 			zap.String("duplicate_type", duplicateType),
@@ -185,6 +187,10 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 		return
 	}
 	if !shouldPage {
+		// An idle DDN must only be accepted after it has joined or initiated a
+		// local paging procedure.  This also prevents a disabled feature flag
+		// from silently acknowledging traffic that cannot be delivered.
+		s.sendDDNAck(peer, req.TEID, req.SeqNum, gtpv2.CauseSystemFailure, nil)
 		return
 	}
 
@@ -196,17 +202,34 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 		zap.Uint64("binding_generation", bindingGen),
 		zap.Uint8("attempt", attempt),
 		zap.Int("target_enb_count", len(targets)))
+	sent := 0
 	for _, addr := range targets {
 		s.log.Info("s1ap: DDN paging target",
 			zap.String("event", "ddn_paging_started"),
 			zap.String("transaction_id", txID),
 			zap.Uint8("attempt", attempt),
 			zap.String("target_enb", addr))
-		s.sendPaging(addr, ue, s.log.With(
+		if err := s.sendPaging(addr, ue, s.log.With(
 			zap.String("transaction_id", txID),
 			zap.Uint8("paging_attempt", attempt),
-		))
+		)); err != nil {
+			s.log.Warn("s1ap: DDN paging target failed",
+				zap.String("event", "ddn_paging_failed"),
+				zap.String("transaction_id", txID),
+				zap.String("target_enb", addr),
+				zap.Error(err))
+			continue
+		}
+		sent++
 	}
+	if sent == 0 {
+		s.failDDNPaging(ue, txID, gtpv2.CauseUnableToPageUE, "paging_transmit_failed")
+		s.sendDDNAck(peer, req.TEID, req.SeqNum, gtpv2.CauseUnableToPageUE, nil)
+		return
+	}
+	// A successful DDN Ack means that at least one applicable eNB association
+	// accepted a correctly encoded, connectionless Paging PDU for transmission.
+	s.sendDDNAck(peer, req.TEID, req.SeqNum, gtpv2.CauseRequestAccepted, nil)
 	metrics.PagingTotal.WithLabelValues("sent").Inc()
 	s.startDDNPagingTimers(ue, txID)
 }
@@ -313,11 +336,20 @@ func (s *Server) onDDNPagingRetry(ue *uecontext.Context, txID string) {
 		zap.String("imsi", imsi),
 		zap.Uint8("attempt", attempt),
 		zap.Int("target_enb_count", len(targets)))
+	sent := 0
 	for _, addr := range targets {
-		s.sendPaging(addr, ue, s.log.With(
+		if err := s.sendPaging(addr, ue, s.log.With(
 			zap.String("transaction_id", txID),
 			zap.Uint8("paging_attempt", attempt),
-		))
+		)); err != nil {
+			s.log.Warn("s1ap: DDN paging retry target failed", zap.String("transaction_id", txID), zap.String("target_enb", addr), zap.Error(err))
+			continue
+		}
+		sent++
+	}
+	if sent == 0 {
+		s.failDDNPaging(ue, txID, gtpv2.CauseUnableToPageUE, "paging_transmit_failed")
+		return
 	}
 	metrics.PagingTotal.WithLabelValues("retry").Inc()
 
@@ -370,13 +402,21 @@ func (s *Server) noteDDNServiceRequest(ue *uecontext.Context, enbUEID uint32, bi
 		ue.Unlock()
 		return
 	}
-	tx.Status = uecontext.DDNPagingServiceRequest
+	// A validated Service Request is the terminal response to network paging.
+	// Change state under the UE lock so a racing timeout cannot win afterward.
+	tx.Status = uecontext.DDNPagingCompleted
 	tx.BindingGeneration = bindingGeneration
 	tx.LastDDNAt = time.Now()
 	txID := tx.ID
 	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	attempts := tx.PagingAttemptCount
+	elapsed := time.Since(tx.FirstDDNAt)
+	ue.PagingAttempts = 0
 	ue.StopTimer(ddnPagingRetryTimerName)
+	ue.StopTimer(ddnPagingTimeoutTimerName)
 	ue.Unlock()
+	metrics.PagingTotal.WithLabelValues("success").Inc()
 
 	s.log.Info("s1ap: DDN paging correlated with Service Request",
 		zap.String("event", "ddn_paging_service_request"),
@@ -384,6 +424,15 @@ func (s *Server) noteDDNServiceRequest(ue *uecontext.Context, enbUEID uint32, bi
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("new_enb_ue_id", enbUEID),
 		zap.Uint64("binding_generation", bindingGeneration))
+	s.log.Info("s1ap: DDN paging succeeded",
+		zap.String("event", "ddn_paging_succeeded"),
+		zap.String("transaction_id", txID),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.Uint8("attempts", attempts),
+		zap.Int64("response_time_ms", elapsed.Milliseconds()),
+		zap.String("completion_trigger", "service_request"),
+		zap.Uint32("new_enb_ue_id", enbUEID))
 }
 
 func (s *Server) noteDDNResumeInProgress(ue *uecontext.Context) {
@@ -492,23 +541,50 @@ func ddnPagingTerminal(status uecontext.DDNPagingStatus) bool {
 
 func (s *Server) findStrictENBsForTAILocked(ue *uecontext.Context) []string {
 	if ue == nil || ue.TAI == nil {
+		if ue != nil {
+			s.log.Warn("s1ap: paging initiation failed",
+				zap.String("event", "paging_start_failed"),
+				zap.String("reason", "missing_registered_tai"),
+				zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+				zap.String("imsi", ue.IMSI))
+		}
 		return nil
 	}
+	ueMCC, ueMNC, ok := decodePagingPLMN(ue.TAI.PLMN)
+	if !ok {
+		s.log.Warn("s1ap: paging initiation failed",
+			zap.String("event", "paging_start_failed"),
+			zap.String("reason", "invalid_registered_tai_plmn"),
+			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+			zap.String("imsi", ue.IMSI),
+			zap.String("tai_plmn_hex", hex.EncodeToString(ue.TAI.PLMN[:])),
+			zap.Uint16("tac", ue.TAI.TAC))
+		return nil
+	}
+	connected := 0
 	var matched []string
 	s.enbs.Range(func(_, val any) bool {
 		enb := val.(*ENBContext)
 		enb.mu.Lock()
 		defer enb.mu.Unlock()
+		connected++
 		for _, sta := range enb.SupportedTAs {
-			if sta.TAC != ue.TAI.TAC {
-				continue
-			}
 			for _, bp := range sta.BroadcastPLMNs {
-				plmn, err := ies.EncodePLMN(bp.MCC, bp.MNC)
-				if err != nil {
-					continue
-				}
-				if len(plmn) == 3 && plmn[0] == ue.TAI.PLMN[0] && plmn[1] == ue.TAI.PLMN[1] && plmn[2] == ue.TAI.PLMN[2] {
+				tacMatch := sta.TAC == ue.TAI.TAC
+				plmnMatch := bp.MCC == ueMCC && bp.MNC == ueMNC
+				s.log.Info("s1ap: DDN paging eNB TAI comparison",
+					zap.String("event", "paging_target_compare"),
+					zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+					zap.String("ue_plmn", ueMCC+"-"+ueMNC),
+					zap.String("ue_plmn_hex", hex.EncodeToString(ue.TAI.PLMN[:])),
+					zap.Uint16("ue_tac", ue.TAI.TAC),
+					zap.String("enb_address", enb.RemoteAddr),
+					zap.String("enb_plmn", bp.MCC+"-"+bp.MNC),
+					zap.Uint16("enb_tac", sta.TAC),
+					zap.Bool("plmn_match", plmnMatch),
+					zap.Bool("tac_match", tacMatch),
+					zap.Bool("match", plmnMatch && tacMatch))
+				if tacMatch && plmnMatch {
 					matched = append(matched, enb.RemoteAddr)
 					return true
 				}
@@ -516,5 +592,38 @@ func (s *Server) findStrictENBsForTAILocked(ue *uecontext.Context) []string {
 		}
 		return true
 	})
+	if len(matched) == 0 {
+		s.log.Warn("s1ap: paging initiation failed",
+			zap.String("event", "paging_start_failed"),
+			zap.String("reason", "no_enb_serving_tai"),
+			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
+			zap.String("imsi", ue.IMSI),
+			zap.String("tai_plmn", ueMCC+"-"+ueMNC),
+			zap.String("tai_plmn_hex", hex.EncodeToString(ue.TAI.PLMN[:])),
+			zap.Uint16("tac", ue.TAI.TAC),
+			zap.Int("connected_enb_count", connected))
+	}
 	return matched
+}
+
+// decodePagingPLMN decodes the UE's NAS/TAI PLMN in the TS 24.008 TBCD
+// ordering.  S1 Setup supported-TA records are already persisted as MCC/MNC
+// strings, so comparing canonical digits avoids re-encoding those strings with
+// a different legacy S1AP representation.
+func decodePagingPLMN(plmn [3]byte) (mcc, mnc string, ok bool) {
+	d1, d2 := plmn[0]&0x0f, plmn[0]>>4
+	d3, d4 := plmn[1]&0x0f, plmn[1]>>4
+	d5, d6 := plmn[2]&0x0f, plmn[2]>>4
+	valid := func(d byte) bool { return d <= 9 }
+	if !valid(d1) || !valid(d2) || !valid(d3) || !valid(d5) || !valid(d6) {
+		return "", "", false
+	}
+	mcc = fmt.Sprintf("%d%d%d", d1, d2, d3)
+	if d4 == 0x0f {
+		return mcc, fmt.Sprintf("%d%d", d5, d6), true
+	}
+	if !valid(d4) {
+		return "", "", false
+	}
+	return mcc, fmt.Sprintf("%d%d%d", d5, d6, d4), true
 }

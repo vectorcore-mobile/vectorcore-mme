@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -107,12 +108,7 @@ func attachDDNPDN(ue *uecontext.Context, peer string, localTEID uint32, defaultE
 // ── encoding unit tests ───────────────────────────────────────────────────────
 
 func TestEncodeUEIdentityIndexValue(t *testing.T) {
-	// IMSI 001010099900001 → 1010099900001 % 1024 = ?
-	// 1010099900001 mod 1024: 1010099900001 = 986425683 * 1024 + 929 → expect 929
-	// Let's verify: 986425683 * 1024 = 1010099899392; 1010099900001 - 1010099899392 = 609
-	// Actually let me just test a simple value: IMSI "001010000000000" → 1010000000000 % 1024
-	// 1010000000000 / 1024 = 986328125.0 → 986328125 * 1024 = 1010000000000 → mod = 0
-	b := ies.EncodeUEIdentityIndexValue("001010000000000")
+	b := ies.EncodeUEIdentityIndexValue(0)
 	if len(b) != 2 {
 		t.Fatalf("length: got %d, want 2", len(b))
 	}
@@ -121,19 +117,32 @@ func TestEncodeUEIdentityIndexValue(t *testing.T) {
 		t.Errorf("bytes: got %02X %02X, want 00 00", b[0], b[1])
 	}
 
-	// IMSI that gives value 1024 = 0 (mod 1024) + 1 = 1:
-	// value = 1: top-10-bit in 16-bit field = 0b 0000000001 followed by 6 zero bits
-	// = 0b 0000000001 000000 = 0x0040
-	b2 := ies.EncodeUEIdentityIndexValue("001010000001024")
-	// 1010000001024 % 1024 = 0 (since 1024 is divisible by 1024)
-	// Wait: 1010000001024 / 1024 = 986328126 * 1024 = 1010000001024 → mod = 0
-	// Let me use "000000000001025" → 1025 % 1024 = 1
-	b3 := ies.EncodeUEIdentityIndexValue("000000000001025")
+	// 0xdead0001 modulo 1024 is 1.  This must be derived from M-TMSI,
+	// rather than from the IMSI used to look up the UE context.
+	b3 := ies.EncodeUEIdentityIndexValue(0xDEAD0001)
 	// value = 1 → 1 << 6 in low byte: byte[0] = 1>>2 = 0, byte[1] = (1&3)<<6 = 0x40
 	if b3[0] != 0x00 || b3[1] != 0x40 {
 		t.Errorf("value=1 bytes: got %02X %02X, want 00 40", b3[0], b3[1])
 	}
-	_ = b2
+}
+
+func TestEncodeUEIdentityIndexValueBoundaries(t *testing.T) {
+	tests := []struct {
+		mtmsi uint32
+		want  []byte
+	}{
+		{0, []byte{0x00, 0x00}},
+		{1, []byte{0x00, 0x40}},
+		{1023, []byte{0xff, 0xc0}},
+		{1024, []byte{0x00, 0x00}},
+		{0xffffffff, []byte{0xff, 0xc0}},
+		{0xb692cce2, []byte{0x38, 0x80}},
+	}
+	for _, tt := range tests {
+		if got := ies.EncodeUEIdentityIndexValue(tt.mtmsi); !bytes.Equal(got, tt.want) {
+			t.Errorf("M-TMSI %#08x index got % X, want % X", tt.mtmsi, got, tt.want)
+		}
+	}
 }
 
 func TestPagingIEConstantsRel16(t *testing.T) {
@@ -147,23 +156,19 @@ func TestPagingIEConstantsRel16(t *testing.T) {
 
 func TestEncodeUEPagingIDSTMSI(t *testing.T) {
 	b := ies.EncodeUEPagingIDSTMSI(0x01, 0xDEAD0001)
-	if len(b) < 6 {
-		t.Fatalf("length: got %d, want ≥6", len(b))
+	if len(b) != 6 {
+		t.Fatalf("length: got %d, want 6", len(b))
 	}
-	// After bits: 0b00 (ext=0,idx=0) aligned → 0x00
-	// Then 0b00 (ext=0, opt=0) aligned → 0x00
-	// Then MMEC=0x01, MTMSI=0xDEAD0001
+	// CHOICE/sequence headers occupy the high four bits of byte 0; the MMEC
+	// bits continue across bytes 0 and 1, before M-TMSI starts at byte 2.
 	if b[0] != 0x00 {
-		t.Errorf("byte[0] (choice header): got %02X, want 00", b[0])
+		t.Errorf("byte[0] (choice/sequence headers): got %02X, want 00", b[0])
 	}
-	if b[1] != 0x00 {
-		t.Errorf("byte[1] (seq header): got %02X, want 00", b[1])
+	if b[1] != 0x10 {
+		t.Errorf("byte[1] (MMEC low nibble + APER padding): got %02X, want 10", b[1])
 	}
-	if b[2] != 0x01 {
-		t.Errorf("byte[2] MMEC: got %02X, want 01", b[2])
-	}
-	if b[3] != 0xDE || b[4] != 0xAD || b[5] != 0x00 {
-		t.Errorf("M-TMSI bytes [3:6]: got %02X %02X %02X, want DE AD 00", b[3], b[4], b[5])
+	if !bytes.Equal(b[2:], []byte{0xDE, 0xAD, 0x00, 0x01}) {
+		t.Errorf("M-TMSI bytes: got % X, want DE AD 00 01", b[2:])
 	}
 }
 
@@ -173,11 +178,36 @@ func TestEncodePagingTAIList_Single(t *testing.T) {
 	copy(tai.PLMN[:], plmn)
 
 	b := ies.EncodePagingTAIList([]emm.TAI{tai})
-	// 1 bit (ext=0) + 8 bits (count-1=0) + 7 padding bits → 2 bytes for outer header
-	// Per TAI: 1 bit (ext=0) + 1 bit (opt=0) + 6 padding bits → 1 byte + PLMN(3) + TAC(2) = 6 bytes
-	// Total: 2 + 6 = 8 bytes
-	if len(b) != 8 {
-		t.Fatalf("length: got %d, want 8", len(b))
+	// TAIList contains a TAIItem ProtocolIE-SingleContainer: count(1),
+	// id/criticality/open-type, then the six-byte TAIItem value.
+	want := []byte{0x00, 0x00, 0x2f, 0x40, 0x06, 0x00, 0x00, 0xf1, 0x10, 0x00, 0x01}
+	if !bytes.Equal(b, want) {
+		t.Fatalf("TAIList got % X, want % X", b, want)
+	}
+}
+
+func TestPagingGoldenVectorEricssonInterop(t *testing.T) {
+	tai := emm.TAI{PLMN: [3]byte{0x13, 0x51, 0x34}, TAC: 1}
+	ies := []pdu.ProtocolIE{
+		{ID: pdu.IEUEIdentityIndexValue, Criticality: aper.CriticalityIgnore, Value: ies.EncodeUEIdentityIndexValueFromIMSI("311435000070572")},
+		{ID: pdu.IEUEPagingID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeUEPagingIDSTMSI(0x01, 0xB692CCE2)},
+		{ID: pdu.IECNDomain, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCNDomain(0)},
+		{ID: pdu.IEPagingTAIList, Criticality: aper.CriticalityIgnore, Value: ies.EncodePagingTAIList([]emm.TAI{tai})},
+	}
+	got := pdu.BuildInitiatingMessage(pdu.ProcPaging, aper.CriticalityIgnore, ies)
+	// Derived directly from TS 36.413 Rel-16 Paging/TAIList ASN.1: TAIList
+	// wraps TAIItem in ProtocolIE-SingleContainer (id 47), and the S-TMSI
+	// headers share one APER octet.  This is intentionally not the malformed
+	// 41-byte sequence captured in MME-emm-debug-59.
+	want := []byte{
+		0x00, 0x0a, 0x40, 0x27, 0x00, 0x00, 0x04,
+		0x00, 0x50, 0x40, 0x02, 0x6b, 0x00,
+		0x00, 0x2b, 0x40, 0x06, 0x00, 0x10, 0xb6, 0x92, 0xcc, 0xe2,
+		0x00, 0x6d, 0x40, 0x01, 0x00,
+		0x00, 0x2e, 0x40, 0x0b, 0x00, 0x00, 0x2f, 0x40, 0x06, 0x00, 0x13, 0x41, 0x53, 0x00, 0x01,
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Paging golden vector got % X, want % X", got, want)
 	}
 }
 
@@ -305,7 +335,7 @@ func TestHandleDownlinkDataNotification_IdleRegisteredUEStartsPaging(t *testing.
 	ebi := uint8(6)
 	arp := uint8(8)
 
-	ue, _, _ := makeIdleRegisteredUE(srv, addr, tac)
+	ue, mmec, mtmsi := makeIdleRegisteredUE(srv, addr, tac)
 	ch := registerENBWithTAC(srv, addr, tac)
 	attachDDNPDN(ue, peer, teid, ebi)
 
@@ -328,6 +358,28 @@ func TestHandleDownlinkDataNotification_IdleRegisteredUEStartsPaging(t *testing.
 	select {
 	case raw := <-ch:
 		assertPagingMessageHasMandatoryIEs(t, raw)
+		msg, err := pdu.Decode(raw)
+		if err != nil {
+			t.Fatalf("Decode paging PDU: %v", err)
+		}
+		ieList, err := pdu.DecodeProcedureIEContainer(msg.Value)
+		if err != nil {
+			t.Fatalf("Decode paging IEs: %v", err)
+		}
+		for _, ie := range ieList {
+			switch ie.ID {
+			case pdu.IEUEIdentityIndexValue:
+				want := ies.EncodeUEIdentityIndexValueFromIMSI(ue.IMSI)
+				if string(ie.Value) != string(want) {
+					t.Fatalf("UEIdentityIndexValue got %x, want M-TMSI-derived %x", ie.Value, want)
+				}
+			case pdu.IEUEPagingID:
+				want := ies.EncodeUEPagingIDSTMSI(mmec, mtmsi)
+				if string(ie.Value) != string(want) {
+					t.Fatalf("UEPagingID got %x, want S-TMSI %x", ie.Value, want)
+				}
+			}
+		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("no Paging PDU sent after DDN")
 	}
@@ -342,6 +394,91 @@ func TestHandleDownlinkDataNotification_IdleRegisteredUEStartsPaging(t *testing.
 	}
 	if got := ue.DDNPaging.Status; got != uecontext.DDNPagingPagingSent {
 		t.Fatalf("DDNPaging status got %q, want %q", got, uecontext.DDNPagingPagingSent)
+	}
+}
+
+func TestHandleDownlinkDataNotification_NoUsableSCTPAssociationDoesNotAckSuccess(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{DDNEnabled: true, RetryInterval: time.Second, MaxAttempts: 2, TransactionTimeout: time.Second}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.9:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020309
+	)
+	ebi := uint8(6)
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	registerENBWithTAC(srv, addr, 42)
+	// Keep the eNB registry entry but remove its send path.  This models a
+	// stale association and verifies that DDN success is not emitted merely
+	// because TAC selection found an eNB context.
+	srv.sends.Delete(addr)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	srv.HandleDownlinkDataNotification(peer, &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: 0x10209, EBI: &ebi})
+	if len(mock.ackCalls) != 1 {
+		t.Fatalf("DDN Ack count got %d, want 1", len(mock.ackCalls))
+	}
+	if got := mock.ackCalls[0].cause; got != gtpv2.CauseUnableToPageUE {
+		t.Fatalf("DDN Ack cause got %d, want %d", got, gtpv2.CauseUnableToPageUE)
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.DDNPaging == nil || ue.DDNPaging.Status != uecontext.DDNPagingFailed {
+		t.Fatalf("DDN paging status got %+v, want failed", ue.DDNPaging)
+	}
+}
+
+func TestHandleDownlinkDataNotification_NoMatchingENBReturnsUnableToPage(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{DDNEnabled: true}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+
+	const (
+		addr = "10.10.20.10:36412"
+		peer = "10.90.250.59:2123"
+		teid = 0x01020310
+	)
+	ebi := uint8(6)
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	ch := registerENBWithTAC(srv, addr, 99) // connected, but serving another TA.
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	srv.HandleDownlinkDataNotification(peer, &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: 0x10210, EBI: &ebi})
+	if len(mock.ackCalls) != 1 || mock.ackCalls[0].cause != gtpv2.CauseUnableToPageUE {
+		t.Fatalf("DDN Ack got %+v, want one UnableToPageUE", mock.ackCalls)
+	}
+	select {
+	case raw := <-ch:
+		t.Fatalf("unexpected Paging PDU for unrelated TAC: %x", raw)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestDDNPagingSelectsEricssonSupportedTAForStandardUEPLMN(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "192.168.105.247:36422"
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 1)
+	// The registered TAI comes from NAS and uses the TS 24.008 wire order for
+	// 311-435 (13 51 34). Ericsson's captured S1 Setup is decoded and retained
+	// as the canonical digits 311/435. Selection must not compare raw bytes
+	// after re-encoding that eNB representation.
+	ue.Lock()
+	ue.TAI = &emm.TAI{PLMN: [3]byte{0x13, 0x51, 0x34}, TAC: 1}
+	ue.Unlock()
+	registerENBWithTAC(srv, addr, 1)
+	val, _ := srv.enbs.Load(addr)
+	enb := val.(*ENBContext)
+	enb.SupportedTAs = []SupportedTA{{TAC: 1, BroadcastPLMNs: []BroadcastPLMN{{MCC: "311", MNC: "435"}}}}
+
+	ue.Lock()
+	targets := srv.findStrictENBsForTAILocked(ue)
+	ue.Unlock()
+	if len(targets) != 1 || targets[0] != addr {
+		t.Fatalf("paging targets got %v, want [%s]", targets, addr)
 	}
 }
 
@@ -516,6 +653,32 @@ func TestHandleDownlinkDataNotification_RetryAndCompletion(t *testing.T) {
 	}
 	if ue.PagingAttempts != 0 {
 		t.Fatalf("PagingAttempts got %d, want 0 after completion", ue.PagingAttempts)
+	}
+}
+
+func TestDDNPagingServiceRequestCancelsTimeout(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.pagingCfg = config.PagingConfig{DDNEnabled: true, RetryInterval: time.Hour, TransactionTimeout: time.Hour}
+	mock := &ddnMockS11{}
+	srv.s11 = mock
+	const addr = "10.10.20.11:36412"
+	const peer = "10.90.250.59:2123"
+	const teid = 0x01020311
+	ebi := uint8(6)
+	ue, _, _ := makeIdleRegisteredUE(srv, addr, 42)
+	registerENBWithTAC(srv, addr, 42)
+	attachDDNPDN(ue, peer, teid, ebi)
+
+	srv.HandleDownlinkDataNotification(peer, &gtpv2.DownlinkDataNotification{TEID: teid, SeqNum: 0x10211, EBI: &ebi})
+	srv.noteDDNServiceRequest(ue, 0x1234, 9)
+	// A callback that races or fires after correlation must be harmless.
+	srv.onDDNPagingTimeout(ue, currentDDNTransactionID(ue))
+
+	ue.Lock()
+	status := ue.DDNPaging.Status
+	ue.Unlock()
+	if status != uecontext.DDNPagingCompleted {
+		t.Fatalf("paging status after Service Request/timeout callback got %q, want completed", status)
 	}
 }
 
@@ -1371,12 +1534,12 @@ func TestHandleServiceRequestReestablished_PagingSuccessMetric(t *testing.T) {
 
 func TestEncodeUEPagingIDSTMSI_LastMTMSIByte(t *testing.T) {
 	b := ies.EncodeUEPagingIDSTMSI(0x01, 0xDEAD0001)
-	if len(b) < 7 {
-		t.Fatalf("length: got %d, want ≥7", len(b))
+	if len(b) != 6 {
+		t.Fatalf("length: got %d, want 6", len(b))
 	}
-	// M-TMSI = 0xDEAD0001: bytes[3..6] = {0xDE, 0xAD, 0x00, 0x01}
-	if b[6] != 0x01 {
-		t.Errorf("M-TMSI last byte: got %02X, want 01", b[6])
+	// M-TMSI = 0xDEAD0001: bytes[2..5] = {0xDE, 0xAD, 0x00, 0x01}
+	if b[5] != 0x01 {
+		t.Errorf("M-TMSI last byte: got %02X, want 01", b[5])
 	}
 }
 
