@@ -93,7 +93,7 @@ func TestSendEMMInformation_Sent(t *testing.T) {
 	if len(gotNAS) < 6 {
 		t.Fatalf("protected NAS too short: %x", gotNAS)
 	}
-	if got, want := gotNAS[0], byte(emm.PDEPSMobilityMgmt|(emm.SecurityHeaderIntegrityProtected<<4)); got != want {
+	if got, want := gotNAS[0], byte(emm.PDEPSMobilityMgmt|(emm.SecurityHeaderIntegrityAndCipher<<4)); got != want {
 		t.Fatalf("security header byte got 0x%02x, want 0x%02x", got, want)
 	}
 	if got, want := gotNAS[5], byte(startDLCount); got != want {

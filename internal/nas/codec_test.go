@@ -46,6 +46,52 @@ func TestEncodeIntegrityProtectedNewEPSSecurityContextUsesHeader3(t *testing.T) 
 	}
 }
 
+func TestEncodeIntegrityAndCipheredEEA0UsesCipheredHeaderAndValidMAC(t *testing.T) {
+	plain := []byte{0x07, emm.MsgAttachAccept, 0x01, 0x69}
+	knasInt := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}
+
+	protected, err := EncodeIntegrityAndCiphered(plain, security.AlgIDEIA2, security.AlgIDEEA0, knasInt, nil, 7)
+	if err != nil {
+		t.Fatalf("EncodeIntegrityAndCiphered: %v", err)
+	}
+	if got, want := protected[0]>>4, emm.SecurityHeaderIntegrityAndCipher; got != want {
+		t.Fatalf("security header: got %d, want %d", got, want)
+	}
+	if !bytes.Equal(protected[6:], plain) {
+		t.Fatalf("EEA0 changed payload: got %x, want %x", protected[6:], plain)
+	}
+	if err := security.VerifyNASMAC(security.AlgIDEIA2, knasInt, 7, 0, 1, protected[5:], protected[1:5]); err != nil {
+		t.Fatalf("VerifyNASMAC: %v", err)
+	}
+}
+
+func TestEncodeIntegrityAndCipheredEEA2EncryptsAndValidatesMAC(t *testing.T) {
+	plain := []byte{0x07, emm.MsgAttachAccept, 0x01, 0x69, 0xaa, 0xbb, 0xcc}
+	knasInt := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00}
+	knasEnc := []byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff}
+
+	protected, err := EncodeIntegrityAndCiphered(plain, security.AlgIDEIA2, security.AlgIDEEA2, knasInt, knasEnc, 7)
+	if err != nil {
+		t.Fatalf("EncodeIntegrityAndCiphered: %v", err)
+	}
+	if got, want := protected[0]>>4, emm.SecurityHeaderIntegrityAndCipher; got != want {
+		t.Fatalf("security header: got %d, want %d", got, want)
+	}
+	if bytes.Equal(protected[6:], plain) {
+		t.Fatal("EEA2 left payload unchanged")
+	}
+	if err := security.VerifyNASMAC(security.AlgIDEIA2, knasInt, 7, 0, 1, protected[5:], protected[1:5]); err != nil {
+		t.Fatalf("VerifyNASMAC: %v", err)
+	}
+	decoded, err := security.CipherNAS(security.AlgIDEEA2, knasEnc, 7, 0, 1, protected[6:])
+	if err != nil {
+		t.Fatalf("CipherNAS (decrypt): %v", err)
+	}
+	if !bytes.Equal(decoded, plain) {
+		t.Fatalf("decoded payload: got %x, want %x", decoded, plain)
+	}
+}
+
 func TestDecodeSecurityModeCompleteWithCipheredNewEPSSecurityContextHeader(t *testing.T) {
 	inner := []byte{0x07, emm.MsgSecurityModeComplete}
 	raw := append([]byte{

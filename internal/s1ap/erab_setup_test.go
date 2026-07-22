@@ -37,6 +37,10 @@ type normalizedERABSetupItem struct {
 	SGWS1UIPv4                   string
 	SGWS1UTEID                   uint32
 	GBRQosInformationPresent     bool
+	MaxBitrateDL                 uint64
+	MaxBitrateUL                 uint64
+	GuaranteedBitrateDL          uint64
+	GuaranteedBitrateUL          uint64
 	NASPDUPresent                bool
 	NASPDU                       []byte
 	RawFirstByte                 byte

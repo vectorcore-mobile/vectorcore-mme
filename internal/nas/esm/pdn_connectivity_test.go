@@ -91,6 +91,38 @@ func TestEncodeActivateDefaultEPSBearerContextRequestIncludesPCO(t *testing.T) {
 	}
 }
 
+func TestEncodeActivateDefaultEPSBearerContextRequestUsesSubscribedQCIAndAPNAMBR(t *testing.T) {
+	got := EncodePDNConnectivityAcceptWithQoS(1, "ims.mnc435.mcc311.gprs", 6, net.IP{10, 1, 2, 3}, 5, 3_850_000, 1_530_000, nil)
+	if got[3] != 1 || got[4] != 5 {
+		t.Fatalf("EPS QoS got %x, want length=1 qci=5", got[3:5])
+	}
+	if !bytes.Contains(got, []byte{0x5e, 0x02, 0x8f, 0xb4}) {
+		t.Fatalf("APN-AMBR got %x, want DL=0x8f UL=0xb4", got)
+	}
+}
+
+func TestEncodeAPNAMBRExtendedRates(t *testing.T) {
+	got, ok := encodeAPNAMBR(200_000_000, 50_000_000)
+	if !ok || !bytes.Equal(got, []byte{0xfe, 0xfe, 0xde, 0x6c}) {
+		t.Fatalf("200/50 Mbps APN-AMBR got %x ok=%t, want fefede6c", got, ok)
+	}
+	got, ok = encodeAPNAMBR(128_000, 128_000)
+	if !ok || !bytes.Equal(got, []byte{0x48, 0x48}) {
+		t.Fatalf("128 kbps APN-AMBR got %x ok=%t, want 4848", got, ok)
+	}
+}
+
+func TestEncodeActivateDefaultBearerPDNTypeDowngradeCause(t *testing.T) {
+	base := EncodePDNConnectivityAcceptWithQoSAndCause(1, "ims", 6, net.IP{10, 1, 2, 3}, 5, 0, 0, ESMCausePDNTypeIPv4OnlyAllowed, nil)
+	if !bytes.Contains(base, []byte{0x58, ESMCausePDNTypeIPv4OnlyAllowed}) {
+		t.Fatalf("IPv4v6 to IPv4 cause missing from %x", base)
+	}
+	matched := EncodePDNConnectivityAcceptWithQoSAndCause(1, "ims", 6, net.IP{10, 1, 2, 3}, 5, 0, 0, 0, nil)
+	if bytes.Contains(matched, []byte{0x58, ESMCausePDNTypeIPv4OnlyAllowed}) {
+		t.Fatalf("unexpected downgrade cause in %x", matched)
+	}
+}
+
 func TestDecodeActivateDefaultEPSBearerContextAccept(t *testing.T) {
 	raw := []byte{0x52, 0x01, MsgActivateDefaultEPSBearerContextAccept}
 	got, err := DecodeActivateDefaultEPSBearerContextAccept(raw)

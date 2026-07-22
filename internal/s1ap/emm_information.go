@@ -9,7 +9,6 @@ import (
 	"github.com/vectorcore/mme/internal/metrics"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
-	"github.com/vectorcore/mme/internal/nas/security"
 )
 
 // sendEMMInformation sends an optional EMM Information message to the UE identified by mmeUEID.
@@ -117,13 +116,7 @@ func (s *Server) sendEMMInformation(mmeUEID uint32, trigger string, log *zap.Log
 	dlCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
-	var wrapped []byte
-	var err error
-	if encAlg != security.AlgIDEEA0 {
-		wrapped, err = nas.EncodeIntegrityAndCiphered(pdu, intAlg, encAlg, knasInt, knasEnc, dlCount)
-	} else {
-		wrapped, err = nas.EncodeIntegrityProtected(pdu, intAlg, knasInt, dlCount)
-	}
+	wrapped, err := nas.EncodeIntegrityAndCiphered(pdu, intAlg, encAlg, knasInt, knasEnc, dlCount)
 	if err != nil {
 		metrics.EMMInformationTotal.WithLabelValues(trigger, "encode_error").Inc()
 		log.Warn("nas: EMM Information encode failed",

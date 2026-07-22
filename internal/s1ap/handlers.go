@@ -185,7 +185,7 @@ func NewServer(
 	if err != nil {
 		log.Warn("s1ap: GUTI allocator init failed, GUTI will not be assigned", zap.Error(err))
 	}
-	return &Server{
+	server := &Server{
 		cfg:          cfg,
 		nfCfg:        nfCfg,
 		secCfg:       secCfg,
@@ -206,6 +206,7 @@ func NewServer(
 		log:          log,
 		nextMTSMSTI:  make(map[string]uint8),
 	}
+	return server
 }
 
 func (s *Server) SetRecoveryEpoch(epoch string) {

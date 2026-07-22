@@ -687,13 +687,8 @@ func (s *Server) buildTAUAcceptNAS(ue *uecontext.Context, log *zap.Logger, opts 
 	toSend := tauAcceptPDU
 	if len(knasInt) > 0 {
 		var encErr error
-		if encAlg != security.AlgIDEEA0 {
-			toSend, encErr = nas.EncodeIntegrityAndCiphered(
-				tauAcceptPDU, intAlg, encAlg, knasInt, knasEnc, dlCount)
-		} else {
-			toSend, encErr = nas.EncodeIntegrityProtected(
-				tauAcceptPDU, intAlg, knasInt, dlCount)
-		}
+		toSend, encErr = nas.EncodeIntegrityAndCiphered(
+			tauAcceptPDU, intAlg, encAlg, knasInt, knasEnc, dlCount)
 		if encErr != nil {
 			return nil, fmt.Errorf("sendTAUAccept: encode: %w", encErr)
 		}
@@ -853,13 +848,8 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	var toSend []byte
 	var encErr error
 	if hasKeys {
-		if encAlg != security.AlgIDEEA0 {
-			toSend, encErr = nas.EncodeIntegrityAndCiphered(
-				tauAcceptPDU, intAlg, encAlg, knasInt, knasEnc, dlCount)
-		} else {
-			toSend, encErr = nas.EncodeIntegrityProtected(
-				tauAcceptPDU, intAlg, knasInt, dlCount)
-		}
+		toSend, encErr = nas.EncodeIntegrityAndCiphered(
+			tauAcceptPDU, intAlg, encAlg, knasInt, knasEnc, dlCount)
 		if encErr != nil {
 			return fmt.Errorf("sendTAUAccept: encode: %w", encErr)
 		}

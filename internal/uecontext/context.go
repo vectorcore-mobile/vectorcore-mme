@@ -293,6 +293,7 @@ type SubscriberAPNConfig struct {
 	MIPHomeAgentHost        string
 	PDNGWAllocationType     *int32
 	PDNType                 uint8
+	PDNTypePolicy           uint8
 	QCI                     uint8
 	ARPPriority             uint8
 	PreemptionCapability    bool
@@ -302,15 +303,23 @@ type SubscriberAPNConfig struct {
 }
 
 type PDNContext struct {
-	APN                        string
-	ProcedureTransactionID     uint8
-	DisconnectPTI              uint8
-	PDNType                    uint8
-	DefaultEBI                 uint8
-	QCI                        uint8
-	ARPPriority                uint8
-	PreemptionCapability       bool
-	PreemptionVulnerability    bool
+	APN                     string
+	ProcedureTransactionID  uint8
+	DisconnectPTI           uint8
+	PDNType                 uint8
+	RequestedPDNType        uint8
+	SubscribedPDNType       uint8
+	SubscribedPDNTypePolicy uint8
+	NetworkPDNType          uint8
+	DefaultEBI              uint8
+	QCI                     uint8
+	ARPPriority             uint8
+	PreemptionCapability    bool
+	PreemptionVulnerability bool
+	// APN AMBR is retained with the PDN so that every access-side encoding
+	// uses the same subscribed policy as the S11 Create Session request.
+	APNAMBRDown                uint32
+	APNAMBRUp                  uint32
 	LocalS11TEID               uint32
 	SGWAddress                 string
 	SGWC_TEID                  uint32
@@ -329,6 +338,7 @@ type PDNContext struct {
 	ModifyBearerFailed         bool
 	ModifyBearerDeferred       bool
 	ModifyBearerFallbackSent   bool
+	ModifyBearerRetryAttempts  uint8
 	DisconnectRequested        bool
 	DisconnectNASAccepted      bool
 	State                      string

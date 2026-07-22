@@ -189,7 +189,8 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 			ServiceSelection:        selected.ServiceSelection,
 			MIPHomeAgentHost:        string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
 			PDNGWAllocationType:     &selected.PDNGWAllocationType,
-			PDNType:                 normalizePDNType(selected.PDNType),
+			PDNType:                 pdnPolicyDefaultType(uint8(selected.PDNType)),
+			PDNTypePolicy:           uint8(selected.PDNType),
 			QCI:                     uint8(selected.EPSSubscribedQoSProfile.QoSClassIdentifier),
 			ARPPriority:             uint8(selected.EPSSubscribedQoSProfile.AllocationRetentionPriority.PriorityLevel),
 			PreemptionCapability:    selected.EPSSubscribedQoSProfile.AllocationRetentionPriority.PreemptionCapability == 0,
@@ -276,10 +277,16 @@ func decodeMSISDN(data []byte) string {
 	return string(digits)
 }
 
-func normalizePDNType(v int32) uint8 {
-	switch uint8(v) {
-	case 1, 2, 3:
-		return uint8(v)
+func pdnPolicyDefaultType(policy uint8) uint8 {
+	switch policy {
+	case 0:
+		return 1 // NAS/GTP IPv4
+	case 1:
+		return 2 // NAS/GTP IPv6
+	case 2:
+		return 3 // NAS/GTP IPv4v6
+	case 3:
+		return 1 // IPv4-or-IPv6: default selection is IPv4; request may override
 	default:
 		return 1
 	}

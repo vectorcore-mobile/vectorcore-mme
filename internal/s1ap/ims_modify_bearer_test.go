@@ -100,18 +100,12 @@ func TestIMSModifyBearerWaitsForDefaultBearerNASAccept(t *testing.T) {
 	}
 	ue.Lock()
 	pdn := ue.PDNs["ims"]
-	mmeID := ue.MMEUES1APID
 	ue.Unlock()
-	if pdn == nil || !pdn.ModifyBearerDeferred {
-		t.Fatalf("PDN after NAS accept got %+v, want deferred MBR", pdn)
+	if pdn == nil || !pdn.ModifyBearerSent {
+		t.Fatalf("PDN after NAS accept got %+v, want Modify Bearer sent", pdn)
 	}
-	if len(mock.calls) != 0 {
-		t.Fatalf("MBR calls before settle got %d, want 0", len(mock.calls))
-	}
-
-	srv.onIMSModifyBearerSettleTimeout(mmeID, 6)
 	if len(mock.calls) != 1 {
-		t.Fatalf("MBR calls after settle got %d, want 1", len(mock.calls))
+		t.Fatalf("MBR calls got %d, want 1", len(mock.calls))
 	}
 	got := mock.calls[0]
 	if got.SGWC_TEID != 0x06f718d5 || got.EBI != 6 || got.ENBU_TEID != 0x312e2aef {
@@ -152,13 +146,6 @@ func TestIMSModifyBearerDoesNotOverlapWhenRepeatedAcceptsArrive(t *testing.T) {
 	if err := srv.handleStandaloneBearerAccept(ue, accept, srv.log); err != nil {
 		t.Fatalf("second handleStandaloneBearerAccept: %v", err)
 	}
-	ue.Lock()
-	mmeID := ue.MMEUES1APID
-	ue.Unlock()
-	if len(mock.calls) != 0 {
-		t.Fatalf("MBR calls before settle got %d, want 0", len(mock.calls))
-	}
-	srv.onIMSModifyBearerSettleTimeout(mmeID, 6)
 	if len(mock.calls) != 1 {
 		t.Fatalf("MBR calls got %d, want 1", len(mock.calls))
 	}
@@ -428,6 +415,7 @@ func TestCreateBearerResponseSendsStandaloneIMSModifyBearerWhenDeferred(t *testi
 	}
 
 	srv.sendFinalCreateBearerResponse(tx, gtpv2.CauseRequestAccepted, []gtpv2.CreateBearerBearer{{AssignedEBI: 7}}, 0, 1, 0)
+	time.Sleep(60 * time.Millisecond)
 
 	if got := mock.createResponseCount(); got != 1 {
 		t.Fatalf("plain create bearer responses got %d, want 1", got)
@@ -444,17 +432,12 @@ func TestCreateBearerResponseSendsStandaloneIMSModifyBearerWhenDeferred(t *testi
 	}
 	ue.Lock()
 	pdn := ue.PDNs["ims"]
-	mmeID := ue.MMEUES1APID
 	ue.Unlock()
-	if pdn == nil || !pdn.ModifyBearerDeferred {
-		t.Fatalf("PDN after Create Bearer Response got %+v, want deferred MBR", pdn)
+	if pdn == nil || !pdn.ModifyBearerSent {
+		t.Fatalf("PDN after Create Bearer Response got %+v, want MBR sent", pdn)
 	}
-	if len(mock.calls) != 0 {
-		t.Fatalf("standalone MBR calls before settle got %d, want 0", len(mock.calls))
-	}
-	srv.onIMSModifyBearerSettleTimeout(mmeID, 6)
 	if len(mock.calls) != 1 {
-		t.Fatalf("standalone MBR calls after settle got %d, want 1", len(mock.calls))
+		t.Fatalf("standalone MBR calls got %d, want 1", len(mock.calls))
 	}
 	call := mock.calls[0]
 	if call.EBI != 6 || call.SGWC_TEID != 0x06f718d5 || call.ENBU_TEID != 0x312e2aef {
@@ -505,6 +488,7 @@ func TestCompletedFailedCreateBearerResponseSendsStandaloneIMSModifyBearerAfterR
 	}
 
 	srv.sendFinalCreateBearerResponse(tx, gtpv2.CauseRequestAccepted, []gtpv2.CreateBearerBearer{{AssignedEBI: 7}}, 0, 0, 1)
+	time.Sleep(60 * time.Millisecond)
 
 	if got := mock.createResponseCount(); got != 1 {
 		t.Fatalf("plain create bearer responses got %d, want 1", got)
@@ -515,17 +499,12 @@ func TestCompletedFailedCreateBearerResponseSendsStandaloneIMSModifyBearerAfterR
 	}
 	ue.Lock()
 	pdn := ue.PDNs["ims"]
-	mmeID := ue.MMEUES1APID
 	ue.Unlock()
-	if pdn == nil || !pdn.ModifyBearerDeferred {
-		t.Fatalf("PDN after Create Bearer Response got %+v, want deferred MBR", pdn)
+	if pdn == nil || !pdn.ModifyBearerSent {
+		t.Fatalf("PDN after Create Bearer Response got %+v, want MBR sent", pdn)
 	}
-	if len(mock.calls) != 0 {
-		t.Fatalf("standalone MBR calls before settle got %d, want 0", len(mock.calls))
-	}
-	srv.onIMSModifyBearerSettleTimeout(mmeID, 6)
 	if len(mock.calls) != 1 {
-		t.Fatalf("standalone MBR calls after settle got %d, want 1", len(mock.calls))
+		t.Fatalf("standalone MBR calls got %d, want 1", len(mock.calls))
 	}
 	call := mock.calls[0]
 	if call.EBI != 6 || call.SGWC_TEID != 0x06f718d5 || call.ENBU_TEID != 0x312e2aef {

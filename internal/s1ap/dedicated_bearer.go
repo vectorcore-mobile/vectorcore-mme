@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -15,7 +16,6 @@ import (
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/esm"
-	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -476,7 +476,7 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 	mmeID := ue.MMEUES1APID
 	var nasToSend [][]byte
 	var erabItems []ERABModifyItem
-	erabModifyRequired := hasActiveS1BindingLocked(ue)
+	erabModifyPossible := hasActiveS1BindingLocked(ue)
 	for _, b := range req.Bearers {
 		active := ue.DedicatedBearers[b.EBI]
 		if active == nil {
@@ -489,14 +489,16 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 		next.NASRejected = false
 		next.FailureCause = 0
 		applyUpdateBearerRequestToDedicatedBearer(&next, b)
-		if erabModifyRequired && active.ERABEstablished {
+		erabModifyRequired := erabModifyPossible && active.ERABEstablished && updateBearerChangesERABConfiguration(active, &next, b)
+		if erabModifyRequired {
 			next.ERABEstablished = false
 			next.ERABFailed = false
 		}
 		next.State = "update-pending"
 		tx.Bearers[b.EBI] = &next
 		tx.EBIs = append(tx.EBIs, b.EBI)
-		plain := esm.EncodeModifyEPSBearerContextRequest(b.EBI, 0, next.QCI, b.BearerQoS, b.TFT, b.PCO)
+		apnAMBRUpBps, apnAMBRDownBps := updateBearerAPNAMBRBps(req, b)
+		plain := esm.EncodeModifyEPSBearerContextRequestWithAPNAMBR(b.EBI, 0, next.QCI, b.BearerQoS, b.TFT, apnAMBRUpBps, apnAMBRDownBps, b.PCO)
 		protected, _, err := protectNASLocked(ue, plain)
 		if err != nil {
 			ue.Unlock()
@@ -505,7 +507,7 @@ func (s *Server) HandleUpdateBearerRequest(peer string, req *gtpv2.UpdateBearerR
 		}
 		ue.DLNASCount.Increment()
 		nasToSend = append(nasToSend, protected)
-		if erabModifyRequired && active.ERABEstablished {
+		if erabModifyRequired {
 			erabItems = append(erabItems, ERABModifyItem{
 				EBI:                     b.EBI,
 				QCI:                     next.QCI,
@@ -1051,7 +1053,11 @@ func (s *Server) sendFinalCreateBearerResponse(tx *uecontext.DedicatedBearerTran
 	if !s.sendCreateBearerResponseWithOptionalPiggyback(tx, cause, bearers) {
 		s.sendCreateBearerResponseWithMeta(tx.PeerAddress, responseTEID, tx.SequenceNum, cause, bearers, meta)
 	}
-	s.advanceLinkedDefaultBearerAfterCreateBearerResponse(tx, cause)
+	// Do not send the IMS MBR from this CBR handler. The SGW may still be
+	// relaying/finalizing the Create Bearer transaction after the datagram is
+	// written; schedule it after the handler has returned and the transaction
+	// has drained.
+	s.scheduleLinkedDefaultBearerAdvance(tx, cause)
 	s.log.Debug("s11: Create Bearer transaction completed",
 		zap.String("transaction_id", tx.ID),
 		zap.Duration("duration", duration),
@@ -1129,6 +1135,16 @@ func (s *Server) advanceLinkedDefaultBearerAfterCreateBearerResponse(tx *ueconte
 		zap.Uint8("create_bearer_cause", cause),
 		zap.String("trigger", "create_bearer_response_sent"))
 	s.maybeAdvanceDefaultBearer(ue, tx.LinkedEBI, "create-bearer-response-sent", s.log)
+}
+
+func (s *Server) scheduleLinkedDefaultBearerAdvance(tx *uecontext.DedicatedBearerTransaction, cause uint8) {
+	if tx == nil || tx.LinkedEBI == 0 {
+		return
+	}
+	copyTx := *tx
+	time.AfterFunc(40*time.Millisecond, func() {
+		s.advanceLinkedDefaultBearerAfterCreateBearerResponse(&copyTx, cause)
+	})
 }
 
 func (s *Server) startCreateBearerTimeout(ue *uecontext.Context, key string) {
@@ -1700,6 +1716,40 @@ func applyUpdateBearerRequestToDedicatedBearer(next *uecontext.DedicatedBearerCo
 	}
 }
 
+// updateBearerChangesERABConfiguration reports whether this Update Bearer
+// request changes a field carried in the S1AP E-RAB configuration. TFT, PCO,
+// and APN-AMBR are carried to the UE in NAS and do not by themselves require
+// an E-RAB Modify procedure.
+func updateBearerChangesERABConfiguration(active, next *uecontext.DedicatedBearerContext, req gtpv2.UpdateBearerBearer) bool {
+	if active == nil || next == nil {
+		return false
+	}
+	if req.QCI != 0 && next.QCI != active.QCI {
+		return true
+	}
+	if req.ARP != 0 && next.ARP != active.ARP {
+		return true
+	}
+	return len(req.BearerQoS) > 0 && !bytes.Equal(next.BearerQoS, active.BearerQoS)
+}
+
+func updateBearerAPNAMBRBps(req *gtpv2.UpdateBearerRequest, bearer gtpv2.UpdateBearerBearer) (uplinkBps, downlinkBps uint32) {
+	ambr := bearer.AMBR
+	if len(ambr) == 0 && req != nil {
+		ambr = req.AMBR
+	}
+	if len(ambr) != 8 {
+		return 0, 0
+	}
+	ulKbps := uint64(ambr[0])<<24 | uint64(ambr[1])<<16 | uint64(ambr[2])<<8 | uint64(ambr[3])
+	dlKbps := uint64(ambr[4])<<24 | uint64(ambr[5])<<16 | uint64(ambr[6])<<8 | uint64(ambr[7])
+	const maxUint32 = uint64(^uint32(0))
+	if ulKbps > maxUint32/1000 || dlKbps > maxUint32/1000 {
+		return 0, 0
+	}
+	return uint32(ulKbps * 1000), uint32(dlKbps * 1000)
+}
+
 func findPendingBearerTransactionForResponseLocked(ue *uecontext.Context, resp *esm.BearerProcedureResponse) (string, *uecontext.DedicatedBearerTransaction, bool) {
 	if ue == nil || resp == nil {
 		return "", nil, false
@@ -1774,13 +1824,7 @@ func preemptionVulnerability(raw uint8) bool {
 
 func protectNASLocked(ue *uecontext.Context, plain []byte) ([]byte, uint32, error) {
 	dlCount := uint32(ue.DLNASCount)
-	var protected []byte
-	var err error
-	if ue.EncAlg != security.AlgIDEEA0 {
-		protected, err = nas.EncodeIntegrityAndCiphered(plain, ue.IntAlg, ue.EncAlg, ue.KNASint, ue.KNASenc, dlCount)
-	} else {
-		protected, err = nas.EncodeIntegrityProtected(plain, ue.IntAlg, ue.KNASint, dlCount)
-	}
+	protected, err := nas.EncodeIntegrityAndCiphered(plain, ue.IntAlg, ue.EncAlg, ue.KNASint, ue.KNASenc, dlCount)
 	if err != nil {
 		return nil, dlCount, fmt.Errorf("protect NAS: %w", err)
 	}

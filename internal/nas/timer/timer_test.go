@@ -29,6 +29,12 @@ func TestEncodeGPRSTimer(t *testing.T) {
 	}
 }
 
+func TestDecodeGPRSTimer(t *testing.T) {
+	if got, want := nastimer.DecodeGPRSTimer(0x49), 3240; got != want {
+		t.Fatalf("DecodeGPRSTimer(0x49): got %d, want %d", got, want)
+	}
+}
+
 func TestEncodeGPRSTimerInvalid(t *testing.T) {
 	if _, err := nastimer.EncodeGPRSTimer(61); err == nil {
 		t.Fatal("EncodeGPRSTimer(61) expected error")

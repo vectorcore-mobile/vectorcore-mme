@@ -108,3 +108,20 @@ func EncodeGPRSTimer3(sec int) (byte, error) {
 func encodeTimerOctet(unit int, value int) byte {
 	return byte((unit << 5) | (value & 0x1f))
 }
+
+// DecodeGPRSTimer returns the effective number of seconds represented by a
+// TS 24.008 GPRS timer octet. Reserved/deactivated values return zero.
+func DecodeGPRSTimer(value byte) int {
+	units := value >> 5
+	multiplier := int(value & 0x1f)
+	switch units {
+	case gprsTimerUnit2Seconds:
+		return multiplier * 2
+	case gprsTimerUnit1Minute:
+		return multiplier * 60
+	case gprsTimerUnitDeciHour:
+		return multiplier * 6 * 60
+	default:
+		return 0
+	}
+}

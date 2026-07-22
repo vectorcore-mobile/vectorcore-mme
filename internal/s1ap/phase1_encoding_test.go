@@ -274,9 +274,9 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 	ue.Lock()
 	ue.TAI = tai
 	ue.KASME = make([]byte, 32)
-	ue.KNASint = make([]byte, 16)
+	ue.KNASint = fakeKeys()
 	ue.KNASenc = make([]byte, 16)
-	ue.IntAlg = 0
+	ue.IntAlg = security.AlgIDEIA2
 	ue.EncAlg = 0
 	ue.DLNASCount = 1
 	ue.PDNRequestPTI = 1
@@ -302,8 +302,11 @@ func TestHandleCSRResultAttachAcceptUsesCurrentDLCountThenIncrements(t *testing.
 		t.Fatalf("procedure: got %d, want InitialContextSetup", msg.ProcedureCode)
 	}
 	nasPDU := decodeNASPDUFromInitialContextSetup(t, msg)
-	if got, want := nasPDU[0]>>4, emm.SecurityHeaderIntegrityProtected; got != want {
+	if got, want := nasPDU[0]>>4, emm.SecurityHeaderIntegrityAndCipher; got != want {
 		t.Fatalf("security header: got %d, want %d", got, want)
+	}
+	if err := security.VerifyNASMAC(security.AlgIDEIA2, fakeKeys(), 1, 0, 1, nasPDU[5:], nasPDU[1:5]); err != nil {
+		t.Fatalf("Attach Accept NAS MAC: %v", err)
 	}
 	if got, want := nasPDU[5], byte(1); got != want {
 		t.Fatalf("Attach Accept NAS sequence number: got %d, want %d", got, want)
@@ -838,7 +841,7 @@ func decodeNASPDUFromInitialContextSetup(t *testing.T, msg *pdu.PDU) []byte {
 		for _, prefix := range plainPrefixes {
 			if idx := bytes.Index(item, prefix); idx >= 0 {
 				start := idx
-				if idx >= 6 && item[idx-6]>>4 == emm.SecurityHeaderIntegrityProtected {
+				if idx >= 6 && (item[idx-6]>>4 == emm.SecurityHeaderIntegrityProtected || item[idx-6]>>4 == emm.SecurityHeaderIntegrityAndCipher) {
 					start = idx - 6
 				}
 				return append([]byte(nil), item[start:]...)

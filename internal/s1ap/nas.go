@@ -352,13 +352,10 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			EPSNetworkFeatureSupport: featureSupport,
 		})
 
-		var protected []byte
-		var err error
-		if encAlg != security.AlgIDEEA0 {
-			protected, err = nas.EncodeIntegrityAndCiphered(attachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
-		} else {
-			protected, err = nas.EncodeIntegrityProtected(attachAccept, intAlg, knasInt, dlCount)
-		}
+		// TS 24.301 §4.4.5 and TS 33.401 §8.2 regard EEA0 as ciphering.
+		// The null cipher leaves the payload unchanged, but the NAS security header
+		// must still indicate integrity protected and ciphered (type 2).
+		protected, err := nas.EncodeIntegrityAndCiphered(attachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
 		if err != nil {
 			log.Error("s1ap: failed to encode Attach Accept (noop)", zap.Error(err))
 			return
@@ -424,6 +421,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	uliPLMN := plmn
 	cfg := uecontext.SubscriberAPNConfig{
 		PDNType:                 apnConfig.PDNType,
+		PDNTypePolicy:           apnConfig.PDNTypePolicy,
 		QCI:                     apnConfig.QCI,
 		ARPPriority:             apnConfig.ARPPriority,
 		PreemptionCapability:    apnConfig.PreemptionCapability,
@@ -580,6 +578,17 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	sgwuTEID := ue.SGWU_TEID
 	sgwuIP := ue.SGWU_IP
 	pgwPCO := append([]byte(nil), ue.PGWPCO...)
+	apnPolicy := uecontext.SubscriberAPNConfig{QCI: 9}
+	if cfg, ok := ue.SubscriberAPNConfigs[apn]; ok {
+		apnPolicy = cfg
+	} else {
+		for configuredAPN, cfg := range ue.SubscriberAPNConfigs {
+			if strings.EqualFold(configuredAPN, apn) {
+				apnPolicy = cfg
+				break
+			}
+		}
+	}
 	if ue.PDNs == nil {
 		ue.PDNs = make(map[string]*uecontext.PDNContext)
 	}
@@ -588,6 +597,12 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		ProcedureTransactionID:     pti,
 		PDNType:                    gtpv2.PDNTypeIPv4,
 		DefaultEBI:                 ebi,
+		QCI:                        apnPolicy.QCI,
+		ARPPriority:                apnPolicy.ARPPriority,
+		PreemptionCapability:       apnPolicy.PreemptionCapability,
+		PreemptionVulnerability:    apnPolicy.PreemptionVulnerability,
+		APNAMBRDown:                apnPolicy.APNAMBRDown,
+		APNAMBRUp:                  apnPolicy.APNAMBRUp,
 		LocalS11TEID:               ue.LocalS11TEID,
 		SGWAddress:                 ue.SGWAddress,
 		SGWC_TEID:                  ue.SGWC_TEID,
@@ -605,7 +620,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 
 	// Build ESM Activate Default EPS Bearer Context Request
 	esmAPN := s.apnForNAS(apn)
-	esmAccept := esm.EncodePDNConnectivityAcceptWithPCO(pti, esmAPN, ebi, ueIPv4, pgwPCO)
+	esmAccept := esm.EncodePDNConnectivityAcceptWithQoS(pti, esmAPN, ebi, ueIPv4, apnPolicy.QCI, apnPolicy.APNAMBRUp, apnPolicy.APNAMBRDown, pgwPCO)
 
 	var taiList []emm.TAI
 	if tai != nil {
@@ -630,13 +645,8 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		EPSNetworkFeatureSupport: featureSupport,
 	})
 
-	var protected []byte
-	var encErr error
-	if encAlg != security.AlgIDEEA0 {
-		protected, encErr = nas.EncodeIntegrityAndCiphered(attachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
-	} else {
-		protected, encErr = nas.EncodeIntegrityProtected(attachAccept, intAlg, knasInt, dlCount)
-	}
+	// EEA0 is a null cipher, not an integrity-only procedure. It uses header type 2.
+	protected, encErr := nas.EncodeIntegrityAndCiphered(attachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
 	if encErr != nil {
 		log.Error("s1ap: failed to encode Attach Accept", zap.Error(encErr))
 		s.sendDeleteSession(ue)
@@ -646,7 +656,12 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	ue.DLNASCount.Increment()
 	ue.Unlock()
 
+	t3412ConfiguredSeconds := s.nasCfg.Timers.T3412
+	if t3412ConfiguredSeconds <= 0 {
+		t3412ConfiguredSeconds = nastimer.DefaultT3412
+	}
 	log.Debug("s1ap: Attach Accept NAS constructed",
+		zap.String("nas_message", "AttachAccept"),
 		zap.Uint32("mme_ue_id", mmeID),
 		zap.Uint8("ebi", ebi),
 		zap.Uint8("attach_result", attachResult),
@@ -655,16 +670,23 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		zap.Bool("ims_voice_over_ps_configured", s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS),
 		zap.Bool("ims_voice_over_ps_advertised", featureSupport != nil && featureSupport.IMSVoiceOverPSSessionInS1Mode),
 		zap.String("eps_network_feature_support_hex", hex.EncodeToString(encodeFeatureSupportForLog(featureSupport))),
-		zap.Uint8("int_alg", intAlg),
-		zap.Uint8("enc_alg", encAlg),
+		zap.String("integrity_algorithm", nasIntegrityAlgorithmName(intAlg)),
+		zap.String("ciphering_algorithm", nasCipheringAlgorithmName(encAlg)),
+		zap.Bool("eea0_null_cipher", encAlg == security.AlgIDEEA0),
 		zap.Uint32("dl_nas_count", dlCount),
 		zap.Uint8("nas_sequence_number", protected[5]),
 		zap.Uint8("security_header_type", protected[0]>>4),
+		zap.String("security_header_name", nasSecurityHeaderName(protected[0]>>4)),
 		zap.Uint8("protocol_discriminator", protected[0]&0x0f),
 		zap.String("esm_apn", esmAPN),
 		zap.Int("esm_container_len", len(esmAccept)),
 		zap.Int("attach_accept_len", len(attachAccept)),
-		zap.Int("protected_nas_pdu_len", len(protected)))
+		zap.Int("protected_nas_pdu_len", len(protected)),
+		zap.String("plain_nas_hex", hex.EncodeToString(attachAccept)),
+		zap.String("protected_nas_hex", hex.EncodeToString(protected)),
+		zap.Int("t3412_configured_seconds", t3412ConfiguredSeconds),
+		zap.String("t3412_encoded_octet", fmt.Sprintf("0x%02x", t3412)),
+		zap.Int("t3412_effective_seconds", nastimer.DecodeGPRSTimer(t3412)))
 
 	bearer := &BearerInfo{
 		EBI:       ebi,
@@ -693,6 +715,31 @@ func (s *Server) HandleMBRResult(mmeUEID uint32, correlationID string, resp *gtp
 		for _, pdn := range ue.PDNs {
 			if pdn.State != "modify-bearer-pending" {
 				continue
+			}
+			if err == nil && resp != nil && !gtpv2.IsAcceptedCause(resp.Cause) {
+				canRetry := resp.Cause == gtpv2.CauseRequestRejected &&
+					pdn.NASAccepted && pdn.ERABEstablished &&
+					pdn.ModifyBearerRetryAttempts < 2 &&
+					!hasPendingCreateBearerForLinkedEBILocked(ue, pdn.DefaultEBI)
+				if canRetry {
+					ebi := pdn.DefaultEBI
+					apn := pdn.APN
+					pdn.ModifyBearerRetryAttempts++
+					pdn.ModifyBearerSent = false
+					pdn.ModifyBearerDeferred = true
+					pdn.State = "access-established"
+					attempt := pdn.ModifyBearerRetryAttempts
+					ue.Unlock()
+					s.log.Warn("s1ap: transient IMS Modify Bearer rejection; scheduling retry",
+						zap.String("apn", apn), zap.Uint8("ebi", ebi), zap.Uint8("cause", resp.Cause), zap.Uint8("attempt", attempt))
+					time.AfterFunc(40*time.Millisecond, func() {
+						if currentUE, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
+							s.maybeAdvanceDefaultBearer(currentUE, ebi, "modify-bearer-cause-94-retry", s.log)
+						}
+					})
+					return
+				}
+				err = fmt.Errorf("S11 Modify Bearer rejected: cause=%d (%s)", resp.Cause, gtpv2.CauseName(resp.Cause))
 			}
 			if err != nil {
 				pdn.ModifyBearerAccepted = false
@@ -1090,7 +1137,21 @@ func (s *Server) apnForNAS(apn string) string {
 	if apn == "" {
 		return apn
 	}
-	return strings.TrimSuffix(apn, ".")
+	apn = strings.TrimSuffix(apn, ".")
+	// A short IMS service selection is encoded as its canonical network APN.
+	// Keep already-qualified APNs intact and derive the PLMN from configuration.
+	if strings.EqualFold(apn, "ims") && s.nfCfg.MCC != "" && s.nfCfg.MNC != "" {
+		mnc := strings.TrimSpace(s.nfCfg.MNC)
+		mcc := strings.TrimSpace(s.nfCfg.MCC)
+		for len(mnc) < 3 {
+			mnc = "0" + mnc
+		}
+		for len(mcc) < 3 {
+			mcc = "0" + mcc
+		}
+		return "ims.mnc" + mnc + ".mcc" + mcc + ".gprs"
+	}
+	return apn
 }
 
 func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, guti *emm.GUTI) {
@@ -1197,6 +1258,7 @@ func cloneSubscriberAPNConfigs(profile *gateway.SubscriberProfile) map[string]ue
 			MIPHomeAgentHost:        cfg.MIPHomeAgentHost,
 			PDNGWAllocationType:     cloneInt32Ptr(cfg.PDNGWAllocationType),
 			PDNType:                 cfg.PDNType,
+			PDNTypePolicy:           cfg.PDNTypePolicy,
 			QCI:                     cfg.QCI,
 			ARPPriority:             cfg.ARPPriority,
 			PreemptionCapability:    cfg.PreemptionCapability,
@@ -1256,6 +1318,7 @@ func validateSubscriberAPNPolicyConfig(cfg *gateway.APNConfiguration) []string {
 	apnCfg := uecontext.SubscriberAPNConfig{
 		ServiceSelection:        cfg.ServiceSelection,
 		PDNType:                 cfg.PDNType,
+		PDNTypePolicy:           cfg.PDNTypePolicy,
 		QCI:                     cfg.QCI,
 		ARPPriority:             cfg.ARPPriority,
 		PreemptionCapability:    cfg.PreemptionCapability,

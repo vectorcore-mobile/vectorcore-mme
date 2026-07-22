@@ -167,7 +167,7 @@ func TestUpdateBearerWaitsForNASAndERABModifyResponse(t *testing.T) {
 	}
 }
 
-func TestUpdateBearerWaitsForNASAcceptWhenERABModifyResponseArrivesFirst(t *testing.T) {
+func TestTFTOnlyUpdateBearerUsesNASAndWaitsForAccept(t *testing.T) {
 	mock := &bearerResponderMock{}
 	srv := newTestServer(mock)
 	const addr = "10.0.0.26:36412"
@@ -197,8 +197,6 @@ func TestUpdateBearerWaitsForNASAcceptWhenERABModifyResponseArrivesFirst(t *test
 		ERABEstablished: true,
 		State:           "active",
 	}
-	mmeID := ue.MMEUES1APID
-	enbID := ue.ENBS1APID
 	ue.Unlock()
 
 	srv.HandleUpdateBearerRequest("10.90.250.59:2123", &gtpv2.UpdateBearerRequest{
@@ -212,15 +210,11 @@ func TestUpdateBearerWaitsForNASAcceptWhenERABModifyResponseArrivesFirst(t *test
 			TFT:       []byte{0x05, 0xa4, 0x20, 0x99},
 		}},
 	})
-	_ = readCapturedPDU(t, ch)
-	_ = readCapturedPDU(t, ch)
-
-	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABModify, aper.CriticalityIgnore, []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
-		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbID)},
-		{ID: pdu.IEERABModifyListBearerModRes, Criticality: aper.CriticalityIgnore, Value: encodeERABModifyResponseListForTest([]uint8{10})},
-	})
-	srv.handleMessage(addr, raw)
+	first := readCapturedPDU(t, ch)
+	if first.ProcedureCode != pdu.ProcDownlinkNASTransport {
+		t.Fatalf("procedure got %d, want DownlinkNASTransport", first.ProcedureCode)
+	}
+	assertNoCapturedPDU(t, ch)
 
 	select {
 	case <-time.After(50 * time.Millisecond):
@@ -267,6 +261,72 @@ func TestUpdateBearerWaitsForNASAcceptWhenERABModifyResponseArrivesFirst(t *test
 	}
 }
 
+func TestAPNAMBROnlyUpdateBearerUsesNASWithoutERABModify(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	const addr = "10.0.0.26b:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "311435000070588"
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMConnected
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.ENBGlobalID = addr
+	ue.ENBS1APID = 63
+	ue.LocalS11TEID = 0x14
+	ue.DedicatedBearers[9] = &uecontext.DedicatedBearerContext{
+		AssignedEBI:     9,
+		LinkedEBI:       6,
+		QCI:             5,
+		ARP:             1,
+		BearerQoS:       []byte{0x44, 0x05},
+		ERABEstablished: true,
+		State:           "active",
+	}
+	ue.Unlock()
+
+	req := &gtpv2.UpdateBearerRequest{
+		TEID:   0x14,
+		SeqNum: 0x247,
+		AMBR:   []byte{0, 0, 0x0f, 0x0a, 0, 0, 0x05, 0xfa},
+		Bearers: []gtpv2.UpdateBearerBearer{{
+			EBI: 9,
+		}},
+	}
+	srv.HandleUpdateBearerRequest("10.90.250.59:2123", req)
+	first := readCapturedPDU(t, ch)
+	if first.ProcedureCode != pdu.ProcDownlinkNASTransport {
+		t.Fatalf("procedure got %d, want DownlinkNASTransport", first.ProcedureCode)
+	}
+	assertNoCapturedPDU(t, ch)
+
+	srv.handleDedicatedBearerNASResponse(ue, &esm.BearerProcedureResponse{
+		MessageType: esm.MsgModifyEPSBearerContextAccept,
+		EPSBearerID: 9,
+	}, srv.log)
+	waitForUpdateResponseCount(t, mock, 1)
+	if got := mock.updateResponseAt(0).Cause; got != gtpv2.CauseRequestAccepted {
+		t.Fatalf("Update Bearer Response cause got %d, want %d", got, gtpv2.CauseRequestAccepted)
+	}
+
+	// Combining the same APN-AMBR update with a TFT-only change remains NAS-only.
+	req.SeqNum = 0x248
+	req.Bearers[0].TFT = []byte{0x05, 0xa4, 0x04, 0x05, 0x06, 0x07}
+	srv.HandleUpdateBearerRequest("10.90.250.59:2123", req)
+	first = readCapturedPDU(t, ch)
+	if first.ProcedureCode != pdu.ProcDownlinkNASTransport {
+		t.Fatalf("combined update procedure got %d, want DownlinkNASTransport", first.ProcedureCode)
+	}
+	assertNoCapturedPDU(t, ch)
+	srv.handleDedicatedBearerNASResponse(ue, &esm.BearerProcedureResponse{
+		MessageType: esm.MsgModifyEPSBearerContextAccept,
+		EPSBearerID: 9,
+	}, srv.log)
+	waitForUpdateResponseCount(t, mock, 2)
+}
+
 func TestHandleUpdateBearerRequestPreservesExistingQoSWhenRequestIsUnderspecified(t *testing.T) {
 	mock := &bearerResponderMock{}
 	srv := newTestServer(mock)
@@ -299,8 +359,6 @@ func TestHandleUpdateBearerRequestPreservesExistingQoSWhenRequestIsUnderspecifie
 		ERABEstablished: true,
 		State:           "active",
 	}
-	mmeID := ue.MMEUES1APID
-	enbID := ue.ENBS1APID
 	ue.Unlock()
 
 	srv.HandleUpdateBearerRequest("10.90.250.59:2123", &gtpv2.UpdateBearerRequest{
@@ -314,7 +372,6 @@ func TestHandleUpdateBearerRequestPreservesExistingQoSWhenRequestIsUnderspecifie
 			TFT:       []byte{0x05, 0xa4, 0x20, 0xaa},
 		}},
 	})
-	_ = readCapturedPDU(t, ch)
 	_ = readCapturedPDU(t, ch)
 
 	ue.Lock()
@@ -352,12 +409,6 @@ func TestHandleUpdateBearerRequestPreservesExistingQoSWhenRequestIsUnderspecifie
 	}
 	ue.Unlock()
 
-	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABModify, aper.CriticalityIgnore, []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
-		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbID)},
-		{ID: pdu.IEERABModifyListBearerModRes, Criticality: aper.CriticalityIgnore, Value: encodeERABModifyResponseListForTest([]uint8{10})},
-	})
-	srv.handleMessage(addr, raw)
 	srv.handleDedicatedBearerNASResponse(ue, &esm.BearerProcedureResponse{
 		MessageType: esm.MsgModifyEPSBearerContextAccept,
 		EPSBearerID: 10,
@@ -428,7 +479,6 @@ func TestHandleUpdateBearerRequestRejectsOverlappingUpdateForSameEBI(t *testing.
 			TFT:       []byte{0x05, 0xa4, 0x20, 0x31},
 		}},
 	})
-	_ = readCapturedPDU(t, ch)
 	_ = readCapturedPDU(t, ch)
 
 	srv.HandleUpdateBearerRequest("10.90.250.59:2123", &gtpv2.UpdateBearerRequest{
@@ -502,8 +552,6 @@ func TestHandleUpdateBearerRequestRejectsOverlapAfterERABModifyBeforeNASAccept(t
 		ERABEstablished: true,
 		State:           "active",
 	}
-	mmeID := ue.MMEUES1APID
-	enbID := ue.ENBS1APID
 	ue.Unlock()
 
 	srv.HandleUpdateBearerRequest("10.90.250.59:2123", &gtpv2.UpdateBearerRequest{
@@ -518,14 +566,6 @@ func TestHandleUpdateBearerRequestRejectsOverlapAfterERABModifyBeforeNASAccept(t
 		}},
 	})
 	_ = readCapturedPDU(t, ch)
-	_ = readCapturedPDU(t, ch)
-
-	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABModify, aper.CriticalityIgnore, []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
-		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbID)},
-		{ID: pdu.IEERABModifyListBearerModRes, Criticality: aper.CriticalityIgnore, Value: encodeERABModifyResponseListForTest([]uint8{9})},
-	})
-	srv.handleMessage(addr, raw)
 
 	ue.Lock()
 	if got := len(ue.PendingBearerTransactions); got != 1 {
@@ -719,8 +759,6 @@ func TestLateDuplicateModifyBearerAcceptIsIgnoredAfterUpdateCompletion(t *testin
 		ERABEstablished: true,
 		State:           "active",
 	}
-	mmeID := ue.MMEUES1APID
-	enbID := ue.ENBS1APID
 	ue.Unlock()
 
 	srv.HandleUpdateBearerRequest("10.90.250.59:2123", &gtpv2.UpdateBearerRequest{
@@ -735,14 +773,6 @@ func TestLateDuplicateModifyBearerAcceptIsIgnoredAfterUpdateCompletion(t *testin
 		}},
 	})
 	_ = readCapturedPDU(t, ch)
-	_ = readCapturedPDU(t, ch)
-
-	raw := pdu.BuildSuccessfulOutcome(pdu.ProcERABModify, aper.CriticalityIgnore, []pdu.ProtocolIE{
-		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeID)},
-		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbID)},
-		{ID: pdu.IEERABModifyListBearerModRes, Criticality: aper.CriticalityIgnore, Value: encodeERABModifyResponseListForTest([]uint8{9})},
-	})
-	srv.handleMessage(addr, raw)
 	srv.handleDedicatedBearerNASResponse(ue, &esm.BearerProcedureResponse{
 		MessageType: esm.MsgModifyEPSBearerContextAccept,
 		EPSBearerID: 9,
@@ -795,4 +825,13 @@ func encodeERABModifyResponseItemForTest(ebi uint8) []byte {
 	w.WriteBit(0)
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(ebi), 0, 15)
 	return w.Bytes()
+}
+
+func assertNoCapturedPDU(t *testing.T, ch <-chan []byte) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal("unexpected additional S1AP PDU")
+	case <-time.After(50 * time.Millisecond):
+	}
 }

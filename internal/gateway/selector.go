@@ -34,12 +34,15 @@ const (
 )
 
 type APNConfiguration struct {
-	ContextIdentifier       uint32
-	ServiceSelection        string
-	MIPHomeAgentAddress     net.IP
-	MIPHomeAgentHost        string
-	PDNGWAllocationType     *int32
-	PDNType                 uint8
+	ContextIdentifier   uint32
+	ServiceSelection    string
+	MIPHomeAgentAddress net.IP
+	MIPHomeAgentHost    string
+	PDNGWAllocationType *int32
+	PDNType             uint8
+	// PDNTypePolicy is the Diameter APN-Configuration PDN-Type enum:
+	// IPv4=0, IPv6=1, IPv4v6=2, IPv4-or-IPv6=3.
+	PDNTypePolicy           uint8
 	QCI                     uint8
 	ARPPriority             uint8
 	PreemptionCapability    bool

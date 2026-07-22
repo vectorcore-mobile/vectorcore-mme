@@ -956,12 +956,6 @@ func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 	}
 	w.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerQCI(b)), 0, 255)
-	if gbrPresent {
-		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateDL)
-		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateUL)
-		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateDL)
-		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateUL)
-	}
 	w.WriteBit(0) // extension marker
 	w.WriteBit(0) // iE-Extensions absent
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(effectiveBearerARP(b)), 0, 15)
@@ -974,6 +968,14 @@ func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 		_ = aper.EncodeConstrainedWholeNumber(w, 1, 0, 1)
 	} else {
 		_ = aper.EncodeConstrainedWholeNumber(w, 0, 0, 1)
+	}
+	if gbrPresent {
+		w.WriteBit(0) // extension marker
+		w.WriteBit(0) // iE-Extensions absent
+		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateDL)
+		encodeBitRateForERABSetup(w, gbrInfo.MaxBitrateUL)
+		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateDL)
+		encodeBitRateForERABSetup(w, gbrInfo.GuaranteedBitrateUL)
 	}
 
 	w.WriteBit(0) // no extension

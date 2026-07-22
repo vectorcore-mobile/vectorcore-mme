@@ -40,6 +40,9 @@ const (
 	ESMCauseRequestRejectedUnspecified uint8 = 0x1F
 	ESMCauseServiceOptionNotSupported  uint8 = 0x21
 	ESMCauseRegularDeactivation        uint8 = 0x24
+	ESMCausePDNTypeIPv4OnlyAllowed     uint8 = 0x32
+	ESMCausePDNTypeIPv6OnlyAllowed     uint8 = 0x33
+	ESMCauseSingleAddressBearerOnly    uint8 = 0x34
 	ESMCauseProtocolError              uint8 = 0x6F
 )
 

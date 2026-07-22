@@ -219,7 +219,7 @@ func (s *Server) handleServiceRequest(
 		realUE.ULNASCount = security.NASCount(reconstructedCount)
 		realUE.SetEMMState(emm.StateServiceRequestInitiated)
 		realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
-		resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+		resumeBearers, resumeErr := s.serviceRequestResumeBearersLocked(realUE)
 		if resumeErr == nil && len(resumeBearers) > 0 {
 			if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
 				realUE.AttachStep = uecontext.AttachStepNone
@@ -287,7 +287,7 @@ func (s *Server) handleServiceRequest(
 	realUE.ULNASCount = security.NASCount(reconstructedCount)
 	realUE.SetEMMState(emm.StateServiceRequestInitiated)
 	realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
-	resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+	resumeBearers, resumeErr := s.serviceRequestResumeBearersLocked(realUE)
 	if resumeErr == nil && len(resumeBearers) > 0 {
 		if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
 			realUE.AttachStep = uecontext.AttachStepNone
@@ -494,7 +494,7 @@ func (s *Server) resumeIdleUEFromInitialUE(
 	realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
 	realMmeUEID := realUE.MMEUES1APID
 	defaultEBI := realUE.DefaultEBI
-	resumeBearers, resumeErr := serviceRequestResumeBearersLocked(realUE)
+	resumeBearers, resumeErr := s.serviceRequestResumeBearersLocked(realUE)
 	if resumeErr == nil && len(resumeBearers) > 0 {
 		if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
 			realUE.AttachStep = uecontext.AttachStepNone
@@ -548,15 +548,13 @@ func (s *Server) resumeIdleUEFromInitialUE(
 	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, sendResumeICS, log)
 }
 
-func serviceRequestResumeBearersLocked(ue *uecontext.Context) ([]BearerInfo, error) {
-	return retainedResumeBearersLocked(ue, false)
+func (s *Server) serviceRequestResumeBearersLocked(ue *uecontext.Context) ([]BearerInfo, error) {
+	return retainedResumeBearersLocked(ue, true)
 }
 
 func retainedResumeBearersLocked(ue *uecontext.Context, includeDedicated bool) ([]BearerInfo, error) {
 	defaultsByEBI := make(map[uint8]BearerInfo, len(ue.PDNs)+1)
 	dedicatedByLinkedEBI := make(map[uint8][]BearerInfo, len(ue.DedicatedBearers))
-	orphanDedicated := make([]BearerInfo, 0, len(ue.DedicatedBearers))
-
 	if includeDedicated {
 		for _, ebi := range sortedDedicatedBearerEBIsLocked(ue) {
 			proc := ue.DedicatedBearers[ebi]
@@ -582,11 +580,10 @@ func retainedResumeBearersLocked(ue *uecontext.Context, includeDedicated bool) (
 				SGWU_TEID:               proc.SGWS1UTEID,
 				SGWU_IP:                 append([]byte(nil), proc.SGWS1UIP.To4()...),
 			}
-			if proc.LinkedEBI != 0 {
-				dedicatedByLinkedEBI[proc.LinkedEBI] = append(dedicatedByLinkedEBI[proc.LinkedEBI], item)
+			if proc.LinkedEBI == 0 {
 				continue
 			}
-			orphanDedicated = append(orphanDedicated, item)
+			dedicatedByLinkedEBI[proc.LinkedEBI] = append(dedicatedByLinkedEBI[proc.LinkedEBI], item)
 		}
 	}
 
@@ -675,17 +672,6 @@ func retainedResumeBearersLocked(ue *uecontext.Context, includeDedicated bool) (
 		delete(defaultsByEBI, legacyDefaultEBI)
 	}
 
-	remainingLinked := make([]uint8, 0, len(dedicatedByLinkedEBI))
-	for linkedEBI := range dedicatedByLinkedEBI {
-		remainingLinked = append(remainingLinked, linkedEBI)
-	}
-	sort.Slice(remainingLinked, func(i, j int) bool { return remainingLinked[i] < remainingLinked[j] })
-	for _, linkedEBI := range remainingLinked {
-		out = appendLinked(out, linkedEBI)
-	}
-
-	sort.Slice(orphanDedicated, func(i, j int) bool { return orphanDedicated[i].EBI < orphanDedicated[j].EBI })
-	out = append(out, orphanDedicated...)
 	return out, nil
 }
 

@@ -886,7 +886,7 @@ func TestEquivalentCreateBearerWhileWaitingResultsUsesLatestSequenceOnTimeout(t 
 	}
 }
 
-func TestMaybeAdvanceDefaultBearerResumesPendingCreateBearerWhenMBRDeferred(t *testing.T) {
+func TestMaybeAdvanceDefaultBearerSerializesEarlyCreateBearerBeforeMBR(t *testing.T) {
 	mock := &bearerResponderMock{}
 	srv := newTestServer(mock)
 	enbAddr := "10.0.0.10:36412"
@@ -916,7 +916,6 @@ func TestMaybeAdvanceDefaultBearerResumesPendingCreateBearerWhenMBRDeferred(t *t
 	ue.Unlock()
 
 	srv.maybeAdvanceDefaultBearer(ue, 6, "test", srv.log)
-
 	waitForPDU(t, ch, "E-RAB Setup Request")
 
 	ue.Lock()
@@ -926,7 +925,7 @@ func TestMaybeAdvanceDefaultBearerResumesPendingCreateBearerWhenMBRDeferred(t *t
 		t.Fatalf("pending transaction missing after resume")
 	}
 	if tx.CreateState == uecontext.CreateBearerWaitingForLink {
-		t.Fatalf("transaction state got %s, want resumed state", tx.CreateState)
+		t.Fatalf("transaction state got %s, want dedicated procedure resumed before Modify Bearer", tx.CreateState)
 	}
 }
 

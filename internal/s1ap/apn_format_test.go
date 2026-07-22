@@ -6,9 +6,9 @@ import (
 	"github.com/vectorcore/mme/internal/config"
 )
 
-func TestAPNForNASPreservesIMSServiceSelection(t *testing.T) {
+func TestAPNForNASCanonicalizesIMSServiceSelection(t *testing.T) {
 	srv := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435"}}
-	if got, want := srv.apnForNAS("ims"), "ims"; got != want {
+	if got, want := srv.apnForNAS("ims"), "ims.mnc435.mcc311.gprs"; got != want {
 		t.Fatalf("apnForNAS() = %q, want %q", got, want)
 	}
 }
@@ -27,9 +27,9 @@ func TestAPNForNASPreservesServiceSelectionAPNs(t *testing.T) {
 	}
 }
 
-func TestAPNForNASPreservesOriginalCase(t *testing.T) {
+func TestAPNForNASCanonicalizesIMSCaseInsensitively(t *testing.T) {
 	srv := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435"}}
-	if got, want := srv.apnForNAS("IMS"), "IMS"; got != want {
+	if got, want := srv.apnForNAS("IMS"), "ims.mnc435.mcc311.gprs"; got != want {
 		t.Fatalf("apnForNAS() = %q, want %q", got, want)
 	}
 }

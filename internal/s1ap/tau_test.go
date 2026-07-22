@@ -373,7 +373,7 @@ func TestBuildTAUAcceptNAS_UsesNASPLMNEncodingForConfiguredTAIList(t *testing.T)
 		t.Fatalf("buildTAUAcceptNAS: %v", err)
 	}
 	plain := pdu
-	if pdu[0]>>4 == emm.SecurityHeaderIntegrityProtected {
+	if pdu[0]>>4 == emm.SecurityHeaderIntegrityProtected || pdu[0]>>4 == emm.SecurityHeaderIntegrityAndCipher {
 		plain = pdu[6:]
 	}
 	accept, err := emm.DecodeTAUAccept(plain)

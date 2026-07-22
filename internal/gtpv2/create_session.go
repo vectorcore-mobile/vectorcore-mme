@@ -84,6 +84,7 @@ type CreateSessionResponse struct {
 	PGWU_TEID      uint32
 	PGWU_IP        net.IP
 	UEIPv4         net.IP
+	PDNType        uint8 // network-selected type from PAA
 	EBI            uint8
 	PCO            []byte
 	APNRestriction uint8
@@ -131,6 +132,9 @@ func DecodeCreateSessionResponse(m *Message) (*CreateSessionResponse, error) {
 	// PAA → UE IPv4
 	paaIE := FindIE(m.IEs, IETypePAA, 0)
 	if paaIE != nil {
+		if len(paaIE.Value) > 0 {
+			resp.PDNType = paaIE.Value[0] & 0x07
+		}
 		resp.UEIPv4, _ = DecodePAA(paaIE)
 	}
 

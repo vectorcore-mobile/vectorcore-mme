@@ -88,3 +88,12 @@ func TestEncodeModifyEPSBearerContextRequestBuildsParsedEPSQoS(t *testing.T) {
 		t.Fatalf("EPS QoS rates got %x, want 8696a5b5", got[6:10])
 	}
 }
+
+func TestEncodeModifyEPSBearerContextRequestWithAPNAMBR(t *testing.T) {
+	got := EncodeModifyEPSBearerContextRequestWithAPNAMBR(9, 0, 5, []byte{0x44, 0x05}, []byte{0xa4, 0x04, 0x05, 0x06, 0x07}, 3_850_000, 1_530_000, nil)
+
+	want := []byte{0x5e, 0x02, 0x8f, 0xb4}
+	if !bytes.Contains(got, want) {
+		t.Fatalf("APN-AMBR IE got %x, want containing %x", got, want)
+	}
+}

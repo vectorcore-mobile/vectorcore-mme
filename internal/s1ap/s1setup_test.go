@@ -458,6 +458,15 @@ func TestEncodeERABItemBodyIncludesGBRQoSWhenBearerQoSPresent(t *testing.T) {
 	if got, want := item.QCI, uint8(2); got != want {
 		t.Fatalf("QCI got %d, want %d", got, want)
 	}
+	if got, want := item.ARPPriority, uint8(4); got != want {
+		t.Fatalf("ARP priority got %d, want %d", got, want)
+	}
+	if !item.PreemptionCapability || !item.PreemptionVulnerability {
+		t.Fatalf("pre-emption flags got capability=%t vulnerability=%t, want true/true", item.PreemptionCapability, item.PreemptionVulnerability)
+	}
+	if item.MaxBitrateDL != 128000 || item.MaxBitrateUL != 128000 || item.GuaranteedBitrateDL != 128000 || item.GuaranteedBitrateUL != 128000 {
+		t.Fatalf("GBR QoS got DL/UL MBR=%d/%d GBR=%d/%d, want all 128000", item.MaxBitrateDL, item.MaxBitrateUL, item.GuaranteedBitrateDL, item.GuaranteedBitrateUL)
+	}
 	if got, want := item.SGWS1UTEID, uint32(0xed2bffcb); got != want {
 		t.Fatalf("SGW TEID got %#x, want %#x", got, want)
 	}
@@ -466,6 +475,48 @@ func TestEncodeERABItemBodyIncludesGBRQoSWhenBearerQoSPresent(t *testing.T) {
 	}
 	if got, want := item.NASPDU, []byte{0x27, 0x62, 0x00, 0xc6}; !bytes.Equal(got, want) {
 		t.Fatalf("NAS PDU got %x, want %x", got, want)
+	}
+}
+
+func TestEncodeERABItemBodyNonGBRWireFields(t *testing.T) {
+	item := decodeResumeICSErabItem(t, encodeERABItemBody(BearerInfo{
+		EBI:                     5,
+		QCI:                     9,
+		ARPPriority:             8,
+		PreemptionCapability:    false,
+		PreemptionVulnerability: false,
+		SGWU_IP:                 []byte{10, 90, 250, 59},
+		SGWU_TEID:               0x92c43f64,
+	}, nil))
+	if item.QCI != 9 || item.ARPPriority != 8 || item.PreemptionCapability || item.PreemptionVulnerability {
+		t.Fatalf("non-GBR QoS got qci=%d arp=%d capability=%t vulnerability=%t", item.QCI, item.ARPPriority, item.PreemptionCapability, item.PreemptionVulnerability)
+	}
+	if item.GBRQosInformationPresent {
+		t.Fatal("non-GBR bearer unexpectedly contains GBR-QoSInformation")
+	}
+	if item.TransportAddressBits != 32 || item.SGWS1UIPv4 != "10.90.250.59" || item.SGWS1UTEID != 0x92c43f64 {
+		t.Fatalf("non-GBR transport got bits=%d ip=%s teid=%#x", item.TransportAddressBits, item.SGWS1UIPv4, item.SGWS1UTEID)
+	}
+}
+
+func TestEncodeERABListGBRItemDoesNotShiftFollowingItems(t *testing.T) {
+	items := decodeResumeICSErabList(t, encodeERABList([]BearerInfo{
+		{EBI: 7, QCI: 2, ARPPriority: 4, PreemptionCapability: true, PreemptionVulnerability: true, BearerQoS: encodeBearerQoSForTest(2, 0x24, 128000, 128000, 128000, 128000), SGWU_IP: []byte{10, 90, 250, 59}, SGWU_TEID: 0xd10d2f61},
+		{EBI: 6, QCI: 5, ARPPriority: 1, SGWU_IP: []byte{10, 90, 250, 59}, SGWU_TEID: 0x47df6280},
+		{EBI: 5, QCI: 9, ARPPriority: 8, SGWU_IP: []byte{10, 90, 250, 59}, SGWU_TEID: 0x92c43f64},
+	}, nil))
+	if len(items) != 3 {
+		t.Fatalf("E-RAB list count got %d, want 3", len(items))
+	}
+	wantEBIs := []uint8{7, 6, 5}
+	wantTEIDs := []uint32{0xd10d2f61, 0x47df6280, 0x92c43f64}
+	for i, item := range items {
+		if item.EBI != wantEBIs[i] || item.TransportAddressBits != 32 || item.SGWS1UIPv4 != "10.90.250.59" || item.SGWS1UTEID != wantTEIDs[i] {
+			t.Fatalf("item %d got ebi=%d bits=%d ip=%s teid=%#x", i, item.EBI, item.TransportAddressBits, item.SGWS1UIPv4, item.SGWS1UTEID)
+		}
+	}
+	if !items[0].GBRQosInformationPresent || items[1].GBRQosInformationPresent || items[2].GBRQosInformationPresent {
+		t.Fatalf("GBR presence got [%t %t %t], want [true false false]", items[0].GBRQosInformationPresent, items[1].GBRQosInformationPresent, items[2].GBRQosInformationPresent)
 	}
 }
 

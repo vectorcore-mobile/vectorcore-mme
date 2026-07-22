@@ -16,7 +16,6 @@ import (
 	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/esm"
-	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -40,6 +39,50 @@ func canonicalizeRequestedAPN(requestedAPN string, ue *uecontext.Context) (canon
 		}
 	}
 	return requestedAPN, uecontext.SubscriberAPNConfig{}, false
+}
+
+// negotiatedPDNTypeCause derives the optional ESM negotiation cause from all
+// inputs to the PDN-type decision. Subscriber and network types use the 3GPP
+// PDN-type values (IPv4=1, IPv6=2, IPv4v6=3); PAA is authoritative for the
+// actual network selection when present.
+func selectedPDNTypeForRequest(policy, configuredType, requested uint8) uint8 {
+	switch policy {
+	case 0:
+		return esm.PDNTypeIPv4
+	case 1:
+		return esm.PDNTypeIPv6
+	case 2:
+		return esm.PDNTypeIPv4v6
+	case 3: // IPv4-or-IPv6: the UE's single-family request selects the family.
+		if requested == esm.PDNTypeIPv4 || requested == esm.PDNTypeIPv6 {
+			return requested
+		}
+		return esm.PDNTypeIPv4
+	default:
+		return configuredType
+	}
+}
+
+func negotiatedPDNTypeCause(requested, subscribedPolicy, networkSelected uint8, paa net.IP) uint8 {
+	granted := networkSelected
+	if granted == 0 && paa.To4() != nil {
+		granted = esm.PDNTypeIPv4
+	}
+	if requested != esm.PDNTypeIPv4v6 || granted == 0 {
+		return 0
+	}
+	switch {
+	case subscribedPolicy == 0 && granted == esm.PDNTypeIPv4:
+		return esm.ESMCausePDNTypeIPv4OnlyAllowed
+	case subscribedPolicy == 1 && granted == esm.PDNTypeIPv6:
+		return esm.ESMCausePDNTypeIPv6OnlyAllowed
+	case subscribedPolicy == 2 && (granted == esm.PDNTypeIPv4 || granted == esm.PDNTypeIPv6):
+		// A dual-stack subscription with a single selected address needs the
+		// explicit single-address-bearer indication.
+		return esm.ESMCauseSingleAddressBearerOnly
+	default:
+		return 0
+	}
 }
 
 func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log *zap.Logger) error {
@@ -301,12 +344,17 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	pdn := &uecontext.PDNContext{
 		APN:                     requestedAPN,
 		ProcedureTransactionID:  req.ProcedureTransactionID,
-		PDNType:                 req.PDNType,
+		PDNType:                 selectedPDNTypeForRequest(apnCfg.PDNTypePolicy, apnCfg.PDNType, req.PDNType),
+		RequestedPDNType:        req.PDNType,
+		SubscribedPDNType:       apnCfg.PDNType,
+		SubscribedPDNTypePolicy: apnCfg.PDNTypePolicy,
 		DefaultEBI:              ebi,
 		QCI:                     apnCfg.QCI,
 		ARPPriority:             apnCfg.ARPPriority,
 		PreemptionCapability:    apnCfg.PreemptionCapability,
 		PreemptionVulnerability: apnCfg.PreemptionVulnerability,
+		APNAMBRDown:             apnCfg.APNAMBRDown,
+		APNAMBRUp:               apnCfg.APNAMBRUp,
 		LocalS11TEID:            localTEID,
 		SGWAddress:              sgwAddr,
 		UEPCO:                   append([]byte(nil), req.PCO...),
@@ -330,7 +378,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		ULITAC:                  ulitac,
 		ULIECI:                  ecgieci,
 		PCO:                     req.PCO,
-		PDNType:                 apnCfg.PDNType,
+		PDNType:                 pdn.PDNType,
 		DefaultEBI:              ebi,
 		BearerQCI:               apnCfg.QCI,
 		BearerPriorityLevel:     apnCfg.ARPPriority,
@@ -617,6 +665,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	pdn.SGWU_TEID = resp.SGWU_TEID
 	pdn.SGWU_IP = append(net.IP(nil), resp.SGWU_IP...)
 	pdn.UEIPv4 = append(net.IP(nil), resp.UEIPv4...)
+	pdn.NetworkPDNType = resp.PDNType
 	pdn.PGWPCO = append([]byte(nil), resp.PCO...)
 	pdn.State = "activating"
 	pdn.SessionCreatedAt = time.Now()
@@ -630,7 +679,12 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	ue.Unlock()
 
 	esmAPN := s.apnForNAS(pdn.APN)
-	activate := esm.EncodePDNConnectivityAcceptWithPCO(pti, esmAPN, pdn.DefaultEBI, pdn.UEIPv4, pdn.PGWPCO)
+	if pdn.QCI == 0 {
+		log.Error("s1ap: refusing default bearer activation without subscribed QCI", zap.String("apn", pdn.APN), zap.Uint8("ebi", pdn.DefaultEBI))
+		return
+	}
+	downgradeCause := negotiatedPDNTypeCause(pdn.RequestedPDNType, pdn.SubscribedPDNTypePolicy, pdn.NetworkPDNType, pdn.UEIPv4)
+	activate := esm.EncodePDNConnectivityAcceptWithQoSAndCause(pti, esmAPN, pdn.DefaultEBI, pdn.UEIPv4, pdn.QCI, pdn.APNAMBRUp, pdn.APNAMBRDown, downgradeCause, pdn.PGWPCO)
 	protected, _, err := s.protectNAS(ue, activate)
 	if err != nil {
 		log.Warn("s1ap: failed to protect IMS Activate Default EPS Bearer Context Request",
@@ -663,9 +717,16 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	ue.Unlock()
 	log.Info("s1ap: IMS Activate Default EPS Bearer Context Request sent",
 		zap.String("apn", pdn.APN),
-		zap.String("esm_apn", esmAPN),
+		zap.String("canonical_apn", esmAPN),
 		zap.Uint8("pti", pti),
 		zap.Uint8("default_ebi", pdn.DefaultEBI),
+		zap.Uint8("nas_qci", pdn.QCI),
+		zap.Uint8("s1ap_qci", pdn.QCI),
+		zap.Uint8("s11_qci", pdn.QCI),
+		zap.Uint8("arp_priority", pdn.ARPPriority),
+		zap.Uint32("apn_ambr_dl", pdn.APNAMBRDown),
+		zap.Uint32("apn_ambr_ul", pdn.APNAMBRUp),
+		zap.String("plain_nas_hex", hex.EncodeToString(activate)),
 		zap.String("paa_ipv4", pdn.UEIPv4.String()),
 		zap.Uint32("sgwc_teid", pdn.SGWC_TEID),
 		zap.Uint32("sgwu_teid", pdn.SGWU_TEID),
@@ -733,13 +794,7 @@ func (s *Server) protectNAS(ue *uecontext.Context, plain []byte) ([]byte, uint32
 	dlCount := uint32(ue.DLNASCount)
 	ue.Unlock()
 
-	var protected []byte
-	var err error
-	if encAlg != security.AlgIDEEA0 {
-		protected, err = nas.EncodeIntegrityAndCiphered(plain, intAlg, encAlg, knasInt, knasEnc, dlCount)
-	} else {
-		protected, err = nas.EncodeIntegrityProtected(plain, intAlg, knasInt, dlCount)
-	}
+	protected, err := nas.EncodeIntegrityAndCiphered(plain, intAlg, encAlg, knasInt, knasEnc, dlCount)
 	if err != nil {
 		return nil, dlCount, fmt.Errorf("protect NAS: %w", err)
 	}

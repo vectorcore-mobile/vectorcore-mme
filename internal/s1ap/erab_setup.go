@@ -764,7 +764,6 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 	modifyBearerSent := target.ModifyBearerSent
 	modifyBearerAccepted := target.ModifyBearerAccepted
 	modifyBearerFailed := target.ModifyBearerFailed
-	modifyBearerDeferred := target.ModifyBearerDeferred
 	linkedBearerReady := nasAccepted && erabEstablished && modifyBearerAccepted
 	if linkedBearerReady {
 		target.State = "active"
@@ -802,37 +801,22 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 		s.failPendingCreateBearersForLinkedEBI(ue, ebi, gtpv2.CauseRequestRejected, "modify_bearer_failed")
 		return
 	}
+	// A Create Bearer Request is an outstanding S11 procedure for this PDN.
+	// Complete its access-side transaction first, then send the default-bearer
+	// MBR from advanceLinkedDefaultBearerAfterCreateBearerResponse. This avoids
+	// an SGW transaction collision without making the dedicated bearer depend on
+	// the default MBR response (NAS+E-RAB is sufficient to activate it).
 	if hasPendingCreateBearerForLinkedEBILocked(ue, ebi) {
 		if nasAccepted && erabEstablished && !modifyBearerSent {
+			target.ModifyBearerDeferred = true
 			target.State = "access-established"
 		}
 		ue.Unlock()
 		if nasAccepted && erabEstablished && !modifyBearerSent {
-			log.Debug("s1ap: IMS default bearer access ready, resuming linked Create Bearer before MBR",
-				zap.Uint32("mme_ue_id", ue.MMEUES1APID),
-				zap.String("imsi", ue.IMSI),
-				zap.String("apn", target.APN),
-				zap.Uint8("ebi", ebi),
-				zap.Bool("nas_accepted", nasAccepted),
-				zap.Bool("erab_established", erabEstablished),
-				zap.Bool("modify_bearer_sent", modifyBearerSent),
-				zap.Bool("modify_bearer_accepted", modifyBearerAccepted),
-				zap.Bool("modify_bearer_failed", modifyBearerFailed),
-				zap.String("trigger", trigger))
-			s.resumePendingCreateBearersForLinkedEBI(ue, ebi, "linked_access_ready")
-			return
+			log.Info("s1ap: IMS Modify Bearer deferred behind outstanding Create Bearer",
+				zap.Uint8("ebi", ebi), zap.String("trigger", trigger))
+			s.resumePendingCreateBearersForLinkedEBI(ue, ebi, "default_access_ready")
 		}
-		log.Debug("s1ap: IMS default bearer waiting for linked Create Bearer completion before MBR",
-			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
-			zap.String("imsi", ue.IMSI),
-			zap.String("apn", target.APN),
-			zap.Uint8("ebi", ebi),
-			zap.Bool("nas_accepted", nasAccepted),
-			zap.Bool("erab_established", erabEstablished),
-			zap.Bool("modify_bearer_sent", modifyBearerSent),
-			zap.Bool("modify_bearer_accepted", modifyBearerAccepted),
-			zap.Bool("modify_bearer_failed", modifyBearerFailed),
-			zap.String("trigger", trigger))
 		return
 	}
 	if !nasAccepted || !erabEstablished || modifyBearerSent {
@@ -858,37 +842,13 @@ func (s *Server) maybeAdvanceDefaultBearer(ue *uecontext.Context, ebi uint8, tri
 			zap.String("trigger", trigger))
 		return
 	}
-	if modifyBearerDeferred {
-		target.State = "access-established"
-		apn := target.APN
-		imsi := ue.IMSI
-		ue.Unlock()
-		log.Debug("s1ap: IMS default bearer waiting for linked bearer settle before MBR",
-			zap.Uint32("mme_ue_id", ue.MMEUES1APID),
-			zap.String("imsi", imsi),
-			zap.String("apn", apn),
-			zap.Uint8("ebi", ebi),
-			zap.String("trigger", trigger))
-		return
-	}
-
-	target.ModifyBearerDeferred = true
+	// Dedicated Create Bearer requests can arrive before this default bearer is
+	// complete. Keep them queued until Modify Bearer succeeds; never make the
+	// default bearer wait for their completion.
+	target.ModifyBearerDeferred = false
 	target.State = "access-established"
-	mmeUEID := ue.MMEUES1APID
-	apn := target.APN
-	imsi := ue.IMSI
-	ue.StopTimer(imsModifyBearerSettleTimerName(ebi))
-	ue.StartTimer(imsModifyBearerSettleTimerName(ebi), imsModifyBearerSettleDelay, func() {
-		s.onIMSModifyBearerSettleTimeout(mmeUEID, ebi)
-	})
 	ue.Unlock()
-
-	log.Debug("s1ap: IMS default bearer ready; deferring standalone MBR until linked bearer activity settles",
-		zap.String("imsi", imsi),
-		zap.Uint32("mme_ue_id", mmeUEID),
-		zap.String("apn", apn),
-		zap.Uint8("ebi", ebi),
-		zap.String("trigger", trigger))
+	s.sendIMSModifyBearerNow(ue, ebi, trigger, log)
 }
 
 func (s *Server) startIMSModifyBearerTimer(ue *uecontext.Context, ebi uint8) {

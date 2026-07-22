@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"encoding/hex"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -867,6 +868,14 @@ func TestHandlePendingPDNCSRResult_UsesPDNQoSForERABSetup(t *testing.T) {
 	if got, want := item.QCI, uint8(8); got != want {
 		t.Fatalf("QCI got %d, want %d", got, want)
 	}
+	if !item.NASPDUPresent || len(item.NASPDU) < 11 {
+		t.Fatalf("missing NAS PDU in E-RAB item: %+v", item)
+	}
+	// EEA0 test keys leave the protected payload visible after the six-octet
+	// NAS security header. EPS QoS is the first IE in the ESM container.
+	if got, want := item.NASPDU[10], uint8(8); got != want {
+		t.Fatalf("NAS QCI got %d, want S1AP/S11 QCI %d", got, want)
+	}
 	if got, want := item.ARPPriority, uint8(8); got != want {
 		t.Fatalf("ARP priority got %d, want %d", got, want)
 	}
@@ -912,5 +921,17 @@ func TestProcessESM_PDNConnectivityRequestMatchesAPNCaseInsensitively(t *testing
 	}
 	if got, want := mock.csrCalls[0].APN, "ims"; got != want {
 		t.Fatalf("CSR APN got %q, want %q", got, want)
+	}
+}
+
+func TestNegotiatedPDNTypeCauseUsesSubscribedPolicy(t *testing.T) {
+	if got := negotiatedPDNTypeCause(esm.PDNTypeIPv4v6, 0, esm.PDNTypeIPv4, net.ParseIP("10.0.0.1")); got != esm.ESMCausePDNTypeIPv4OnlyAllowed {
+		t.Fatalf("IPv4-only policy cause got %d, want %d", got, esm.ESMCausePDNTypeIPv4OnlyAllowed)
+	}
+	if got := negotiatedPDNTypeCause(esm.PDNTypeIPv4v6, 2, esm.PDNTypeIPv4, net.ParseIP("10.0.0.1")); got != esm.ESMCauseSingleAddressBearerOnly {
+		t.Fatalf("dual-stack single-address cause got %d, want %d", got, esm.ESMCauseSingleAddressBearerOnly)
+	}
+	if got := negotiatedPDNTypeCause(esm.PDNTypeIPv4, 0, esm.PDNTypeIPv4, net.ParseIP("10.0.0.1")); got != 0 {
+		t.Fatalf("matching IPv4 cause got %d, want none", got)
 	}
 }

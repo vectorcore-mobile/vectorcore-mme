@@ -418,11 +418,11 @@ func TestHandleServiceRequest_ResumeICSCarriesRetainedBearers(t *testing.T) {
 		t.Fatal("resume ICS missing E-RABToBeSetupListCtxtSUReq")
 	}
 	items := decodeResumeICSErabList(t, erabList)
-	if got, want := len(items), 1; got != want {
+	if got, want := len(items), 3; got != want {
 		t.Fatalf("resume ICS item count got %d, want %d", got, want)
 	}
-	gotEBIs := []uint8{items[0].EBI}
-	wantEBIs := []uint8{5}
+	gotEBIs := []uint8{items[0].EBI, items[1].EBI, items[2].EBI}
+	wantEBIs := []uint8{5, 9, 10}
 	for i := range wantEBIs {
 		if gotEBIs[i] != wantEBIs[i] {
 			t.Fatalf("resume ICS EBI[%d] got %d, want %d", i, gotEBIs[i], wantEBIs[i])
@@ -557,13 +557,36 @@ func TestHandleServiceRequest_ResumeICSOrdersDefaultBearersWithLegacyLast(t *tes
 	for _, item := range items {
 		gotEBIs = append(gotEBIs, item.EBI)
 	}
-	wantEBIs := []uint8{6, 9, 5}
+	wantEBIs := []uint8{6, 7, 8, 9, 5}
 	if !reflect.DeepEqual(gotEBIs, wantEBIs) {
 		t.Fatalf("resume ICS EBIs got %v, want %v", gotEBIs, wantEBIs)
 	}
 	for _, item := range items {
 		if item.NASPDUPresent {
 			t.Fatalf("resume ICS item %d unexpectedly carried NAS-PDU", item.EBI)
+		}
+		want := map[uint8]struct {
+			qci  uint8
+			arp  uint8
+			ip   string
+			teid uint32
+		}{
+			6: {qci: 5, arp: 1, ip: "10.1.0.6", teid: 0x60000006},
+			7: {qci: 2, arp: 4, ip: "10.2.0.7", teid: 0x70000007},
+			8: {qci: 1, arp: 2, ip: "10.2.0.8", teid: 0x80000008},
+			9: {qci: 8, arp: 8, ip: "10.1.0.9", teid: 0x90000009},
+			5: {qci: 9, arp: 8, ip: "10.99.0.1", teid: 0xAABB1122},
+		}[item.EBI]
+		if item.QCI != want.qci || item.ARPPriority != want.arp || item.SGWS1UIPv4 != want.ip || item.SGWS1UTEID != want.teid {
+			t.Fatalf("resume ICS EBI %d got qci=%d arp=%d ip=%s teid=%#x", item.EBI, item.QCI, item.ARPPriority, item.SGWS1UIPv4, item.SGWS1UTEID)
+		}
+		if item.EBI == 7 || item.EBI == 8 {
+			if !item.GBRQosInformationPresent {
+				t.Fatalf("resume ICS dedicated EBI %d missing GBR QoS", item.EBI)
+			}
+			if item.MaxBitrateUL != 128000 || item.MaxBitrateDL != 128000 || item.GuaranteedBitrateUL != 128000 || item.GuaranteedBitrateDL != 128000 {
+				t.Fatalf("resume ICS EBI %d GBR got DL/UL MBR=%d/%d GBR=%d/%d, want all 128000", item.EBI, item.MaxBitrateDL, item.MaxBitrateUL, item.GuaranteedBitrateDL, item.GuaranteedBitrateUL)
+			}
 		}
 	}
 }
@@ -655,7 +678,7 @@ func TestHandleServiceRequest_ResumeICSExcludesDedicatedBearers(t *testing.T) {
 			t.Fatalf("resume ICS item %d unexpectedly carried NAS-PDU", item.EBI)
 		}
 	}
-	wantEBIs := []uint8{6, 10, 5}
+	wantEBIs := []uint8{6, 7, 8, 10, 5}
 	if !reflect.DeepEqual(gotEBIs, wantEBIs) {
 		t.Fatalf("resume ICS EBIs got %v, want %v", gotEBIs, wantEBIs)
 	}
@@ -867,11 +890,11 @@ func TestHandleServiceRequest_ResumeICSSkipsDedicatedBearerPendingDelete(t *test
 		t.Fatal("resume ICS missing E-RABToBeSetupListCtxtSUReq")
 	}
 	bearers := decodeResumeICSErabList(t, erabList)
-	if got, want := len(bearers), 2; got != want {
+	if got, want := len(bearers), 3; got != want {
 		t.Fatalf("E-RAB item count got %d, want %d", got, want)
 	}
-	gotEBIs := []uint8{bearers[0].EBI, bearers[1].EBI}
-	wantEBIs := []uint8{6, 5}
+	gotEBIs := []uint8{bearers[0].EBI, bearers[1].EBI, bearers[2].EBI}
+	wantEBIs := []uint8{6, 9, 5}
 	if !reflect.DeepEqual(gotEBIs, wantEBIs) {
 		t.Fatalf("resumed EBIs got %v, want %v", gotEBIs, wantEBIs)
 	}
@@ -945,13 +968,6 @@ func decodeResumeICSErabItem(t *testing.T, data []byte) normalizedERABSetupItem 
 		t.Fatalf("decode resume ICS QCI: %v", err)
 	}
 	item.QCI = uint8(qci)
-	if item.GBRQosInformationPresent {
-		for i := 0; i < 4; i++ {
-			if _, err := aper.DecodeConstrainedWholeNumber(r, 0, 10000000000); err != nil {
-				t.Fatalf("decode resume ICS GBR bitrate %d: %v", i, err)
-			}
-		}
-	}
 	if ext, err := r.ReadBit(); err != nil || ext != 0 {
 		t.Fatalf("decode resume ICS ARP extension got %d err=%v, want 0 nil", ext, err)
 	}
@@ -973,6 +989,24 @@ func decodeResumeICSErabItem(t *testing.T, data []byte) normalizedERABSetupItem 
 	}
 	item.PreemptionCapability = pc == 1
 	item.PreemptionVulnerability = pv == 1
+	if item.GBRQosInformationPresent {
+		if ext, err := r.ReadBit(); err != nil || ext != 0 {
+			t.Fatalf("decode resume ICS GBR extension got %d err=%v, want 0 nil", ext, err)
+		}
+		if ieExt, err := r.ReadBit(); err != nil || ieExt != 0 {
+			t.Fatalf("decode resume ICS GBR IE extensions got %d err=%v, want 0 nil", ieExt, err)
+		}
+		var values [4]uint64
+		for i := range values {
+			value, err := aper.DecodeConstrainedWholeNumber(r, 0, 10000000000)
+			if err != nil {
+				t.Fatalf("decode resume ICS GBR bitrate %d: %v", i, err)
+			}
+			values[i] = uint64(value)
+		}
+		item.MaxBitrateDL, item.MaxBitrateUL = values[0], values[1]
+		item.GuaranteedBitrateDL, item.GuaranteedBitrateUL = values[2], values[3]
+	}
 	addrExt, err := r.ReadBit()
 	if err != nil {
 		t.Fatalf("decode resume ICS transportLayerAddress extension: %v", err)

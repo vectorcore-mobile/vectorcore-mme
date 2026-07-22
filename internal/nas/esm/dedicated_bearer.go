@@ -61,6 +61,12 @@ func EncodeActivateDedicatedEPSBearerContextRequest(assignedEBI, linkedEBI, pti 
 }
 
 func EncodeModifyEPSBearerContextRequest(ebi, pti, qci uint8, qos []byte, tft []byte, pco []byte) []byte {
+	return EncodeModifyEPSBearerContextRequestWithAPNAMBR(ebi, pti, qci, qos, tft, 0, 0, pco)
+}
+
+// EncodeModifyEPSBearerContextRequestWithAPNAMBR encodes a network-initiated
+// Modify EPS Bearer Context Request, including APN-AMBR when supplied in bits/s.
+func EncodeModifyEPSBearerContextRequestWithAPNAMBR(ebi, pti, qci uint8, qos []byte, tft []byte, apnAMBRUpBps, apnAMBRDownBps uint32, pco []byte) []byte {
 	buf := []byte{(ebi << 4) | PDEPSSessionMgmt, pti, MsgModifyEPSBearerContextRequest}
 	if epsQOS := encodeDedicatedBearerEPSQoS(qos, qci); len(epsQOS) > 0 {
 		buf = append(buf, 0x5b)
@@ -72,6 +78,10 @@ func EncodeModifyEPSBearerContextRequest(ebi, pti, qci uint8, qos []byte, tft []
 		}
 		buf = append(buf, 0x36, byte(len(tft)))
 		buf = append(buf, tft...)
+	}
+	if ambr, ok := encodeAPNAMBR(apnAMBRDownBps, apnAMBRUpBps); ok {
+		buf = append(buf, 0x5e, byte(len(ambr)))
+		buf = append(buf, ambr...)
 	}
 	if len(pco) > 0 {
 		if len(pco) > 255 {

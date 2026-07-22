@@ -298,13 +298,32 @@ func EncodePDNDisconnectReject(pti uint8, cause uint8) []byte {
 // Mandatory IEs: EPS QoS, Access Point Name, PDN Address.
 // ebi is placed in the upper nibble of byte 0 (bearer ID field).
 func EncodePDNConnectivityAccept(pti uint8, apn string, ebi uint8, ueIPv4 net.IP) []byte {
-	return EncodePDNConnectivityAcceptWithPCO(pti, apn, ebi, ueIPv4, nil)
+	return EncodePDNConnectivityAcceptWithQoS(pti, apn, ebi, ueIPv4, 9, 0, 0, nil)
 }
 
 // EncodePDNConnectivityAcceptWithPCO encodes an ESM Activate Default EPS Bearer
 // Context Request and includes the optional Protocol Configuration Options IE
 // when the P-GW returned PCO in the Create Session Response.
 func EncodePDNConnectivityAcceptWithPCO(pti uint8, apn string, ebi uint8, ueIPv4 net.IP, pco []byte) []byte {
+	return EncodePDNConnectivityAcceptWithQoS(pti, apn, ebi, ueIPv4, 9, 0, 0, pco)
+}
+
+// EncodePDNConnectivityAcceptWithQoS encodes an Activate Default EPS Bearer
+// Context Request from the selected bearer/APN policy.  qci must be the same
+// QCI used on S11 and S1AP; callers must not substitute a generic internet
+// default for an IMS bearer.
+func EncodePDNConnectivityAcceptWithQoS(pti uint8, apn string, ebi uint8, ueIPv4 net.IP, qci uint8, apnAMBRUpBps uint32, apnAMBRDownBps uint32, pco []byte) []byte {
+	return encodePDNConnectivityAccept(pti, apn, ebi, ueIPv4, qci, apnAMBRUpBps, apnAMBRDownBps, 0, pco)
+}
+
+func EncodePDNConnectivityAcceptWithQoSAndCause(pti uint8, apn string, ebi uint8, ueIPv4 net.IP, qci uint8, apnAMBRUpBps uint32, apnAMBRDownBps uint32, esmCause uint8, pco []byte) []byte {
+	return encodePDNConnectivityAccept(pti, apn, ebi, ueIPv4, qci, apnAMBRUpBps, apnAMBRDownBps, esmCause, pco)
+}
+
+func encodePDNConnectivityAccept(pti uint8, apn string, ebi uint8, ueIPv4 net.IP, qci uint8, apnAMBRUpBps uint32, apnAMBRDownBps uint32, esmCause uint8, pco []byte) []byte {
+	if qci == 0 {
+		qci = 9
+	}
 	buf := []byte{
 		(ebi << 4) | PDEPSSessionMgmt, // bearer ID | PD
 		pti,
@@ -312,8 +331,8 @@ func EncodePDNConnectivityAcceptWithPCO(pti uint8, apn string, ebi uint8, ueIPv4
 	}
 
 	// EPS QoS (IEI not needed — mandatory first IE after header)
-	// Length=1, QCI=9
-	buf = append(buf, 0x01, 0x09)
+	// Length=1, QCI from the selected default bearer QoS.
+	buf = append(buf, 0x01, qci)
 
 	// Access Point Name (IEI 0x28 in 24.301 table — but for mandatory IE it's type 4, no IEI)
 	// For Activate Default EPS Bearer Context Request, APN is a mandatory type-4 IE (no IEI):
@@ -331,6 +350,16 @@ func EncodePDNConnectivityAcceptWithPCO(pti uint8, apn string, ebi uint8, ueIPv4
 	buf = append(buf, PDNTypeIPv4) // PDN type = IPv4
 	buf = append(buf, v4[0], v4[1], v4[2], v4[3])
 
+	// APN-AMBR is an optional TLV (TS 24.301 §9.9.4.4). Subscriber values are
+	// in bps; the NAS rate octets use the TS 24.008 quantized mapping.
+	if ambr, ok := encodeAPNAMBR(apnAMBRDownBps, apnAMBRUpBps); ok {
+		buf = append(buf, 0x5e, byte(len(ambr)))
+		buf = append(buf, ambr...)
+	}
+	if esmCause != 0 {
+		buf = append(buf, 0x58, esmCause)
+	}
+
 	if len(pco) > 0 {
 		if len(pco) > 255 {
 			pco = pco[:255]
@@ -340,6 +369,44 @@ func EncodePDNConnectivityAcceptWithPCO(pti uint8, apn string, ebi uint8, ueIPv4
 	}
 
 	return buf
+}
+
+func encodeAPNAMBR(downlinkBps, uplinkBps uint32) ([]byte, bool) {
+	dl, dlExt, dlOK := encodeNASBitrate(downlinkBps)
+	ul, ulExt, ulOK := encodeNASBitrate(uplinkBps)
+	if !dlOK || !ulOK {
+		return nil, false
+	}
+	out := []byte{dl, ul}
+	if dlExt != 0 || ulExt != 0 {
+		out = append(out, dlExt, ulExt)
+	}
+	return out, true
+}
+
+// encodeNASBitrate implements TS 24.008 §10.5.6.4. Rates are rounded up so
+// the advertised APN-AMBR never undershoots the subscribed rate.
+func encodeNASBitrate(bps uint32) (basic, extended byte, ok bool) {
+	if bps == 0 {
+		return 0, 0, false
+	}
+	kbps := (uint64(bps) + 999) / 1000
+	switch {
+	case kbps <= 63:
+		return byte(kbps), 0, true
+	case kbps <= 568:
+		return byte(0x40 + (kbps-64+7)/8), 0, true
+	case kbps <= 8640:
+		return byte(0x80 + (kbps-576+63)/64), 0, true
+	case kbps <= 16000:
+		return 0xfe, byte((kbps - 8600 + 99) / 100), true
+	case kbps <= 128000:
+		return 0xfe, byte(0x4a + (kbps-16000+999)/1000), true
+	case kbps <= 256000:
+		return 0xfe, byte(0xba + (kbps-128000+1999)/2000), true
+	default:
+		return 0, 0, false
+	}
 }
 
 // encodeDNSLabels converts APN string "internet.mnc095.mcc204.gprs" to DNS label encoding.

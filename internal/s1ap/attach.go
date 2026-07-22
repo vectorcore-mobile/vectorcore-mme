@@ -1127,13 +1127,7 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 
 	if !dr.SwitchOff {
 		detachAccept := emm.EncodeDetachAccept()
-		var protected []byte
-		var encErr error
-		if encAlg != security.AlgIDEEA0 {
-			protected, encErr = nas.EncodeIntegrityAndCiphered(detachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
-		} else {
-			protected, encErr = nas.EncodeIntegrityProtected(detachAccept, intAlg, knasInt, dlCount)
-		}
+		protected, encErr := nas.EncodeIntegrityAndCiphered(detachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
 		if encErr != nil {
 			return fmt.Errorf("processDetach: encode detach accept: %w", encErr)
 		}
