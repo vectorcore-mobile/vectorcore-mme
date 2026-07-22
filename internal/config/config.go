@@ -185,7 +185,6 @@ type DiameterConfig struct {
 // transport and application-aware routing table.
 type S13Config struct {
 	Enabled         bool          `yaml:"enabled"`
-	Peer            string        `yaml:"peer"`
 	CheckOnAttach   bool          `yaml:"check_on_attach"`
 	CheckOnTAU      bool          `yaml:"check_on_tau"`
 	FailurePolicy   string        `yaml:"failure_policy"`

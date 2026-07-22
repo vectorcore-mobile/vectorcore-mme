@@ -73,7 +73,6 @@ s6a:
 # When enabled, the MME advertises 3GPP S13 (Auth-Application-Id 16777252).
 s13:
   enabled: false
-  # peer: "eir.epc.mnc001.mcc001.3gppnetwork.org" # optional Destination-Host
   check_on_attach: true
   check_on_tau: false
   failure_policy: "allow" # allow (fail-open) or reject (fail-closed)

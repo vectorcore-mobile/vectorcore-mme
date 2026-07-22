@@ -190,7 +190,9 @@ func (h *Handlers) SendEquipmentCheck(imsi, identity string, mmeUEID uint32) err
 	if err != nil {
 		return err
 	}
-	m, err := s13.BuildECR(sessionID, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, selected.OriginRealm, h.s13Cfg.Peer, imsi, identity)
+	// Preserve common routing semantics: direct S13 peers get their learned
+	// Origin-Host as Destination-Host; DRA/relay routes use realm-only routing.
+	m, err := s13.BuildECR(sessionID, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, selected.OriginRealm, selected.DestinationHost, imsi, identity)
 	if err != nil {
 		return err
 	}

@@ -156,12 +156,12 @@ s6a:
 S13 queries an Equipment Identity Register during attach. It is disabled by
 default; disabled S13 sends no ECR and does not advertise application
 `16777252` in CER/CEA. When enabled, the shared Diameter router selects only
-an S13-capable peer (or relay), optionally using `peer` as Destination-Host.
+an S13-capable peer (or relay). Direct S13 peers receive Destination-Host from
+the selected route; DRA relay requests use Destination-Realm only.
 
 ```yaml
 s13:
   enabled: true
-  peer: "eir.epc.mnc435.mcc311.3gppnetwork.org" # optional
   check_on_attach: true
   failure_policy: "allow" # EIR outage: allow or reject
   whitelist_policy: "allow"
