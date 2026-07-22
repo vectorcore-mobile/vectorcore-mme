@@ -1193,6 +1193,7 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateRecovered, "ESTABLISHED")
 	s.ResumePendingNetworkBearerProcedures(ue)
+	s.deliverPendingMTSMS(ue)
 
 	for _, group := range mbrGroups {
 		if group.sgwcTEID == 0 || len(group.bearers) == 0 {

@@ -70,6 +70,7 @@ type Manager struct {
 	mu         sync.RWMutex
 	peers      []*record
 	s13Enabled bool
+	sgdEnabled bool
 }
 
 func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
@@ -83,6 +84,10 @@ func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
 // SetS13Enabled selects whether newly negotiated CER/CEA capabilities include
 // the S13 application. It must be called before Start.
 func (m *Manager) SetS13Enabled(enabled bool) { m.s13Enabled = enabled }
+
+// SetSGdEnabled selects whether newly negotiated CER/CEA capabilities include
+// the SGd application. It must be called before Start.
+func (m *Manager) SetSGdEnabled(enabled bool) { m.sgdEnabled = enabled }
 
 // Start maintains every configured outbound peer and optional listeners.
 // It blocks for the process lifetime, like the previous S6a transport loop.
@@ -142,9 +147,13 @@ func (m *Manager) client(mux *sm.StateMachine) *sm.Client {
 	const vendor3GPP = 10415
 	const appS6a = 16777251
 	const appS13 = 16777252
+	const appSGd = 16777313
 	apps := []*diam.AVP{vendorSpecificAuthApplication(vendor3GPP, appS6a)}
 	if m.s13Enabled {
 		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appS13))
+	}
+	if m.sgdEnabled {
+		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appSGd))
 	}
 	return &sm.Client{Dict: dict.Default, Handler: mux, MaxRetransmits: 3, RetransmitInterval: time.Second, EnableWatchdog: true, WatchdogInterval: 5 * time.Second,
 		SupportedVendorID:           []*diam.AVP{diam.NewAVP(avp.SupportedVendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP))},
@@ -284,14 +293,24 @@ func (m *Manager) setState(p *record, state State) { m.mu.Lock(); p.state = stat
 // immediately while its connection loop recovers it.
 func (m *Manager) ReportTransactionFailure(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	for _, p := range m.peers {
 		if p.config.Name == name {
 			p.failures++
 			p.state = Suspect
+			conn := p.conn
+			// Remove the stale reference before closing it. SelectPeer can no
+			// longer hand a closed SCTP/TCP descriptor to another transaction,
+			// while CloseNotify wakes the connection loop for reconnection.
+			p.conn = nil
+			m.mu.Unlock()
+			if conn != nil {
+				conn.Close()
+			}
+			m.log.Warn("diameter: peer invalidated after transaction write failure", zap.String("peer_name", name))
 			return
 		}
 	}
+	m.mu.Unlock()
 }
 
 // SelectPeer prefers a ready direct application peer, then a ready relay.

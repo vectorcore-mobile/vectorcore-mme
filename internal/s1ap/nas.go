@@ -83,6 +83,48 @@ type S6aClient interface {
 	SendPUR(imsi string) error
 }
 
+// HandleSMSRegistrationPending records that the normal ULR is also carrying
+// an SMS-in-MME registration request. It never changes EPS attach outcome.
+func (s *Server) HandleSMSRegistrationPending(mmeUEID uint32) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return
+	}
+	ue.Lock()
+	ue.SMSRegistrationState = uecontext.SMSRegistrationPending
+	ue.SMSRegistrationCause = ""
+	ue.SMSRegistrationAt = time.Now().UTC()
+	ue.Unlock()
+	s.log.Info("sms: registration requested", zap.Uint32("mme_ue_id", mmeUEID))
+	metrics.SMSRegistrationRequestsTotal.Inc()
+}
+
+// HandleSMSRegistrationResult records the SMS-specific ULA outcome without
+// turning a valid EPS ULA into an attach failure.
+func (s *Server) HandleSMSRegistrationResult(mmeUEID uint32, registered bool, cause string) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return
+	}
+	ue.Lock()
+	if registered {
+		ue.SMSRegistrationState = uecontext.SMSRegistrationRegistered
+		ue.SMSRegistrationCause = ""
+	} else {
+		ue.SMSRegistrationState = uecontext.SMSRegistrationRejected
+		ue.SMSRegistrationCause = cause
+	}
+	ue.SMSRegistrationAt = time.Now().UTC()
+	ue.Unlock()
+	if registered {
+		metrics.SMSRegistrationSuccessTotal.Inc()
+		s.log.Info("sms: registration accepted", zap.Uint32("mme_ue_id", mmeUEID))
+		return
+	}
+	metrics.SMSRegistrationFailuresTotal.WithLabelValues("hss").Inc()
+	s.log.Warn("sms: registration rejected", zap.Uint32("mme_ue_id", mmeUEID), zap.String("cause", cause))
+}
+
 // HandleAIAResult is called by the S6a layer when an AIA (auth vectors) arrives.
 // It stores the challenge and sends a NAS Authentication Request to the UE.
 func (s *Server) HandleAIAResult(mmeUEID uint32, rand, xres, autn, kasme []byte, aiaErr error) {
@@ -1319,7 +1361,7 @@ func digit(b byte) byte {
 var _ = fmt.Sprintf
 
 // sendDownlinkNASTransport sends a plain (not-yet-security-wrapped) NAS PDU via DL NAS Transport.
-func (s *Server) sendDownlinkNASTransport(enbAddr string, mmeUEID, enbUEID uint32, nasPDU []byte) {
+func (s *Server) sendDownlinkNASTransport(enbAddr string, mmeUEID, enbUEID uint32, nasPDU []byte) error {
 	if len(nasPDU) > 0 {
 		secHdr, pd, _ := emm.DecodeSecurityHeader(nasPDU)
 		s.log.Debug("s1ap: sending downlink NAS",
@@ -1336,7 +1378,9 @@ func (s *Server) sendDownlinkNASTransport(enbAddr string, mmeUEID, enbUEID uint3
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		_ = enbAddr
 		_ = enbUEID
+		return err
 	}
+	return nil
 }
 
 // algName converts a numeric algorithm ID to a name for PreferredAlgorithm.

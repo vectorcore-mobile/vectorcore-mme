@@ -6,6 +6,26 @@ import (
 )
 
 var (
+	SMSRegistrationRequestsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "sms", Name: "registration_requests_total",
+		Help: "SMS-in-MME registration requests carried in S6a ULRs.",
+	})
+	SMSRegistrationSuccessTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "sms", Name: "registration_success_total",
+		Help: "SMS-in-MME registrations accepted by the HSS.",
+	})
+	SMSRegistrationFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "sms", Name: "registration_failures_total",
+		Help: "SMS-in-MME registration failures by bounded cause.",
+	}, []string{"cause"})
+	SMSMORequestsTotal         = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "mo_requests_total", Help: "MO SMS transactions by result."}, []string{"result"})
+	SMSMTRequestsTotal         = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "mt_requests_total", Help: "MT SMS transactions by result."}, []string{"result"})
+	SMSMTPagingTotal           = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "mt_paging_total", Help: "MT SMS paging attempts by result."}, []string{"result"})
+	SMSAlertServiceCentreTotal = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "alert_service_centre_total", Help: "Alert Service Centre attempts by result."}, []string{"result"})
+	SMSActiveTransactions      = promauto.NewGauge(prometheus.GaugeOpts{Namespace: "mme", Subsystem: "sms", Name: "active_transactions", Help: "Active UE-facing SMS transactions."})
+	SMSTimerExpirationsTotal   = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "timer_expirations_total", Help: "SMS transaction timer expirations."}, []string{"direction"})
+	SMSDuplicateMessagesTotal  = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "duplicate_messages_total", Help: "Suppressed duplicate SMS messages."}, []string{"direction"})
+
 	// S1AP metrics
 	S1APMessagesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "mme",

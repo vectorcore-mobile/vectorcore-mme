@@ -93,10 +93,58 @@ s13:
   enabled: true
   blacklist_policy: reject
   greylist_policy: reject
-`), 0o600); err != nil { t.Fatal(err) }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := load(t, path)
-	if err != nil { t.Fatal(err) }
-	if !cfg.S13.Enabled || cfg.S13.WhitelistPolicy != "allow" || cfg.S13.BlacklistPolicy != "reject" || cfg.S13.GreylistPolicy != "reject" { t.Fatalf("unexpected S13 config: %+v", cfg.S13) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.S13.Enabled || cfg.S13.WhitelistPolicy != "allow" || cfg.S13.BlacklistPolicy != "reject" || cfg.S13.GreylistPolicy != "reject" {
+		t.Fatalf("unexpected S13 config: %+v", cfg.S13)
+	}
+}
+
+func TestLoadSGdConfigurationAndDisabledValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sgd:
+  enabled: true
+  smsc_address: "+15551230000"
+  mme_number_for_mt_sms: "+15551230001"
+  sgd_sc_address_encoding: ascii_digits
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := load(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SGd.Enabled || !cfg.SGd.SubscribeEPSOnlyAttach || cfg.SGd.SGdSCAddressEncoding != "ascii_digits" {
+		t.Fatalf("unexpected SGd config: %+v", cfg.SGd)
+	}
+	path = filepath.Join(dir, "disabled.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sgd:
+  enabled: false
+  smsc_address: invalid
+  sgd_sc_address_encoding: invalid
+  transaction_timeout: 0s
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := load(t, path); err != nil {
+		t.Fatalf("disabled SGd must not validate inactive settings: %v", err)
+	}
 }
 
 func TestLoadRejectsInvalidS13Policy(t *testing.T) {
@@ -109,8 +157,12 @@ nf:
   mnc: "01"
 s13:
   failure_policy: ignore
-`), 0o600); err != nil { t.Fatal(err) }
-	if _, err := load(t, path); err == nil { t.Fatal("expected invalid S13 policy error") }
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := load(t, path); err == nil {
+		t.Fatal("expected invalid S13 policy error")
+	}
 }
 
 func TestLoadOperatorNameEncodingDefault(t *testing.T) {

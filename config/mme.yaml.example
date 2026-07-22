@@ -83,6 +83,18 @@ s13:
   greylist_policy: "allow"
   timeout: "5s"
 
+# SMS in MME over SGd. Diameter peers/routes remain configured only above;
+# this block only controls capability advertisement and S6a registration.
+# Both numbers are E.164. The MME encodes them as TBCD without TON/NPI.
+sgd:
+  enabled: false
+  subscribe_eps_only_attach: true
+  smsc_address: "+15551230000"
+  # tbcd is TS 29.338 compliant; ascii_digits supports legacy Cisco SMSCs.
+  sgd_sc_address_encoding: "tbcd"
+  transaction_timeout: "30s"
+  mme_number_for_mt_sms: "+15551230001"
+
 s10:
   enabled: false
   bind_address: "0.0.0.0"

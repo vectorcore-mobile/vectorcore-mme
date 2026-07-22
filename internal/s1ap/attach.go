@@ -611,6 +611,9 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	log := s.log.With(zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("msg_type", result.MsgType))
 
 	switch result.MsgType {
+	case emm.MsgUplinkNASTransport:
+		return s.processUplinkSMS(ue, result.Inner)
+
 	case emm.MsgAuthenticationResponse:
 		return s.processAuthResponse(ue, result.Inner, log)
 

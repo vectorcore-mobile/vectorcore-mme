@@ -25,6 +25,13 @@ func (testConn) Context() context.Context              { return context.Backgrou
 func (testConn) SetContext(context.Context)            {}
 func (testConn) Connection() net.Conn                  { return nil }
 
+type closeTrackingConn struct {
+	testConn
+	closed bool
+}
+
+func (c *closeTrackingConn) Close() { c.closed = true }
+
 func readyManager(peers ...config.DiameterPeerConfig) *Manager {
 	m := New(config.DiameterConfig{Peers: peers}, zap.NewNop(), nil)
 	for _, p := range m.peers {
@@ -112,6 +119,20 @@ func TestSelectPeerNoRoute(t *testing.T) {
 	apps(m.peers[0], 99)
 	if _, err := m.SelectPeer(16777251, "r"); err == nil {
 		t.Fatal("expected no peer available error")
+	}
+}
+
+func TestReportTransactionFailureInvalidatesStaleConnection(t *testing.T) {
+	m := readyManager(config.DiameterPeerConfig{Name: "dra-1", Address: "a"})
+	apps(m.peers[0], RelayApplicationID)
+	conn := &closeTrackingConn{}
+	m.peers[0].conn = conn
+	m.ReportTransactionFailure("dra-1")
+	if !conn.closed || m.peers[0].conn != nil || m.peers[0].state != Suspect {
+		t.Fatalf("peer not invalidated: %+v", m.peers[0])
+	}
+	if _, err := m.SelectPeer(16777313, "example.net"); err == nil {
+		t.Fatal("stale connection remained selectable")
 	}
 }
 

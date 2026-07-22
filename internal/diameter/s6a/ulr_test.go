@@ -59,3 +59,34 @@ func TestBuildULROmitsDestinationHostForRelay(t *testing.T) {
 		t.Fatalf("Destination-Realm got %q, want %q", got, "remote.net")
 	}
 }
+
+func TestBuildULRRequestsSMSRegistrationWhenSGdEnabled(t *testing.T) {
+	h := NewHandlers(config.S6aConfig{ULR: config.S6aULRConfig{Flags: 2}}, testDiameterConfig(),
+		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"}, uecontext.NewManager(), nil, zap.NewNop())
+	h.SetSGdConfig(config.SGdConfig{Enabled: true, SubscribeEPSOnlyAttach: true, MMENumberForMTSMS: "+15551230001"})
+	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
+	flags := findAVP(msg, avp.ULRFlags)
+	if flags == nil || uint32(flags.Data.(datatype.Unsigned32)) != 0x82 {
+		t.Fatalf("ULR-Flags = %#v, want SMS-only indication", flags)
+	}
+	if got := findAVP(msg, 1645); got == nil || string(got.Data.(datatype.OctetString)) != string([]byte{0x51, 0x55, 0x21, 0x03, 0x00, 0xf1}) {
+		t.Fatalf("MME-Number-for-MT-SMS = %#v", got)
+	}
+	if got := findAVP(msg, 1648); got == nil || got.Data.(datatype.Enumerated) != 0 {
+		t.Fatalf("SMS-Register-Request = %#v", got)
+	}
+	if findAVP(msg, avp.SupportedFeatures) == nil {
+		t.Fatal("Supported-Features missing")
+	}
+}
+
+func TestBuildULROmitsSMSRegistrationWhenDisabled(t *testing.T) {
+	h := NewHandlers(config.S6aConfig{ULR: config.S6aULRConfig{Flags: 2}}, testDiameterConfig(),
+		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"}, uecontext.NewManager(), nil, zap.NewNop())
+	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
+	for _, code := range []uint32{1645, 1648, avp.SupportedFeatures} {
+		if findAVP(msg, code) != nil {
+			t.Fatalf("unexpected AVP %d", code)
+		}
+	}
+}

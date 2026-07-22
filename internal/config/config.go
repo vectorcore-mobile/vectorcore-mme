@@ -15,6 +15,7 @@ type Config struct {
 	S1AP             S1APConfig             `yaml:"s1ap"`
 	S6a              S6aConfig              `yaml:"s6a"`
 	S13              S13Config              `yaml:"s13"`
+	SGd              SGdConfig              `yaml:"sgd"`
 	S10              S10Config              `yaml:"s10"`
 	S11              S11Config              `yaml:"s11"`
 	Paging           PagingConfig           `yaml:"paging"`
@@ -194,6 +195,20 @@ type S13Config struct {
 	Timeout         time.Duration `yaml:"timeout"`
 }
 
+// SGdConfig enables SMS in MME using the shared Diameter peer framework.  It
+// intentionally has no peer or route settings: direct-peer capability routing
+// and DRA routing are owned by DiameterConfig.
+type SGdConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	SubscribeEPSOnlyAttach bool   `yaml:"subscribe_eps_only_attach"`
+	SMSCAddress            string `yaml:"smsc_address"`
+	// SGdSCAddressEncoding is "tbcd" (3GPP default) or "ascii_digits" for
+	// interoperability with legacy Cisco deployments.
+	SGdSCAddressEncoding string        `yaml:"sgd_sc_address_encoding"`
+	MMENumberForMTSMS    string        `yaml:"mme_number_for_mt_sms"`
+	TransactionTimeout   time.Duration `yaml:"transaction_timeout"`
+}
+
 type DiameterPeerConfig struct {
 	Name      string `yaml:"name"`
 	Address   string `yaml:"address"`
@@ -283,6 +298,11 @@ func Load(path string) (*Config, error) {
 			BlacklistPolicy: "reject",
 			GreylistPolicy:  "allow",
 			Timeout:         5 * time.Second,
+		},
+		SGd: SGdConfig{
+			SubscribeEPSOnlyAttach: true,
+			SGdSCAddressEncoding:   "tbcd",
+			TransactionTimeout:     30 * time.Second,
 		},
 		S10: S10Config{
 			BindAddress: "0.0.0.0",
@@ -393,6 +413,23 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.S13.Timeout <= 0 {
 		return nil, fmt.Errorf("config: s13.timeout must be greater than 0")
+	}
+	if cfg.SGd.Enabled {
+		if _, err := NormalizeE164(cfg.SGd.SMSCAddress); err != nil {
+			return nil, fmt.Errorf("config: sgd.smsc_address: %w", err)
+		}
+		if _, err := NormalizeE164(cfg.SGd.MMENumberForMTSMS); err != nil {
+			return nil, fmt.Errorf("config: sgd.mme_number_for_mt_sms: %w", err)
+		}
+		if cfg.SGd.SGdSCAddressEncoding == "" {
+			cfg.SGd.SGdSCAddressEncoding = "tbcd"
+		}
+		if cfg.SGd.SGdSCAddressEncoding != "tbcd" && cfg.SGd.SGdSCAddressEncoding != "ascii_digits" {
+			return nil, fmt.Errorf("config: sgd.sgd_sc_address_encoding must be tbcd or ascii_digits")
+		}
+		if cfg.SGd.TransactionTimeout <= 0 {
+			return nil, fmt.Errorf("config: sgd.transaction_timeout must be greater than 0")
+		}
 	}
 	if cfg.S6a.AIR.RequestedVectors == 0 {
 		return nil, fmt.Errorf("config: s6a.air.requested_vectors must be greater than 0")

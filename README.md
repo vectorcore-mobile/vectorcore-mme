@@ -9,6 +9,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **NAS** - full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
 - **S6a** - AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
 - **S13 / EIR** - conditional Equipment-Check (ECR/ECA) for IMEI/IMEISV validation during attach
+- **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
 - **EMM Information** - operator name and NITZ timezone push after attach/TAU
@@ -56,6 +57,7 @@ Key fields:
 | `nf.mcc` / `nf.mnc` | Your PLMN |
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
 | `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
+| `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
 | `database.db_type` | Database driver: `postgres` or `sqlite` |
@@ -152,6 +154,83 @@ s6a:
 ```
 
 ### S13 equipment checks
+
+### SMS in MME / SGd registration
+
+SGd is disabled by default. Enabling it advertises Diameter application
+`16777313` in CER/CEA and reuses the existing direct-peer/DRA capability
+selection; it does not add peer, route, Destination-Host, or realm settings.
+Eligible EPS-only Attach and TAU ULRs request SMS-in-MME registration by
+default. An HSS rejection leaves the EPS procedure successful but marks that
+UE unavailable for SMS in MME.
+
+```yaml
+sgd:
+  enabled: true
+  subscribe_eps_only_attach: true
+  smsc_address: "+15551230000"
+  sgd_sc_address_encoding: "ascii_digits" # use "tbcd" for standards default
+  transaction_timeout: "30s"
+  mme_number_for_mt_sms: "+15551230001"
+```
+
+Both values are E.164 presentation numbers. `mme_number_for_mt_sms` is always
+TBCD without TON/NPI, as required by S6a. SC-Address uses
+`sgd_sc_address_encoding`, which defaults to standards-compliant `tbcd`; set
+it to `ascii_digits` when interoperating with deployed Cisco SMSCs. Configure
+the SMSC with the matching `smsc.sgd_sc_address_encoding` value.
+
+`transaction_timeout` bounds waiting for an SGd answer or a UE MT response;
+it defaults to `30s`. SMS payload content is never emitted in normal logs.
+The MME exposes `mme_sms_mo_requests_total`, `mme_sms_mt_requests_total`,
+`mme_sms_mt_paging_total`, `mme_sms_alert_service_centre_total`,
+`mme_sms_active_transactions`, `mme_sms_timer_expirations_total`, and
+`mme_sms_duplicate_messages_total` with bounded result labels. SGd configuration does
+not create Diameter routes: the existing direct-peer/DRA application-capability
+selection remains authoritative.
+
+MO SMS is carried as protected Uplink NAS Transport CP/RP data. The MME
+extracts the TPDU for SGd OFR and rebuilds the RP layer for the UE response.
+MT SMS is accepted as TFR, converted from SGd TPDU into protected Downlink NAS
+Transport CP/RP data for ECM-CONNECTED UEs, and completes TFA only after the
+UE RP acknowledgement. For an ECM-IDLE UE the MME queues the deferred TFR and
+uses the existing S1AP pager. Once Service Request re-establishment succeeds,
+it sends Alert Service Centre to the SMSC; the SMSC retries a fresh TFR rather
+than the MME retaining the original Diameter transaction through paging.
+
+#### SMS-in-MME lab checklist
+
+1. Enable `sgd.enabled`, choose the matching SC-Address encoding on the MME
+   and SMSC, then confirm the DRA observes application `16777313` from the MME.
+2. Attach an EPS-only UE and verify the HSS subscriber record has
+   `mme_registered_for_sms: true`, `sms_register_request: 0`, and the expected
+   MME number.
+3. Send MO SMS from the UE and confirm an OFR/OFA exchange without logging SMS
+   payload content.
+4. Send MT SMS while the UE is ECM-CONNECTED and confirm TFR/TFA is completed
+   only after the UE RP acknowledgement.
+5. Release the UE to ECM-IDLE, send MT SMS, confirm existing S1AP paging and
+   Service Request occur, then confirm the MME sends ALR and the SMSC retries
+   a fresh TFR after re-establishment.
+6. Confirm only a deferred MT transaction triggers ALR; ordinary ECM-CONNECTED
+   Service Requests must not create an alert.
+
+### Interoperability and current limits
+
+The deployed VectorCore SMSC accepts Alert Service Centre on the SGd
+application during deferred MT retry. The adapter isolates that compatibility
+behavior from NAS and shared SMS transaction code; operators should validate
+their SMSC/DRA behavior before enabling it in production. The HSS and SMSC
+source trees are used only as protocol-interoperability references: this MME
+does not import, link, or require either repository at build or runtime.
+See [SMS-in-MME SGd architecture](docs/sms-in-mme-sgd.md) for the layer and
+deferred-MT flow boundaries.
+
+Active CP/RP, pending Diameter, and pending paging SMS transactions are
+in-memory only. They are discarded on MME restart; the normal S6a ULR refresh
+restores per-subscriber eligibility. SGs-AP and SMS over IMS are not included
+in this release. A future SGs-AP adapter reuses the NAS SMS codec and shared
+SMS service rather than duplicating CP/RP state machines.
 
 S13 queries an Equipment Identity Register during attach. It is disabled by
 default; disabled S13 sends no ECR and does not advertise application

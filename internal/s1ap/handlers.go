@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fiorix/go-diameter/v4/diam"
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
@@ -21,6 +22,7 @@ import (
 	"github.com/vectorcore/mme/internal/repository"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	s1sctp "github.com/vectorcore/mme/internal/s1ap/sctp"
+	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -146,6 +148,12 @@ type Server struct {
 	gatewaySel   *gateway.Selector
 	restartEpoch string
 	log          *zap.Logger
+	sms          *smsservice.Service
+	smsTimeout   time.Duration
+	pendingMTSMS sync.Map // IMSI -> *pendingMTSMS
+	pendingMOSMS sync.Map // imsi:cp-ti -> *pendingMOSMS
+	smsMu        sync.Mutex
+	nextMTSMSTI  map[string]uint8
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
@@ -196,6 +204,7 @@ func NewServer(
 		pgwIP:        pgwIP,
 		restartEpoch: fmt.Sprintf("%d", time.Now().UnixNano()),
 		log:          log,
+		nextMTSMSTI:  make(map[string]uint8),
 	}
 }
 
@@ -207,8 +216,38 @@ func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 	s.gatewaySel = selector
 }
 
+func (s *Server) SetSMSService(service *smsservice.Service) { s.sms = service }
+func (s *Server) SetSMSTransactionTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		s.smsTimeout = timeout
+	}
+}
+
 // HandleNetworkDetach is called by the S6a layer (CLR) to trigger cleanup for a HSS-initiated detach.
 func (s *Server) HandleNetworkDetach(ue *uecontext.Context) {
+	if s.sms != nil {
+		ue.Lock()
+		imsi := ue.IMSI
+		ue.Unlock()
+		s.sms.RemovePendingMT(imsi)
+		if value, ok := s.pendingMTSMS.LoadAndDelete(imsi); ok {
+			pending := value.(*pendingMTSMS)
+			select {
+			case pending.result <- mtSMSResult{resultCode: diam.UnableToDeliver}:
+			default:
+			}
+		}
+		prefix := imsi + ":"
+		s.pendingMOSMS.Range(func(key, entry any) bool {
+			if mapKey, ok := key.(string); ok && len(mapKey) >= len(prefix) && mapKey[:len(prefix)] == prefix {
+				if tx, ok := entry.(*pendingMOSMS); ok {
+					ti := tx.ti
+					s.finishMOSMS(imsi, ti, tx)
+				}
+			}
+			return true
+		})
+	}
 	s.sendDeleteSession(ue)
 }
 

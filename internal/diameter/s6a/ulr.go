@@ -10,6 +10,7 @@ import (
 	"github.com/fiorix/go-diameter/v4/diam/dict"
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
 )
@@ -25,6 +26,11 @@ func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 
 	sid := h.newSessionID(imsi)
 	h.pendingULR.Store(sid, mmeUEID)
+	if h.sgdCfg.Enabled && h.sgdCfg.SubscribeEPSOnlyAttach {
+		if receiver, ok := h.nas.(interface{ HandleSMSRegistrationPending(uint32) }); ok {
+			receiver.HandleSMSRegistrationPending(mmeUEID)
+		}
+	}
 
 	m := h.buildULR(sid, imsi, plmn, selected.DestinationHost, destinationRealm)
 
@@ -53,6 +59,26 @@ func (h *Handlers) buildULR(sessionID, imsi string, plmn [3]byte, destHost, dest
 	m.NewAVP(avp.RATType, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Enumerated(ratTypeEUTRAN))
 	m.NewAVP(avp.ULRFlags, avp.Vbit|avp.Mbit, vendor3GPP, datatype.Unsigned32(h.cfg.ULR.Flags))
 	m.NewAVP(avp.VisitedPLMNID, avp.Vbit|avp.Mbit, vendor3GPP, datatype.OctetString(plmn[:]))
+	if h.sgdCfg.Enabled && h.sgdCfg.SubscribeEPSOnlyAttach {
+		// TS 29.272: request SMS registration in the normal ULR, advertise the
+		// SMS-in-MME feature, and carry the MME's E.164 number in TBCD.
+		flags := h.cfg.ULR.Flags | (1 << 7) // SMS-Only-Indication
+		for _, a := range m.AVP {
+			if a.Code == avp.ULRFlags && a.VendorID == vendor3GPP {
+				a.Data = datatype.Unsigned32(flags)
+			}
+		}
+		mmeNumber, err := config.EncodeTBCD(h.sgdCfg.MMENumberForMTSMS)
+		if err == nil {
+			m.NewAVP(1645, avp.Vbit, vendor3GPP, datatype.OctetString(mmeNumber)) // MME-Number-for-MT-SMS
+			m.NewAVP(1648, avp.Vbit, vendor3GPP, datatype.Enumerated(0))          // SMS_REGISTRATION_REQUIRED
+		}
+		m.AddAVP(diam.NewAVP(avp.SupportedFeatures, avp.Vbit, vendor3GPP, &diam.GroupedAVP{AVP: []*diam.AVP{
+			diam.NewAVP(avp.VendorID, avp.Vbit, vendor3GPP, datatype.Unsigned32(vendor3GPP)),
+			diam.NewAVP(avp.FeatureListID, avp.Vbit, vendor3GPP, datatype.Unsigned32(2)),
+			diam.NewAVP(avp.FeatureList, avp.Vbit, vendor3GPP, datatype.Unsigned32(1)),
+		}}))
+	}
 	return m
 }
 
@@ -136,6 +162,16 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		h.nas.HandleULAResultWithSubscriberProfile(mmeUEID, "", nil,
 			fmt.Errorf("s6a: ULA result code %d", errCode))
 		return
+	}
+	if h.sgdCfg.Enabled && h.sgdCfg.SubscribeEPSOnlyAttach {
+		registered := ula.ULAFlags&(1<<1) != 0 // MME-Registered-for-SMS
+		if receiver, ok := h.nas.(interface{ HandleSMSRegistrationResult(uint32, bool, string) }); ok {
+			cause := ""
+			if !registered {
+				cause = "hss-not-registered"
+			}
+			receiver.HandleSMSRegistrationResult(mmeUEID, registered, cause)
+		}
 	}
 
 	// Decode MSISDN (BCD-encoded OctetString)

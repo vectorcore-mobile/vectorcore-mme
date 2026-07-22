@@ -3,6 +3,8 @@
 package s6a
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -17,8 +19,10 @@ import (
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/diameter/peer"
 	"github.com/vectorcore/mme/internal/diameter/s13"
+	"github.com/vectorcore/mme/internal/diameter/sgd"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
+	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -53,9 +57,21 @@ type Handlers struct {
 	pendingAIR sync.Map // sessionID string → uint32 (mmeUEID)
 	pendingULR sync.Map // sessionID string → uint32 (mmeUEID)
 	pendingS13 sync.Map // sessionID string → pendingS13
+	pendingOFR sync.Map // sessionID string → chan sgd.MOAnswer
+	pendingALR sync.Map // sessionID string → chan uint32
+	mtResults  sync.Map // exact inbound TFR identity -> cachedMTResult
 	s13Cfg     config.S13Config
+	sgdCfg     config.SGdConfig
 
 	sessionSeq atomic.Uint64
+}
+
+const mtResultCacheTTL = 2 * time.Minute
+
+type cachedMTResult struct {
+	result    uint32
+	rpui      []byte
+	expiresAt time.Time
 }
 
 type pendingS13 struct {
@@ -110,8 +126,15 @@ func (h *Handlers) SetDetachFn(fn func(ue *uecontext.Context)) {
 // connections. It must be called before Start.
 func (h *Handlers) SetS13Enabled(enabled bool) { h.peers.SetS13Enabled(enabled) }
 
+// SetSGdEnabled controls SGd capability advertisement on the shared Diameter
+// connections. Request handlers are installed by the SMS service when enabled.
+func (h *Handlers) SetSGdEnabled(enabled bool) { h.peers.SetSGdEnabled(enabled) }
+
 // SetS13Config installs the top-level S13 policy before Start.
 func (h *Handlers) SetS13Config(cfg config.S13Config) { h.s13Cfg = cfg }
+
+// SetSGdConfig installs SMS-in-MME settings before Start.
+func (h *Handlers) SetSGdConfig(cfg config.SGdConfig) { h.sgdCfg = cfg }
 
 // S13Enabled reports whether the equipment-check client is enabled for attach.
 func (h *Handlers) S13Enabled() bool { return h.s13Cfg.Enabled && h.s13Cfg.CheckOnAttach }
@@ -158,6 +181,12 @@ func (h *Handlers) buildMux(onCER diam.HandlerFunc) *sm.StateMachine {
 	mux.HandleIdx(
 		diam.CommandIndex{AppID: appIDS6a, Code: diam.PurgeUE, Request: false},
 		diam.HandlerFunc(h.handlePUA))
+	if h.sgdCfg.Enabled {
+		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandMOForwardShortMessage, Request: false}, diam.HandlerFunc(h.handleOFA))
+		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandMTForwardShortMessage, Request: true}, diam.HandlerFunc(h.handleTFR))
+		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandAlertServiceCentre, Request: true}, diam.HandlerFunc(h.handleALR))
+		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandAlertServiceCentre, Request: false}, diam.HandlerFunc(h.handleALA))
+	}
 	if h.s13Cfg.Enabled {
 		mux.HandleIdx(diam.CommandIndex{AppID: s13.ApplicationID, Code: s13.CommandCode, Request: false}, diam.HandlerFunc(h.handleECA))
 	}
@@ -172,6 +201,214 @@ func (h *Handlers) buildMux(onCER diam.HandlerFunc) *sm.StateMachine {
 		}
 	}()
 	return mux
+}
+
+// handleALR acknowledges an unsolicited deployed-peer ALR defensively. Normal
+// MME Alert Service Centre processing originates ALR through
+// SendAlertServiceCentre and waits for ALA; this handler prevents an
+// unexpected peer request from disrupting the shared Diameter connection.
+func (h *Handlers) handleALR(c diam.Conn, m *diam.Message) {
+	ans := m.Answer(diam.Success)
+	ans.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1))
+	ans.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	ans.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
+	if _, err := ans.WriteTo(c); err != nil {
+		h.log.Warn("sgd: ALA write", zap.Error(err))
+	}
+}
+
+func (h *Handlers) handleALA(_ diam.Conn, m *diam.Message) {
+	sid := findSessionID(m)
+	if sid == "" {
+		h.log.Warn("sgd: ALA missing Session-Id")
+		return
+	}
+	code, err := sgd.DecodeALA(m)
+	if err != nil {
+		h.log.Warn("sgd: invalid ALA", zap.Error(err))
+		return
+	}
+	v, ok := h.pendingALR.Load(sid)
+	if !ok {
+		h.log.Warn("sgd: late or duplicate ALA", zap.String("session_id", sid))
+		return
+	}
+	select {
+	case v.(chan uint32) <- code:
+	default:
+	}
+}
+
+func (h *Handlers) handleTFR(c diam.Conn, m *diam.Message) {
+	req, err := sgd.DecodeTFR(m)
+	if err != nil {
+		h.log.Warn("sgd: invalid TFR", zap.Error(err))
+		return
+	}
+	h.log.Info("sgd: MT-FSM request received", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID))
+	cacheKey := mtTFRCacheKey(m, req)
+	result, rpui, duplicate := h.lookupMTResult(cacheKey)
+	if duplicate {
+		h.log.Info("sgd: duplicate MT-FSM request detected",
+			zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID),
+			zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID))
+	} else {
+		result = uint32(diam.UnableToComply)
+		if receiver, ok := h.nas.(interface {
+			HandleSGdMT(*sgd.MTRequest) (uint32, []byte)
+		}); ok {
+			result, rpui = receiver.HandleSGdMT(req)
+		}
+	}
+	ans, err := sgd.BuildTFA(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, result, rpui)
+	if err != nil {
+		h.log.Warn("sgd: build TFA", zap.Error(err))
+		return
+	}
+	h.log.Debug("sgd: MT-FSM answer encoded", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID), zap.Uint32("result_code", result))
+	if _, err := ans.WriteTo(c); err != nil {
+		h.log.Warn("sgd: TFA write failed", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID), zap.Error(err))
+		return
+	}
+	if !duplicate {
+		h.storeMTResult(cacheKey, result, rpui)
+	}
+	h.log.Info("sgd: MT-FSM answer transmitted", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID), zap.Uint32("result_code", result), zap.Bool("duplicate", duplicate))
+}
+
+// mtTFRCacheKey intentionally includes Diameter transaction identity. A new
+// Session-Id is a new SMSC transaction even when its TPDU is byte-identical;
+// only retransmission of the same TFR is suppressed here.
+func mtTFRCacheKey(m *diam.Message, req *sgd.MTRequest) string {
+	payload := sha256.Sum256(req.SMRPUI)
+	return fmt.Sprintf("%s:%08x:%08x:%s:%x", req.SessionID, m.Header.HopByHopID, m.Header.EndToEndID, req.IMSI, payload[:])
+}
+
+func (h *Handlers) lookupMTResult(key string) (uint32, []byte, bool) {
+	v, ok := h.mtResults.Load(key)
+	if !ok {
+		return 0, nil, false
+	}
+	cached := v.(cachedMTResult)
+	if !cached.expiresAt.After(time.Now()) {
+		h.mtResults.Delete(key)
+		return 0, nil, false
+	}
+	return cached.result, append([]byte(nil), cached.rpui...), true
+}
+
+func (h *Handlers) storeMTResult(key string, result uint32, rpui []byte) {
+	h.mtResults.Store(key, cachedMTResult{result: result, rpui: append([]byte(nil), rpui...), expiresAt: time.Now().Add(mtResultCacheTTL)})
+}
+
+// SendMobileOriginatedSMS implements the transport-neutral SMS service's SGd
+// adapter using the existing direct-peer/DRA application selection.
+func (h *Handlers) SendMobileOriginatedSMS(ctx context.Context, req *smsservice.MORequest) (*smsservice.MOResult, error) {
+	if !h.sgdCfg.Enabled {
+		return nil, fmt.Errorf("sgd: disabled")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("sgd: nil MO request")
+	}
+	selected, err := h.peers.SelectPeer(sgd.ApplicationID, h.diameterCfg.OriginRealm)
+	if err != nil {
+		return nil, err
+	}
+	h.log.Info("sgd: peer selected for MO SMS", zap.String("peer", selected.Name), zap.String("destination_host", selected.DestinationHost))
+	sid := h.newSessionID(req.IMSI)
+	m, err := sgd.BuildOFR(sgd.MORequest{SessionID: sid, OriginHost: h.diameterCfg.OriginHost, OriginRealm: h.diameterCfg.OriginRealm, DestinationHost: selected.DestinationHost, DestinationRealm: h.diameterCfg.OriginRealm, IMSI: req.IMSI, MSISDN: req.MSISDN, SCAddress: h.sgdCfg.SMSCAddress, SCAddressEncoding: h.sgdCfg.SGdSCAddressEncoding, SMRPUI: req.SMRPUI})
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan sgd.MOAnswer, 1)
+	h.pendingOFR.Store(sid, ch)
+	defer h.pendingOFR.Delete(sid)
+	if _, err = m.WriteTo(selected.Connection); err != nil {
+		h.reportTransactionFailure(selected)
+		return nil, fmt.Errorf("sgd: OFR write: %w", err)
+	}
+	h.log.Info("sgd: MO-Forward-Short-Message-Request sent", zap.String("session_id", sid), zap.String("peer", selected.Name))
+	h.log.Info("sgd: waiting for MO-Forward-Short-Message-Answer", zap.String("session_id", sid), zap.String("peer", selected.Name))
+	select {
+	case answer := <-ch:
+		h.log.Info("sgd: MO-Forward-Short-Message-Answer received", zap.String("session_id", sid), zap.Uint32("diameter_result_code", answer.ResultCode))
+		if answer.ResultCode < 2000 || answer.ResultCode >= 3000 {
+			return nil, fmt.Errorf("sgd: OFA result %d", answer.ResultCode)
+		}
+		return &smsservice.MOResult{SMRPUI: answer.SMRPUI}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// SendAlertServiceCentre implements the optional core-side alert transport.
+// It reuses the same SGd-capable direct peer or DRA selection as OFR.
+func (h *Handlers) SendAlertServiceCentre(ctx context.Context, req *smsservice.AlertRequest) error {
+	if !h.sgdCfg.Enabled || req == nil || req.IMSI == "" {
+		return fmt.Errorf("sgd: Alert Service Centre unavailable")
+	}
+	selected, err := h.peers.SelectPeer(sgd.ApplicationID, h.diameterCfg.OriginRealm)
+	if err != nil {
+		return fmt.Errorf("sgd: route ALR: %w", err)
+	}
+	sid := h.newSessionID(req.IMSI)
+	m, err := sgd.BuildALR(sgd.AlertRequest{SessionID: sid, OriginHost: h.diameterCfg.OriginHost, OriginRealm: h.diameterCfg.OriginRealm, DestinationHost: selected.DestinationHost, DestinationRealm: h.diameterCfg.OriginRealm, IMSI: req.IMSI, MSISDN: req.MSISDN, SCAddress: h.sgdCfg.SMSCAddress, SCAddressEncoding: h.sgdCfg.SGdSCAddressEncoding})
+	if err != nil {
+		return err
+	}
+	ch := make(chan uint32, 1)
+	h.pendingALR.Store(sid, ch)
+	defer h.pendingALR.Delete(sid)
+	if _, err = m.WriteTo(selected.Connection); err != nil {
+		h.reportTransactionFailure(selected)
+		return fmt.Errorf("sgd: ALR write: %w", err)
+	}
+	select {
+	case code := <-ch:
+		if code < 2000 || code >= 3000 {
+			return fmt.Errorf("sgd: ALA result %d", code)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *Handlers) handleOFA(_ diam.Conn, m *diam.Message) {
+	sid := findSessionID(m)
+	if sid == "" {
+		h.log.Warn("sgd: OFA missing Session-Id")
+		return
+	}
+	answer, err := sgd.DecodeOFA(m)
+	if err != nil {
+		h.log.Warn("sgd: invalid OFA", zap.Error(err))
+		return
+	}
+	v, ok := h.pendingOFR.Load(sid)
+	if !ok {
+		h.log.Warn("sgd: late or duplicate OFA", zap.String("session_id", sid))
+		return
+	}
+	select {
+	case v.(chan sgd.MOAnswer) <- *answer:
+		h.log.Debug("sgd: OFA correlated", zap.String("session_id", sid), zap.Uint32("result_code", answer.ResultCode), zap.Uint32("hop_by_hop_id", m.Header.HopByHopID), zap.Uint32("end_to_end_id", m.Header.EndToEndID))
+	default:
+	}
+}
+
+func findSessionID(m *diam.Message) string {
+	if m == nil {
+		return ""
+	}
+	for _, a := range m.AVP {
+		if a.Code == avp.SessionID && a.VendorID == 0 {
+			if v, ok := a.Data.(datatype.UTF8String); ok {
+				return string(v)
+			}
+		}
+	}
+	return ""
 }
 
 // SendEquipmentCheck sends an asynchronous ECR through the same

@@ -13,6 +13,18 @@ import (
 
 type S1BindingState uint8
 
+// SMSRegistrationState is per UE: enabling SGd at node level does not
+// register every subscriber for SMS in MME.
+type SMSRegistrationState string
+
+const (
+	SMSRegistrationNotRequested SMSRegistrationState = "not-requested"
+	SMSRegistrationPending      SMSRegistrationState = "pending"
+	SMSRegistrationRegistered   SMSRegistrationState = "registered"
+	SMSRegistrationRejected     SMSRegistrationState = "rejected"
+	SMSRegistrationRemoved      SMSRegistrationState = "removed"
+)
+
 const (
 	S1BindingReleased S1BindingState = iota
 	S1BindingActive
@@ -130,6 +142,12 @@ type Context struct {
 	// PendingIdentityType records why an Identity Request was sent. It keeps
 	// an equipment response from ever being mistaken for an IMSI.
 	PendingIdentityType uint8
+
+	// Runtime-only SMS state. Transactions and timers are never restored after
+	// restart; normal S6a registration refresh establishes availability again.
+	SMSRegistrationState SMSRegistrationState
+	SMSRegistrationCause string
+	SMSRegistrationAt    time.Time
 
 	// GUTI
 	GUTI *emm.GUTI
@@ -407,6 +425,7 @@ type PendingERABProcedure struct {
 func NewContext(mmeID uint32) *Context {
 	return &Context{
 		MMEUES1APID:               mmeID,
+		SMSRegistrationState:      SMSRegistrationNotRequested,
 		EMMState:                  emm.StateDeregistered,
 		ECMState:                  emm.ECMIdle,
 		PDNs:                      make(map[string]*PDNContext),

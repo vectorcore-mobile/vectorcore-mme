@@ -30,6 +30,7 @@ import (
 	"github.com/vectorcore/mme/internal/repository"
 	dbstore "github.com/vectorcore/mme/internal/repository/postgres"
 	"github.com/vectorcore/mme/internal/s1ap"
+	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -87,6 +88,8 @@ func main() {
 	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.Diameter, cfg.NF, ueManager, nil, log)
 	s6aHandlers.SetS13Enabled(cfg.S13.Enabled)
 	s6aHandlers.SetS13Config(cfg.S13)
+	s6aHandlers.SetSGdEnabled(cfg.SGd.Enabled)
+	s6aHandlers.SetSGdConfig(cfg.SGd)
 	var s6aClient s1ap.S6aClient = s6aHandlers
 
 	// S11 GTPv2-C client (connects to S-GW)
@@ -123,6 +126,10 @@ func main() {
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
 	s1apSrv.SetGatewaySelector(gatewaySelector)
+	if cfg.SGd.Enabled {
+		s1apSrv.SetSMSService(smsservice.New(s6aHandlers))
+		s1apSrv.SetSMSTransactionTimeout(cfg.SGd.TransactionTimeout)
+	}
 
 	// Wire result callbacks
 	s6aHandlers.SetResultHandler(s1apSrv)
