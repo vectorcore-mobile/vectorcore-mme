@@ -169,6 +169,33 @@ func TestSecurityModeCommandWithExplicitKSI(t *testing.T) {
 	}
 }
 
+func TestSecurityModeCommandIMEISVRequest(t *testing.T) {
+	got := emm.EncodeSecurityModeCommandWithKSIHashAndIMEISVRequest(2, 2, 0, []byte{0xf0, 0x70}, nil, true)
+	if got[len(got)-1] != 0xc1 {
+		t.Fatalf("IMEISV request IE got %x, want c1", got[len(got)-1])
+	}
+}
+
+func TestDecodeSecurityModeCompleteCapturedIMEISV(t *testing.T) {
+	// Captured SMC optional IE: 23 09 03 51 90 03 50 41 19 16 f8.
+	smc, err := emm.DecodeSecurityModeComplete([]byte{0x23, 0x09, 0x03, 0x51, 0x90, 0x03, 0x50, 0x41, 0x19, 0x16, 0xf8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := emm.DecodeEquipmentIdentity(smc.IMEISV)
+	if err != nil || got != "0150930051491618" {
+		t.Fatalf("got %q, err=%v", got, err)
+	}
+}
+
+func TestAttachRejectIMEINotAccepted(t *testing.T) {
+	got := emm.EncodeAttachReject(emm.CauseIMEINotAccepted)
+	want := []byte{0x07, emm.MsgAttachReject, emm.CauseIMEINotAccepted}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
 func TestReplayedUESecurityCapabilityFromUENetworkCapability(t *testing.T) {
 	tests := []struct {
 		name string

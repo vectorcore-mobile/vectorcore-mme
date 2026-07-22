@@ -19,6 +19,12 @@ func EncodeSecurityModeCommandWithHashMME(intAlgID, encAlgID uint8, ueSecCap, ha
 // EncodeSecurityModeCommandWithKSIAndHashMME encodes a NAS Security Mode Command with
 // an explicit native NAS key set identifier and optional HashMME IE.
 func EncodeSecurityModeCommandWithKSIAndHashMME(intAlgID, encAlgID, nasKSI uint8, ueSecCap, hashMME []byte) []byte {
+	return EncodeSecurityModeCommandWithKSIHashAndIMEISVRequest(intAlgID, encAlgID, nasKSI, ueSecCap, hashMME, false)
+}
+
+// EncodeSecurityModeCommandWithKSIHashAndIMEISVRequest optionally appends the
+// IMEISV request TV IE (TS 24.301 §9.9.3.18; type 0xC, requested value 1).
+func EncodeSecurityModeCommandWithKSIHashAndIMEISVRequest(intAlgID, encAlgID, nasKSI uint8, ueSecCap, hashMME []byte, requestIMEISV bool) []byte {
 	b := make([]byte, 0, 32)
 	b = append(b, PDEPSMobilityMgmt|SecurityHeaderPlain<<4)
 	b = append(b, MsgSecurityModeCommand)
@@ -37,6 +43,9 @@ func EncodeSecurityModeCommandWithKSIAndHashMME(intAlgID, encAlgID, nasKSI uint8
 	if len(hashMME) == 8 {
 		b = append(b, 0x4f, 0x08)
 		b = append(b, hashMME...)
+	}
+	if requestIMEISV {
+		b = append(b, 0xc1)
 	}
 
 	return b

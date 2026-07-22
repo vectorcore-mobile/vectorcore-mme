@@ -31,6 +31,7 @@ diameter:
       address: "127.0.0.2:3868"
       transport: "tcp" # tcp is the default
 
+
   # Dual-DRA active/standby: without priority, configuration order is primary/fallback.
   # peers:
   #   - name: "dra-1"
@@ -67,6 +68,21 @@ s6a:
   ulr:
     # Default initial attach behavior: only S6a/S6d-Indicator (bit 2).
     flags: 2
+
+# S13 Equipment Identity Register checks are disabled unless explicitly enabled.
+# When enabled, the MME advertises 3GPP S13 (Auth-Application-Id 16777252).
+s13:
+  enabled: false
+  # peer: "eir.epc.mnc001.mcc001.3gppnetwork.org" # optional Destination-Host
+  check_on_attach: true
+  check_on_tau: false
+  failure_policy: "allow" # allow (fail-open) or reject (fail-closed)
+  # Equipment-Status policy (TS 29.272 §7.3.51). Defaults preserve the
+  # common EIR behavior: allow white/grey equipment and reject blacklisted.
+  whitelist_policy: "allow"
+  blacklist_policy: "reject"
+  greylist_policy: "allow"
+  timeout: "5s"
 
 s10:
   enabled: false

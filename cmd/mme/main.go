@@ -85,6 +85,8 @@ func main() {
 
 	// S6a Diameter client (connects to HSS)
 	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.Diameter, cfg.NF, ueManager, nil, log)
+	s6aHandlers.SetS13Enabled(cfg.S13.Enabled)
+	s6aHandlers.SetS13Config(cfg.S13)
 	var s6aClient s1ap.S6aClient = s6aHandlers
 
 	// S11 GTPv2-C client (connects to S-GW)

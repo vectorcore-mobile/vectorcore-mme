@@ -53,6 +53,16 @@ var (
 		Buckets:   []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5},
 	}, []string{"command"})
 
+	S13ECAsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "s13", Name: "eca_received_total", Help: "Total S13 Equipment-Check-Answers received.",
+	})
+	S13ChecksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "s13", Name: "check_total", Help: "S13 equipment-check outcomes.",
+	}, []string{"result"})
+	S13AttachRejectsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "s13", Name: "attach_reject_total", Help: "S13-driven attach rejections.",
+	}, []string{"reason"})
+
 	// S11 metrics
 	S11MessagesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "mme",

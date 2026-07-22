@@ -509,6 +509,12 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
 			commitULCount = err == nil
 		}
+	case attachStep == uecontext.AttachStepWaitingEquipmentIdentity:
+		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
+		if err == nil {
+			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
+			commitULCount = err == nil
+		}
 	case attachStep == uecontext.AttachStepWaitingAttachCplt:
 		// Attach Complete arrives integrity-protected (and possibly ciphered)
 		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
@@ -797,7 +803,11 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 	replayedUECap := emm.ReplayedUESecurityCapability(ueCap, msCap)
 
 	// Encode Security Mode Command (plain, integrity-protected with new KNASint)
-	smcPlain := emm.EncodeSecurityModeCommandWithKSIAndHashMME(intAlg, encAlg, nasKSI, replayedUECap, nil)
+	requestIMEISV := false
+	if checker, ok := s.s6a.(interface{ S13Enabled() bool }); ok {
+		requestIMEISV = checker.S13Enabled()
+	}
+	smcPlain := emm.EncodeSecurityModeCommandWithKSIHashAndIMEISVRequest(intAlg, encAlg, nasKSI, replayedUECap, nil, requestIMEISV)
 	// SMC is sent integrity-protected with the new keys but NOT ciphered
 	smcProtected, err := nas.EncodeIntegrityProtectedNewEPSSecurityContext(smcPlain, intAlg, knasInt, dlCount)
 	if err != nil {
@@ -859,12 +869,58 @@ func (s *Server) processAuthResponse(ue *uecontext.Context, body []byte, log *za
 
 // processSMCComplete handles a Security Mode Complete from the UE.
 func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap.Logger) error {
-	_, _ = emm.DecodeSecurityModeComplete(body) // parse IMEISV if present (ignore for Phase 1)
+	smc, _ := emm.DecodeSecurityModeComplete(body)
+	if smc != nil && len(smc.IMEISV) > 0 {
+		if identity, err := emm.DecodeEquipmentIdentity(smc.IMEISV); err == nil {
+			ue.Lock()
+			ue.IMEISV = identity
+			ue.Unlock()
+		} else {
+			log.Warn("s1ap: invalid IMEISV in Security Mode Complete", zap.Error(err))
+		}
+	}
 
 	ue.Lock()
 	imsi := ue.IMSI
+	identity := ue.IMEISV
+	if identity == "" {
+		identity = ue.IMEI
+	}
+	mmeUEID := ue.MMEUES1APID
 	ue.AttachStep = uecontext.AttachStepWaitingULA
 	ue.Unlock()
+	if checker, ok := s.s6a.(interface {
+		S13Enabled() bool
+		SendEquipmentCheck(string, string, uint32) error
+	}); ok && checker.S13Enabled() {
+		if identity != "" {
+			ue.Lock()
+			ue.AttachStep = uecontext.AttachStepWaitingS13ECA
+			ue.Unlock()
+			if err := checker.SendEquipmentCheck(imsi, identity, mmeUEID); err == nil {
+				log.Info("s1ap: Security Mode Complete received, waiting for S13 ECA")
+				return nil
+			} else {
+				log.Warn("s1ap: S13 ECR could not be sent", zap.Error(err))
+				return s.handleEquipmentIdentityFailure(ue, log, err.Error())
+			}
+		}
+		// TS 24.301 identity acquisition fallback: a UE is not required to
+		// include IMEISV in Security Mode Complete. Request it under the newly
+		// established NAS security context instead of silently bypassing S13.
+		ue.Lock()
+		ue.AttachStep = uecontext.AttachStepWaitingEquipmentIdentity
+		ue.PendingIdentityType = emm.IdentityTypeIMEISV
+		ue.Unlock()
+		if err := s.sendProtectedNAS(ue, emm.EncodeIdentityRequest(emm.IdentityTypeIMEISV), "S13 IMEISV Identity Request"); err == nil {
+			log.Info("s13: requesting UE equipment identity", zap.Uint32("mme_ue_id", mmeUEID), zap.String("identity_type", "imeisv"))
+			return nil
+		}
+		ue.Lock()
+		ue.AttachStep = uecontext.AttachStepWaitingULA
+		ue.PendingIdentityType = 0
+		ue.Unlock()
+	}
 
 	log.Info("s1ap: Security Mode Complete received, sending ULR")
 	metrics.NASProceduresTotal.WithLabelValues("SecurityMode", "complete").Inc()
@@ -875,10 +931,6 @@ func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap
 	}
 	var plmn3 [3]byte
 	copy(plmn3[:], plmn)
-
-	ue.Lock()
-	mmeUEID := ue.MMEUES1APID
-	ue.Unlock()
 
 	return s.s6a.SendULR(imsi, plmn3, mmeUEID)
 }
@@ -1116,6 +1168,36 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 // processIdentityResponse handles a NAS Identity Response (IMSI).
 func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log *zap.Logger) error {
 	idResp, err := emm.DecodeIdentityResponse(body)
+	ue.Lock()
+	pendingType := ue.PendingIdentityType
+	step := ue.AttachStep
+	ue.Unlock()
+	if step == uecontext.AttachStepWaitingEquipmentIdentity {
+		if err != nil || idResp.IMEI == "" || idResp.IdentityType != pendingType {
+			return s.handleEquipmentIdentityFailure(ue, log, "invalid or mismatched equipment Identity Response")
+		}
+		ue.Lock()
+		if idResp.IdentityType == emm.IdentityTypeIMEISV {
+			ue.IMEISV = idResp.IMEI
+		} else {
+			ue.IMEI = idResp.IMEI
+		}
+		ue.PendingIdentityType = 0
+		imsi, mmeUEID := ue.IMSI, ue.MMEUES1APID
+		ue.AttachStep = uecontext.AttachStepWaitingS13ECA
+		ue.Unlock()
+		checker, ok := s.s6a.(interface {
+			SendEquipmentCheck(string, string, uint32) error
+		})
+		if !ok {
+			return s.handleEquipmentIdentityFailure(ue, log, "S13 client unavailable")
+		}
+		if err := checker.SendEquipmentCheck(imsi, idResp.IMEI, mmeUEID); err != nil {
+			return s.handleEquipmentIdentityFailure(ue, log, err.Error())
+		}
+		log.Info("s13: equipment Identity Response received; ECR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.String("identity_type", "imeisv"))
+		return nil
+	}
 	if err != nil || idResp.IMSI == "" {
 		log.Warn("s1ap: Identity Response: could not extract IMSI", zap.Error(err))
 		ue.Lock()
@@ -1173,6 +1255,29 @@ func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log
 	copy(plmn3[:], plmn)
 
 	return s.s6a.SendAIR(idResp.IMSI, plmn3, mmeUEID)
+}
+
+func (s *Server) handleEquipmentIdentityFailure(ue *uecontext.Context, log *zap.Logger, reason string) error {
+	ue.Lock()
+	mmeUEID, remote, enbID, imsi := ue.MMEUES1APID, ue.ENBGlobalID, ue.ENBS1APID, ue.IMSI
+	ue.PendingIdentityType = 0
+	ue.AttachStep = uecontext.AttachStepWaitingULA
+	ue.Unlock()
+	log.Warn("s13: equipment identity unavailable", zap.String("reason", reason))
+	// The current S13 client exposes fail-open through the absence of an ECA;
+	// a fail-closed deployment rejects here rather than creating a session.
+	if policy, ok := s.s6a.(interface{ S13FailurePolicy() string }); ok && policy.S13FailurePolicy() == "reject" {
+		s.sendDownlinkNASTransport(remote, mmeUEID, enbID, emm.EncodeAttachReject(emm.CauseNetworkFailure))
+		s.ueManager.Remove(ue)
+		return nil
+	}
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	if err != nil {
+		return err
+	}
+	var plmn3 [3]byte
+	copy(plmn3[:], plmn)
+	return s.s6a.SendULR(imsi, plmn3, mmeUEID)
 }
 
 func eia2DetailsFull(d *security.EIA2CMACDetails) []byte {

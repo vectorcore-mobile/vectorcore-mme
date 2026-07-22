@@ -14,6 +14,7 @@ type Config struct {
 	Diameter         DiameterConfig         `yaml:"diameter"`
 	S1AP             S1APConfig             `yaml:"s1ap"`
 	S6a              S6aConfig              `yaml:"s6a"`
+	S13              S13Config              `yaml:"s13"`
 	S10              S10Config              `yaml:"s10"`
 	S11              S11Config              `yaml:"s11"`
 	Paging           PagingConfig           `yaml:"paging"`
@@ -179,6 +180,21 @@ type DiameterConfig struct {
 	Peers         []DiameterPeerConfig `yaml:"peers"`
 }
 
+// S13Config controls the 3GPP S13 Equipment Identity Register application.
+// It deliberately lives under diameter because S13 uses the shared Diameter
+// transport and application-aware routing table.
+type S13Config struct {
+	Enabled         bool          `yaml:"enabled"`
+	Peer            string        `yaml:"peer"`
+	CheckOnAttach   bool          `yaml:"check_on_attach"`
+	CheckOnTAU      bool          `yaml:"check_on_tau"`
+	FailurePolicy   string        `yaml:"failure_policy"`
+	WhitelistPolicy string        `yaml:"whitelist_policy"`
+	BlacklistPolicy string        `yaml:"blacklist_policy"`
+	GreylistPolicy  string        `yaml:"greylist_policy"`
+	Timeout         time.Duration `yaml:"timeout"`
+}
+
 type DiameterPeerConfig struct {
 	Name      string `yaml:"name"`
 	Address   string `yaml:"address"`
@@ -261,8 +277,13 @@ func Load(path string) (*Config, error) {
 				Flags: 0x02,
 			},
 		},
-		Diameter: DiameterConfig{
-			RetryDelay: 5 * time.Second,
+		Diameter: DiameterConfig{RetryDelay: 5 * time.Second},
+		S13: S13Config{
+			FailurePolicy:   "allow",
+			WhitelistPolicy: "allow",
+			BlacklistPolicy: "reject",
+			GreylistPolicy:  "allow",
+			Timeout:         5 * time.Second,
 		},
 		S10: S10Config{
 			BindAddress: "0.0.0.0",
@@ -358,6 +379,21 @@ func Load(path string) (*Config, error) {
 		if peer.Transport != "tcp" && peer.Transport != "sctp" {
 			return nil, fmt.Errorf("config: diameter.peers[%d].transport must be tcp or sctp", i)
 		}
+	}
+	if cfg.S13.FailurePolicy != "allow" && cfg.S13.FailurePolicy != "reject" {
+		return nil, fmt.Errorf("config: s13.failure_policy must be allow or reject")
+	}
+	for name, value := range map[string]string{
+		"whitelist_policy": cfg.S13.WhitelistPolicy,
+		"blacklist_policy": cfg.S13.BlacklistPolicy,
+		"greylist_policy":  cfg.S13.GreylistPolicy,
+	} {
+		if value != "allow" && value != "reject" {
+			return nil, fmt.Errorf("config: s13.%s must be allow or reject", name)
+		}
+	}
+	if cfg.S13.Timeout <= 0 {
+		return nil, fmt.Errorf("config: s13.timeout must be greater than 0")
 	}
 	if cfg.S6a.AIR.RequestedVectors == 0 {
 		return nil, fmt.Errorf("config: s6a.air.requested_vectors must be greater than 0")

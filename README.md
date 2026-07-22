@@ -8,6 +8,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **S1AP** - eNB registration, UE attach/detach, TAU, service request, paging, S1/X2 handover
 - **NAS** - full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
 - **S6a** - AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
+- **S13 / EIR** - conditional Equipment-Check (ECR/ECA) for IMEI/IMEISV validation during attach
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
 - **EMM Information** - operator name and NITZ timezone push after attach/TAU
@@ -149,6 +150,54 @@ s6a:
   ulr:
     flags: 2 # S6a/S6d-Indicator (bit 2), normal LTE attach/update location
 ```
+
+### S13 equipment checks
+
+S13 queries an Equipment Identity Register during attach. It is disabled by
+default; disabled S13 sends no ECR and does not advertise application
+`16777252` in CER/CEA. When enabled, the shared Diameter router selects only
+an S13-capable peer (or relay), optionally using `peer` as Destination-Host.
+
+```yaml
+s13:
+  enabled: true
+  peer: "eir.epc.mnc435.mcc311.3gppnetwork.org" # optional
+  check_on_attach: true
+  failure_policy: "allow" # EIR outage: allow or reject
+  whitelist_policy: "allow"
+  blacklist_policy: "reject"
+  greylist_policy: "allow"
+  timeout: "5s"
+```
+
+IMEI/IMEISV values are validated before an ECR is sent. IMEISV is a 16-digit
+string: its first 14 digits form the IMEI body and its final two are software
+version. S13 sends the resulting 15-digit IMEI, with its Luhn check digit
+calculated from that 14-digit body, and includes the two-digit Software-Version
+AVP. For example, IMEISV `0150930051491618` becomes IMEI
+`015093005149164`. Equipment identities remain strings throughout so leading
+zeros are preserved. The default policy
+allows whitelisted and greylisted equipment and rejects blacklisted equipment
+with NAS cause *IMEI not accepted*. `failure_policy: allow` is fail-open and
+does not mean the EIR approved the device. Normal logs must use masked
+equipment identities. When S13 attach checking is enabled, the Security Mode
+Command requests IMEISV; if a UE omits it in Security Mode Complete, the MME
+sends a protected NAS Identity Request for IMEISV before it sends ECR. Seeing
+application `16777252` only in CER/CEA proves capability advertisement; a
+successful check also has Diameter command `324` (ECR/ECA).
+
+For a blacklist test using normalized IMEI `015093005149164`, expect
+`s13: ECA received` with `equipment_status_name=blacklisted`, followed by
+`s1ap: Attach Reject sent reason=s13-equipment-blacklisted` and EMM cause
+`IMEI not accepted` (cause 5). No subsequent `s6a: ULR sent`, S11 Create
+Session, or Initial Context Setup indicates that attach continuation was
+correctly blocked.
+
+S13 identity log fields are privacy-scoped: INFO and WARN contain only
+`masked_imei="015093******164"`. DEBUG logging adds full
+`imei="015093005149164"` (the normalized 15-digit EIR value) and
+`imeisv="0150930051491618"` (the original 16-digit UE value). They are never
+interchanged.
 
 ### EMM Information Operator Names
 

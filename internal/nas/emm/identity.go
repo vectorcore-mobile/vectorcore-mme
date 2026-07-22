@@ -43,3 +43,17 @@ func DecodeIdentityResponse(data []byte) (*IdentityResponse, error) {
 	}
 	return resp, nil
 }
+
+// DecodeEquipmentIdentity decodes the Mobile Identity value carried in the
+// Security Mode Complete IMEISV IE (without the Identity Response length
+// octet). It accepts only IMEI or IMEISV identities.
+func DecodeEquipmentIdentity(mobileID []byte) (string, error) {
+	if len(mobileID) == 0 {
+		return "", fmt.Errorf("emm: empty equipment identity")
+	}
+	typ := mobileID[0] & 0x07
+	if typ != IdentityTypeIMEI && typ != IdentityTypeIMEISV {
+		return "", fmt.Errorf("emm: mobile identity type %d is not IMEI/IMEISV", typ)
+	}
+	return decodeIMSI(mobileID), nil
+}

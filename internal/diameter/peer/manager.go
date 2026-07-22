@@ -64,11 +64,12 @@ type record struct {
 type Factory func(onCER diam.HandlerFunc) *sm.StateMachine
 
 type Manager struct {
-	cfg     config.DiameterConfig
-	log     *zap.Logger
-	factory Factory
-	mu      sync.RWMutex
-	peers   []*record
+	cfg        config.DiameterConfig
+	log        *zap.Logger
+	factory    Factory
+	mu         sync.RWMutex
+	peers      []*record
+	s13Enabled bool
 }
 
 func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
@@ -78,6 +79,10 @@ func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
 	}
 	return m
 }
+
+// SetS13Enabled selects whether newly negotiated CER/CEA capabilities include
+// the S13 application. It must be called before Start.
+func (m *Manager) SetS13Enabled(enabled bool) { m.s13Enabled = enabled }
 
 // Start maintains every configured outbound peer and optional listeners.
 // It blocks for the process lifetime, like the previous S6a transport loop.
@@ -136,12 +141,22 @@ func (m *Manager) connectLoop(p *record) {
 func (m *Manager) client(mux *sm.StateMachine) *sm.Client {
 	const vendor3GPP = 10415
 	const appS6a = 16777251
-	return &sm.Client{Dict: dict.Default, Handler: mux, MaxRetransmits: 3, RetransmitInterval: time.Second, EnableWatchdog: true, WatchdogInterval: 5 * time.Second,
-		SupportedVendorID: []*diam.AVP{diam.NewAVP(avp.SupportedVendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP))},
-		VendorSpecificApplicationID: []*diam.AVP{diam.NewAVP(avp.VendorSpecificApplicationID, avp.Mbit, 0, &diam.GroupedAVP{AVP: []*diam.AVP{
-			diam.NewAVP(avp.AuthApplicationID, avp.Mbit, 0, datatype.Unsigned32(appS6a)), diam.NewAVP(avp.VendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP)),
-		}})},
+	const appS13 = 16777252
+	apps := []*diam.AVP{vendorSpecificAuthApplication(vendor3GPP, appS6a)}
+	if m.s13Enabled {
+		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appS13))
 	}
+	return &sm.Client{Dict: dict.Default, Handler: mux, MaxRetransmits: 3, RetransmitInterval: time.Second, EnableWatchdog: true, WatchdogInterval: 5 * time.Second,
+		SupportedVendorID:           []*diam.AVP{diam.NewAVP(avp.SupportedVendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP))},
+		VendorSpecificApplicationID: apps,
+	}
+}
+
+func vendorSpecificAuthApplication(vendor, application uint32) *diam.AVP {
+	return diam.NewAVP(avp.VendorSpecificApplicationID, avp.Mbit, 0, &diam.GroupedAVP{AVP: []*diam.AVP{
+		diam.NewAVP(avp.VendorID, avp.Mbit, 0, datatype.Unsigned32(vendor)),
+		diam.NewAVP(avp.AuthApplicationID, avp.Mbit, 0, datatype.Unsigned32(application)),
+	}})
 }
 
 func (m *Manager) dial(cli *sm.Client, p config.DiameterPeerConfig) (diam.Conn, error) {

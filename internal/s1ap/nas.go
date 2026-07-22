@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/diameter/s13"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
@@ -23,6 +24,49 @@ import (
 	nastimer "github.com/vectorcore/mme/internal/nas/timer"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
+
+// HandleS13Result resumes a per-UE attach after the asynchronous EIR check.
+func (s *Server) HandleS13Result(mmeUEID uint32, result s13.Result) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return
+	}
+	ue.Lock()
+	if ue.AttachStep != uecontext.AttachStepWaitingS13ECA {
+		ue.Unlock()
+		return
+	}
+	imsi, remote, enbID := ue.IMSI, ue.ENBGlobalID, ue.ENBS1APID
+	ue.AttachStep = uecontext.AttachStepWaitingULA
+	ue.Unlock()
+	if !result.Allowed {
+		cause := emm.CauseNetworkFailure
+		reason := "s13-check-failed"
+		if result.Verified && result.Status == s13.Blacklisted {
+			// TS 24.301 §9.9.3.9 cause #5 is the explicit equipment rejection.
+			cause = emm.CauseIMEINotAccepted
+			reason = "s13-equipment-blacklisted"
+			s.log.Warn("s13: equipment blacklisted", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("enb_ue_id", enbID), zap.Uint32("equipment_status", uint32(result.Status)), zap.String("masked_imei", s13.MaskIMEI(result.IMEI)))
+			s.log.Debug("s13: blacklist identity", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imei", result.IMEI), zap.String("imeisv", result.IMEISV))
+		}
+		s.log.Info("s1ap: Attach Reject sent", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("enb_ue_id", enbID), zap.Uint8("emm_cause", cause), zap.String("emm_cause_name", emm.CauseName(cause)), zap.String("reason", reason), zap.Uint8("security_header_type", emm.SecurityHeaderPlain))
+		metrics.S13AttachRejectsTotal.WithLabelValues(reason).Inc()
+		s.sendDownlinkNASTransport(remote, mmeUEID, enbID, emm.EncodeAttachReject(cause))
+		s.ueManager.Remove(ue)
+		return
+	}
+	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
+	if err != nil {
+		s.ueManager.Remove(ue)
+		return
+	}
+	var plmn3 [3]byte
+	copy(plmn3[:], plmn)
+	if err := s.s6a.SendULR(imsi, plmn3, mmeUEID); err != nil {
+		s.sendDownlinkNASTransport(remote, mmeUEID, enbID, emm.EncodeAttachReject(emm.CauseNetworkFailure))
+		s.ueManager.Remove(ue)
+	}
+}
 
 // S6aClient is the interface the S1AP layer uses to initiate Diameter requests.
 // Implemented by internal/diameter/s6a.Handlers.

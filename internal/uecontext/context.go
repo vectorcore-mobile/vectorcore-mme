@@ -68,11 +68,11 @@ type RABRSessionResult string
 
 const (
 	RABRSessionPending               RABRSessionResult = "pending"
-	RABRSessionAccepted             RABRSessionResult = "accepted"
-	RABRSessionContextNotFound      RABRSessionResult = "context-not-found"
-	RABRSessionTimedOut             RABRSessionResult = "timed-out"
+	RABRSessionAccepted              RABRSessionResult = "accepted"
+	RABRSessionContextNotFound       RABRSessionResult = "context-not-found"
+	RABRSessionTimedOut              RABRSessionResult = "timed-out"
 	RABRSessionLocalValidationFailed RABRSessionResult = "local-validation-failed"
-	RABRSessionPeerError            RABRSessionResult = "peer-error"
+	RABRSessionPeerError             RABRSessionResult = "peer-error"
 )
 
 type S1ReleaseRABRSession struct {
@@ -124,8 +124,12 @@ type Context struct {
 	S1ReleaseCauseValue uint8
 
 	// Identity
-	IMSI string
-	IMEI string
+	IMSI   string
+	IMEI   string
+	IMEISV string
+	// PendingIdentityType records why an Identity Request was sent. It keeps
+	// an equipment response from ever being mistaken for an IMSI.
+	PendingIdentityType uint8
 
 	// GUTI
 	GUTI *emm.GUTI
@@ -280,37 +284,37 @@ type SubscriberAPNConfig struct {
 }
 
 type PDNContext struct {
-	APN                      string
-	ProcedureTransactionID   uint8
-	DisconnectPTI            uint8
-	PDNType                  uint8
-	DefaultEBI               uint8
-	QCI                      uint8
-	ARPPriority              uint8
-	PreemptionCapability     bool
-	PreemptionVulnerability  bool
-	LocalS11TEID             uint32
-	SGWAddress               string
-	SGWC_TEID                uint32
-	SGWC_IP                  net.IP
-	SGWU_TEID                uint32
-	SGWU_IP                  net.IP
-	ENBU_TEID                uint32
-	ENBU_IP                  net.IP
-	UEIPv4                   net.IP
-	UEPCO                    []byte
-	PGWPCO                   []byte
-	NASAccepted              bool
-	ERABEstablished          bool
-	ModifyBearerSent         bool
-	ModifyBearerAccepted     bool
-	ModifyBearerFailed       bool
-	ModifyBearerDeferred     bool
-	ModifyBearerFallbackSent bool
-	DisconnectRequested      bool
-	DisconnectNASAccepted    bool
-	State                    string
-	SessionCreatedAt         time.Time
+	APN                        string
+	ProcedureTransactionID     uint8
+	DisconnectPTI              uint8
+	PDNType                    uint8
+	DefaultEBI                 uint8
+	QCI                        uint8
+	ARPPriority                uint8
+	PreemptionCapability       bool
+	PreemptionVulnerability    bool
+	LocalS11TEID               uint32
+	SGWAddress                 string
+	SGWC_TEID                  uint32
+	SGWC_IP                    net.IP
+	SGWU_TEID                  uint32
+	SGWU_IP                    net.IP
+	ENBU_TEID                  uint32
+	ENBU_IP                    net.IP
+	UEIPv4                     net.IP
+	UEPCO                      []byte
+	PGWPCO                     []byte
+	NASAccepted                bool
+	ERABEstablished            bool
+	ModifyBearerSent           bool
+	ModifyBearerAccepted       bool
+	ModifyBearerFailed         bool
+	ModifyBearerDeferred       bool
+	ModifyBearerFallbackSent   bool
+	DisconnectRequested        bool
+	DisconnectNASAccepted      bool
+	State                      string
+	SessionCreatedAt           time.Time
 	LastSuccessfulS11Procedure string
 }
 
@@ -510,18 +514,20 @@ const (
 
 // AttachStep sub-states within EMM-REGISTERED-INITIATED.
 const (
-	AttachStepNone                  uint8 = 0
-	AttachStepWaitingAIA            uint8 = 1  // AIR sent, waiting Authentication-Information-Answer
-	AttachStepWaitingAuthResp       uint8 = 2  // Auth Request sent, waiting Auth Response
-	AttachStepWaitingSMCCplt        uint8 = 3  // Security Mode Command sent, waiting SMC Complete
-	AttachStepWaitingULA            uint8 = 4  // ULR sent, waiting Update-Location-Answer
-	AttachStepWaitingCSRsp          uint8 = 5  // CSR sent to S-GW, waiting Create Session Response
-	AttachStepWaitingICSResp        uint8 = 6  // ICS Request sent, waiting ICS Response
-	AttachStepWaitingAttachCplt     uint8 = 7  // Attach Accept delivered, waiting Attach Complete
-	AttachStepWaitingTAUComplete    uint8 = 8  // TAU Accept sent, waiting TAU Complete
-	AttachStepWaitingICSRespSR      uint8 = 9  // ICS Request sent for Service Request re-establishment
-	AttachStepWaitingICSRespTAU     uint8 = 10 // ICS Request sent for active-flag idle TAU resume
-	AttachStepWaitingULAInterMMETAU uint8 = 11 // ULR sent after inter-MME context import, waiting ULA
+	AttachStepNone                     uint8 = 0
+	AttachStepWaitingAIA               uint8 = 1  // AIR sent, waiting Authentication-Information-Answer
+	AttachStepWaitingAuthResp          uint8 = 2  // Auth Request sent, waiting Auth Response
+	AttachStepWaitingSMCCplt           uint8 = 3  // Security Mode Command sent, waiting SMC Complete
+	AttachStepWaitingULA               uint8 = 4  // ULR sent, waiting Update-Location-Answer
+	AttachStepWaitingCSRsp             uint8 = 5  // CSR sent to S-GW, waiting Create Session Response
+	AttachStepWaitingICSResp           uint8 = 6  // ICS Request sent, waiting ICS Response
+	AttachStepWaitingAttachCplt        uint8 = 7  // Attach Accept delivered, waiting Attach Complete
+	AttachStepWaitingTAUComplete       uint8 = 8  // TAU Accept sent, waiting TAU Complete
+	AttachStepWaitingICSRespSR         uint8 = 9  // ICS Request sent for Service Request re-establishment
+	AttachStepWaitingICSRespTAU        uint8 = 10 // ICS Request sent for active-flag idle TAU resume
+	AttachStepWaitingULAInterMMETAU    uint8 = 11 // ULR sent after inter-MME context import, waiting ULA
+	AttachStepWaitingS13ECA            uint8 = 12 // ECR sent, waiting ME-Identity-Check-Answer
+	AttachStepWaitingEquipmentIdentity uint8 = 13 // protected Identity Request sent for IMEI/IMEISV
 )
 
 // NAS timer names (3GPP TS 24.301).

@@ -348,10 +348,11 @@ func decodeIMSI(data []byte) string {
 		return ""
 	}
 	odd := (data[0]>>3)&1 == 1
-	digits := make([]byte, 0, 15)
-	if odd {
-		digits = append(digits, '0'+data[0]>>4)
-	}
+	digits := make([]byte, 0, 16)
+	// The first digit is always carried in bits 8..5 of octet 1. The
+	// odd/even bit describes the number of identity digits; it does not make a
+	// leading zero padding. Dropping it broke even-length IMEISVs such as 03… .
+	digits = append(digits, '0'+(data[0]>>4))
 	for i := 1; i < len(data); i++ {
 		lo := data[i] & 0x0F
 		hi := data[i] >> 4
