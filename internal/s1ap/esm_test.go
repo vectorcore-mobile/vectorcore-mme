@@ -986,6 +986,56 @@ func TestInitialIMSCreateBearerAggregatesDefaultAndDedicatedERABs(t *testing.T) 
 	}
 }
 
+// Regression for the handler-ordering race: S11 can dispatch the linked Create
+// Bearer handler before the Create Session Response handler, despite the wire
+// response arriving first. The CSR path must consume this waiting transaction.
+func TestInitialIMSCreateBearerBeforeCSRStillAggregates(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	srv.enbTracker = peertracker.New()
+	const remoteAddr = "10.0.0.87:36412"
+	ch := registerTestENBWithChan(srv, remoteAddr)
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "311435000070573"
+	ue.ENBGlobalID, ue.ENBS1APID = remoteAddr, 287
+	ue.ECMState, ue.S1BindingState = emm.ECMConnected, uecontext.S1BindingActive
+	ue.DefaultEBI = 5
+	ue.UEAMBRDown, ue.UEAMBRUp = 100_000_000, 100_000_000
+	ue.KNASint, ue.KNASenc = make([]byte, 16), make([]byte, 16)
+	ue.PendingPDN = &uecontext.PDNContext{APN: "ims", ProcedureTransactionID: 2, PDNType: gtpv2.PDNTypeIPv4, DefaultEBI: 6, LocalS11TEID: 2, QCI: 5, ARPPriority: 1, APNAMBRUp: 3_850_000, APNAMBRDown: 1_530_000, State: "csr-sent"}
+	ue.Unlock()
+	qos2 := []byte{0x10, 0x02, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80}
+	qos1 := append([]byte(nil), qos2...)
+	qos1[0], qos1[1] = 0x08, 0x01
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", &gtpv2.CreateBearerRequest{TEID: 2, SeqNum: 53357, LinkedEBI: 6, Bearers: []gtpv2.CreateBearerBearer{
+		{NeedsEBIAllocation: true, QCI: 2, ARP: 0x10, BearerQoS: qos2, TFT: []byte{0x21, 0x30, 0x30}, SGWS1UTEID: 0x6dc0a11d, SGWS1UIP: net.IPv4(10, 90, 250, 59)},
+		{NeedsEBIAllocation: true, QCI: 1, ARP: 0x08, BearerQoS: qos1, TFT: []byte{0x21, 0x30, 0x35}, SGWS1UTEID: 0x169623bd, SGWS1UIP: net.IPv4(10, 90, 250, 59)},
+	}})
+	ue.Lock()
+	for _, tx := range ue.PendingBearerTransactions {
+		if tx.CreateState != uecontext.CreateBearerWaitingForLink {
+			ue.Unlock()
+			t.Fatalf("Create Bearer state = %s, want waiting_for_linked_bearer", tx.CreateState)
+		}
+	}
+	ue.Unlock()
+	srv.handlePendingPDNCSRResult(ue, &gtpv2.CreateSessionResponse{Cause: gtpv2.CauseRequestAccepted, EBI: 6, SGWC_TEID: 0x698c2b89, SGWC_IP: []byte{10, 90, 250, 59}, SGWU_TEID: 0x9942c914, SGWU_IP: []byte{10, 90, 250, 59}, UEIPv4: []byte{10, 150, 3, 197}, PDNType: gtpv2.PDNTypeIPv4}, nil, zap.NewNop())
+	select {
+	case raw := <-ch:
+		req := decodeERABSetupRequest(t, raw)
+		if len(req.Items) != 3 || req.Items[0].EBI != 6 || req.Items[1].EBI != 7 || req.Items[2].EBI != 8 {
+			t.Fatalf("aggregated E-RAB EBIs got %+v, want [6 7 8]", req.Items)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no aggregated E-RAB Setup Request sent after CSR")
+	}
+	select {
+	case <-ch:
+		t.Fatal("duplicate E-RAB Setup Request sent")
+	case <-time.After(2 * imsInitialERABAggregationWindow):
+	}
+}
+
 func TestHandlePendingPDNCSRResult_UsesPDNQoSForERABSetup(t *testing.T) {
 	srv := newTestServer(&mockS11{})
 	srv.enbTracker = peertracker.New()

@@ -2,6 +2,7 @@
 package uecontext
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -336,19 +337,30 @@ type PDNContext struct {
 	// the same initial E-RAB Setup procedure.
 	InitialERABAggregationPending bool
 	InitialERABActivationNAS      []byte
-	NASAccepted                   bool
-	ERABEstablished               bool
-	ModifyBearerSent              bool
-	ModifyBearerAccepted          bool
-	ModifyBearerFailed            bool
-	ModifyBearerDeferred          bool
-	ModifyBearerFallbackSent      bool
-	ModifyBearerRetryAttempts     uint8
-	DisconnectRequested           bool
-	DisconnectNASAccepted         bool
-	State                         string
-	SessionCreatedAt              time.Time
-	LastSuccessfulS11Procedure    string
+	// InitialERABAggregationGeneration invalidates a timer callback after the
+	// staged activation has been aggregated, sent as fallback, or superseded.
+	InitialERABAggregationGeneration uint64
+	// ActivationNAS and the T3485 fields retain the exact network-initiated
+	// activation PDU until the UE accepts, rejects, or the procedure aborts.
+	ActivationNAS              []byte
+	ActivationPlainNAS         []byte
+	ActivationRetryCount       uint8
+	ActivationTimerGeneration  uint64
+	ActivationTimerActive      bool
+	ActivationTimedOut         bool
+	NASAccepted                bool
+	ERABEstablished            bool
+	ModifyBearerSent           bool
+	ModifyBearerAccepted       bool
+	ModifyBearerFailed         bool
+	ModifyBearerDeferred       bool
+	ModifyBearerFallbackSent   bool
+	ModifyBearerRetryAttempts  uint8
+	DisconnectRequested        bool
+	DisconnectNASAccepted      bool
+	State                      string
+	SessionCreatedAt           time.Time
+	LastSuccessfulS11Procedure string
 }
 
 type CreateBearerState string
@@ -398,6 +410,13 @@ type DedicatedBearerContext struct {
 	NASRejected     bool
 	ERABEstablished bool
 	ERABFailed      bool
+	// ActivationNAS is the protected NAS PDU that was actually delivered in
+	// the E-RAB Setup. T3485 retransmits this stable procedure payload.
+	ActivationNAS             []byte
+	ActivationRetryCount      uint8
+	ActivationTimerGeneration uint64
+	ActivationTimerActive     bool
+	ActivationTimedOut        bool
 
 	State        string
 	FailureCause uint8
@@ -537,6 +556,39 @@ func (c *Context) StopAllTimers() {
 	for name, t := range c.timers {
 		t.Stop()
 		delete(c.timers, name)
+	}
+}
+
+// CancelActivationTimers invalidates every network-initiated ESM activation
+// callback before terminal UE or PDN state is removed. The caller must hold
+// c.Lock(); this complements StopAllTimers because an AfterFunc callback may
+// already be queued when its timer is stopped.
+func (c *Context) CancelActivationTimers() {
+	for _, pdn := range c.PDNs {
+		if pdn == nil {
+			continue
+		}
+		pdn.ActivationTimerActive = false
+		pdn.ActivationTimerGeneration++
+		c.StopTimer(fmt.Sprintf("T3485:%d", pdn.DefaultEBI))
+	}
+	for _, proc := range c.DedicatedBearers {
+		if proc == nil {
+			continue
+		}
+		proc.ActivationTimerActive = false
+		proc.ActivationTimerGeneration++
+		c.StopTimer(fmt.Sprintf("T3485:%d", proc.AssignedEBI))
+	}
+	for _, tx := range c.PendingBearerTransactions {
+		for _, proc := range tx.Bearers {
+			if proc == nil {
+				continue
+			}
+			proc.ActivationTimerActive = false
+			proc.ActivationTimerGeneration++
+			c.StopTimer(fmt.Sprintf("T3485:%d", proc.AssignedEBI))
+		}
 	}
 }
 

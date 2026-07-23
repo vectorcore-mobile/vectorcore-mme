@@ -849,6 +849,7 @@ func (s *Server) cleanupDisconnectedPDN(mmeUEID uint32, linkedEBI uint8, reason 
 		}
 		targetAPN = apn
 		removedLinkedEBI = pdn.DefaultEBI
+		stopDefaultT3485Locked(ue, pdn)
 		delete(ue.PDNs, apn)
 		break
 	}
@@ -860,6 +861,16 @@ func (s *Server) cleanupDisconnectedPDN(mmeUEID uint32, linkedEBI uint8, reason 
 		if proc != nil && proc.LinkedEBI == removedLinkedEBI {
 			delete(ue.DedicatedBearers, ebi)
 		}
+	}
+	for key, tx := range ue.PendingBearerTransactions {
+		if tx == nil || tx.LinkedEBI != removedLinkedEBI {
+			continue
+		}
+		for _, proc := range tx.Bearers {
+			stopDedicatedT3485Locked(ue, proc)
+		}
+		delete(ue.PendingERABProcedures, tx.ID)
+		delete(ue.PendingBearerTransactions, key)
 	}
 	imsi := ue.IMSI
 	ue.Unlock()
@@ -1154,6 +1165,17 @@ func (s *Server) apnForNAS(apn string) string {
 	return apn
 }
 
+// apnForIMSDefaultBearerNAS is presentation-only. Internal APN state remains
+// normalized ("ims") for subscription, DNS, and session correlation, while
+// the default IMS bearer APN IE retains the Cisco-compatible label case.
+func (s *Server) apnForIMSDefaultBearerNAS(apn string) string {
+	canonical := s.apnForNAS(apn)
+	if strings.EqualFold(strings.TrimSpace(apn), "ims") && strings.HasPrefix(strings.ToLower(canonical), "ims.") {
+		return "IMS" + canonical[3:]
+	}
+	return canonical
+}
+
 func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, guti *emm.GUTI) {
 	if guti == nil {
 		return
@@ -1373,14 +1395,13 @@ func subscriberUEAMBR(ue *uecontext.Context) (uint64, uint64, error) {
 	if ue == nil {
 		return 0, 0, fmt.Errorf("s1ap: missing UE context for UE AMBR")
 	}
-	ue.Lock()
-	defer ue.Unlock()
-	downlink := ue.UEAMBRDown
-	uplink := ue.UEAMBRUp
+	effective := effectiveUEAMBR(ue)
+	downlink := effective.Downlink
+	uplink := effective.Uplink
 	if downlink == 0 || uplink == 0 {
 		return 0, 0, fmt.Errorf("s1ap: missing UE AMBR in UE context (down=%d up=%d)", downlink, uplink)
 	}
-	return uint64(downlink), uint64(uplink), nil
+	return downlink, uplink, nil
 }
 
 func cloneInt32Ptr(v *int32) *int32 {

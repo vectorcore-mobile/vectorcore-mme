@@ -1097,11 +1097,13 @@ func TestUEContextReleaseRequest_SendsRABRPerUniquePDNSession(t *testing.T) {
 			State:      "active",
 		},
 		"ims": {
-			APN:        "ims",
-			DefaultEBI: 6,
-			SGWAddress: "10.90.250.80:2123",
-			SGWC_TEID:  0x800a8003,
-			State:      "active",
+			APN:                  "ims",
+			DefaultEBI:           6,
+			SGWAddress:           "10.90.250.80:2123",
+			SGWC_TEID:            0x800a8003,
+			NASAccepted:          true,
+			ModifyBearerAccepted: true,
+			State:                "active",
 		},
 		"mms": {
 			APN:        "mms",

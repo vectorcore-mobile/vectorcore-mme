@@ -85,6 +85,9 @@ func TestDecodePeerERABSetupRequestMultipleBearers(t *testing.T) {
 		if got.GBRQosInformationPresent != want.gbr {
 			t.Fatalf("item %d GBR present got %v, want %v", i, got.GBRQosInformationPresent, want.gbr)
 		}
+		if want.gbr && (got.MaxBitrateDL != 128000 || got.MaxBitrateUL != 128000 || got.GuaranteedBitrateDL != 128000 || got.GuaranteedBitrateUL != 128000) {
+			t.Fatalf("item %d GBR got DL/UL MBR=%d/%d GBR=%d/%d, want all 128000", i, got.MaxBitrateDL, got.MaxBitrateUL, got.GuaranteedBitrateDL, got.GuaranteedBitrateUL)
+		}
 	}
 }
 
@@ -157,6 +160,61 @@ func TestBuildERABSetupRequestMatchesPeerDedicatedBearerSemantics(t *testing.T) 
 			t.Fatalf("built dedicated item %d body differs from reference fixture:\n got %x\nwant %x",
 				tt.idx, built.Items[0].RawItemBody, item.RawItemBody)
 		}
+	}
+}
+
+func TestERABGBRBitrateConvertsS11KilobitsToS1APBits(t *testing.T) {
+	tests := []struct {
+		name       string
+		s11Kbps    uint64
+		wantS1AP   uint64
+		wantOnWire uint64
+	}{
+		{name: "minimum non-zero", s11Kbps: 1, wantS1AP: 1_000, wantOnWire: 1_000},
+		{name: "Nokia IMS GBR", s11Kbps: 128, wantS1AP: 128_000, wantOnWire: 128_000},
+		{name: "one hundred Mbps", s11Kbps: 100_000, wantS1AP: 100_000_000, wantOnWire: 100_000_000},
+		{name: "S1AP maximum saturation", s11Kbps: 11_000_000, wantS1AP: 11_000_000_000, wantOnWire: 10_000_000_000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := make([]byte, 22)
+			raw[1] = 2
+			for _, off := range []int{2, 7, 12, 17} {
+				copy(raw[off:off+5], encodeBearerQoSKilobitsForTest(tt.s11Kbps))
+			}
+			info, present := deriveGBRQosInformation(raw)
+			if !present {
+				t.Fatal("GBR QoS not present")
+			}
+			if info.MaxBitrateDL != tt.wantS1AP || info.MaxBitrateUL != tt.wantS1AP || info.GuaranteedBitrateDL != tt.wantS1AP || info.GuaranteedBitrateUL != tt.wantS1AP {
+				t.Fatalf("derived GBR got DL/UL MBR=%d/%d GBR=%d/%d, want all %d", info.MaxBitrateDL, info.MaxBitrateUL, info.GuaranteedBitrateDL, info.GuaranteedBitrateUL, tt.wantS1AP)
+			}
+			w := aper.NewBitWriter()
+			encodeBitRateForERABSetup(w, info.MaxBitrateDL)
+			decoded, err := aper.DecodeConstrainedWholeNumber(aper.NewBitReader(w.Bytes()), 0, 10_000_000_000)
+			if err != nil {
+				t.Fatalf("decode encoded S1AP bitrate: %v", err)
+			}
+			if uint64(decoded) != tt.wantOnWire {
+				t.Fatalf("encoded S1AP bitrate got %d, want %d", decoded, tt.wantOnWire)
+			}
+		})
+	}
+}
+
+func TestERABGBRQoSDiagnosticRoundTrip(t *testing.T) {
+	want := erabGBRQosInformation{
+		MaxBitrateDL:        128_000,
+		MaxBitrateUL:        128_000,
+		GuaranteedBitrateDL: 128_000,
+		GuaranteedBitrateUL: 128_000,
+	}
+	encoded, got, ok := encodeAndDecodeERABGBRQoSForDebug(want)
+	if !ok || got != want {
+		t.Fatalf("GBR diagnostic round trip got %+v ok=%t, want %+v true", got, ok, want)
+	}
+	if len(encoded) == 0 {
+		t.Fatal("GBR diagnostic encoding is empty")
 	}
 }
 
@@ -690,11 +748,6 @@ func decodeERABSetupRequestItem(t *testing.T, data []byte) normalizedERABSetupIt
 		t.Fatalf("decode QCI: %v", err)
 	}
 	item.QCI = uint8(qci)
-	if item.GBRQosInformationPresent {
-		decodePeerGBRBearerTail(t, data, r.BytesConsumed(), &item)
-		return item
-	}
-
 	if ext, err := r.ReadBit(); err != nil || ext != 0 {
 		t.Fatalf("decode ARP extension bit got %d err=%v, want 0 nil", ext, err)
 	}
@@ -716,6 +769,24 @@ func decodeERABSetupRequestItem(t *testing.T, data []byte) normalizedERABSetupIt
 	}
 	item.PreemptionCapability = pc == 1
 	item.PreemptionVulnerability = pv == 1
+	if item.GBRQosInformationPresent {
+		if ext, err := r.ReadBit(); err != nil || ext != 0 {
+			t.Fatalf("decode GBR extension got %d err=%v, want 0 nil", ext, err)
+		}
+		if ieExtPresent, err := r.ReadBit(); err != nil || ieExtPresent != 0 {
+			t.Fatalf("decode GBR IE extension presence got %d err=%v, want 0 nil", ieExtPresent, err)
+		}
+		values := [4]uint64{}
+		for i := range values {
+			value, err := aper.DecodeConstrainedWholeNumber(r, 0, 10000000000)
+			if err != nil {
+				t.Fatalf("decode GBR bitrate %d: %v", i, err)
+			}
+			values[i] = uint64(value)
+		}
+		item.MaxBitrateDL, item.MaxBitrateUL = values[0], values[1]
+		item.GuaranteedBitrateDL, item.GuaranteedBitrateUL = values[2], values[3]
+	}
 
 	addrExt, err := r.ReadBit()
 	if err != nil {
@@ -758,29 +829,6 @@ func decodeERABSetupRequestItem(t *testing.T, data []byte) normalizedERABSetupIt
 	return item
 }
 
-func decodePeerGBRBearerTail(t *testing.T, data []byte, start int, item *normalizedERABSetupItem) {
-	t.Helper()
-	idx := bytes.Index(data[start:], []byte{0x0a, 0x5a, 0xfa, 0x3b})
-	if idx < 0 {
-		t.Fatalf("GBR E-RAB item missing peer SGW S1-U IPv4 marker")
-	}
-	ipOff := start + idx
-	if ipOff+4+4+1 > len(data) {
-		t.Fatalf("GBR E-RAB item truncated before TEID/NAS")
-	}
-	item.TransportAddressBits = 32
-	item.SGWS1UIPv4 = net.IP(data[ipOff : ipOff+4]).String()
-	item.SGWS1UTEID = binary.BigEndian.Uint32(data[ipOff+4 : ipOff+8])
-	nasLenOff := ipOff + 8
-	nasLen := int(data[nasLenOff])
-	if nasLenOff+1+nasLen != len(data) {
-		t.Fatalf("GBR E-RAB NAS length got %d at offset %d for item length %d", nasLen, nasLenOff, len(data))
-	}
-	item.NASPDUPresent = true
-	item.NASPDU = append([]byte(nil), data[nasLenOff+1:]...)
-	item.DecodedWithoutTrailingOctets = true
-}
-
 func sameBearerSemantics(a, b normalizedERABSetupItem) bool {
 	return a.EBI == b.EBI &&
 		a.QCI == b.QCI &&
@@ -790,6 +838,11 @@ func sameBearerSemantics(a, b normalizedERABSetupItem) bool {
 		a.TransportAddressBits == b.TransportAddressBits &&
 		a.SGWS1UIPv4 == b.SGWS1UIPv4 &&
 		a.SGWS1UTEID == b.SGWS1UTEID &&
+		a.GBRQosInformationPresent == b.GBRQosInformationPresent &&
+		a.MaxBitrateDL == b.MaxBitrateDL &&
+		a.MaxBitrateUL == b.MaxBitrateUL &&
+		a.GuaranteedBitrateDL == b.GuaranteedBitrateDL &&
+		a.GuaranteedBitrateUL == b.GuaranteedBitrateUL &&
 		bytes.Equal(a.NASPDU, b.NASPDU)
 }
 
@@ -870,6 +923,14 @@ func encodeBearerQoSForTest(qci, arp uint8, mbrUL, mbrDL, gbrUL, gbrDL uint64) [
 }
 
 func encodeBearerQoSBitrateForTest(v uint64) []byte {
+	if v%1000 != 0 {
+		panic("Bearer QoS test bitrate must be a whole kbit/s")
+	}
+	v /= 1000
+	return encodeBearerQoSKilobitsForTest(v)
+}
+
+func encodeBearerQoSKilobitsForTest(v uint64) []byte {
 	out := make([]byte, 5)
 	for i := 4; i >= 0; i-- {
 		out[i] = byte(v & 0xff)

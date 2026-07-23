@@ -429,8 +429,8 @@ func TestEquivalentCreateBearerWhilePagingDoesNotAllocateMoreEBIs(t *testing.T) 
 	if attempts != 1 {
 		t.Fatalf("PagingAttempts got %d, want 1", attempts)
 	}
-	if seq != 2754 {
-		t.Fatalf("collapsed transaction seq got %d, want latest 2754", seq)
+	if seq != 2753 {
+		t.Fatalf("original transaction seq got %d, want 2753", seq)
 	}
 	if len(ebis) != 2 || ebis[0] != 7 || ebis[1] != 8 {
 		t.Fatalf("reserved EBIs got %v, want [7 8]", ebis)
@@ -801,17 +801,17 @@ func TestEquivalentCreateBearerWhileWaitingForLinkUsesLatestSequenceOnTimeout(t 
 		ue.Unlock()
 		t.Fatal("pending transaction missing")
 	}
-	if tx.SequenceNum != 2754 {
+	if tx.SequenceNum != 2753 {
 		ue.Unlock()
-		t.Fatalf("collapsed transaction seq got %d, want 2754", tx.SequenceNum)
+		t.Fatalf("original transaction seq got %d, want 2753", tx.SequenceNum)
 	}
 	ue.Unlock()
 
 	srv.onCreateBearerTimeout(ue, key)
-	waitForCreateResponseCount(t, mock, 1)
-	resp := mock.createResponseAt(0)
-	if resp.Seq != 2754 {
-		t.Fatalf("Create Bearer response seq got %d, want 2754", resp.Seq)
+	waitForCreateResponseCount(t, mock, 2)
+	resp := mock.createResponseAt(1)
+	if resp.Seq != 2753 {
+		t.Fatalf("Create Bearer response seq got %d, want 2753", resp.Seq)
 	}
 }
 
@@ -872,17 +872,17 @@ func TestEquivalentCreateBearerWhileWaitingResultsUsesLatestSequenceOnTimeout(t 
 		ue.Unlock()
 		t.Fatal("pending transaction missing after collapse")
 	}
-	if tx.SequenceNum != 2754 {
+	if tx.SequenceNum != 2753 {
 		ue.Unlock()
-		t.Fatalf("collapsed transaction seq got %d, want 2754", tx.SequenceNum)
+		t.Fatalf("original transaction seq got %d, want 2753", tx.SequenceNum)
 	}
 	ue.Unlock()
 
 	srv.onCreateBearerTimeout(ue, key)
-	waitForCreateResponseCount(t, mock, 1)
-	resp := mock.createResponseAt(0)
-	if resp.Seq != 2754 {
-		t.Fatalf("Create Bearer response seq got %d, want 2754", resp.Seq)
+	waitForCreateResponseCount(t, mock, 2)
+	resp := mock.createResponseAt(1)
+	if resp.Seq != 2753 {
+		t.Fatalf("Create Bearer response seq got %d, want 2753", resp.Seq)
 	}
 }
 
@@ -974,8 +974,8 @@ func TestUEContextReleaseCompleteFailsWaitingLinkedCreateBearer(t *testing.T) {
 	if resp.Seq != 2754 {
 		t.Fatalf("Create Bearer response seq got %d, want 2754", resp.Seq)
 	}
-	if resp.Cause != gtpv2.CauseRequestRejected {
-		t.Fatalf("Create Bearer response cause got %d, want %d", resp.Cause, gtpv2.CauseRequestRejected)
+	if resp.Cause != gtpv2.CauseUEIsNotResponding {
+		t.Fatalf("Create Bearer response cause got %d, want %d", resp.Cause, gtpv2.CauseUEIsNotResponding)
 	}
 
 	ue.Lock()

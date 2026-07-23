@@ -702,8 +702,6 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 	currentULNASCount := uint32(ue.ULNASCount)
 	ueCap := append([]byte(nil), ue.UENetworkCapability...)
 	ueRadioCapability := append([]byte(nil), ue.UERadioCapability...)
-	ueAMBRDown := ue.UEAMBRDown
-	ueAMBRUp := ue.UEAMBRUp
 	kenb := append([]byte(nil), ue.KeNB...)
 	kenbULNASCount := ue.KeNBULCount
 	kenbSource := "stored_snapshot"
@@ -723,6 +721,7 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 		return fmt.Errorf("s1ap: UE %d has no active S1 binding remote=%q enb_ue_id=%d state=%s generation=%d",
 			mmeUEID, enbAddr, enbS1APID, bindingState.String(), bindingGeneration)
 	}
+	effectiveAMBR := s.logEffectiveUEAMBR(ue, "initial-context-setup")
 	if kenbSource == "stored_snapshot" {
 		s.logASSecuritySnapshotReused(ue)
 	}
@@ -745,11 +744,11 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 
 	if len(bearers) > 0 {
 		erabValue = encodeERABList(bearers, nasPDU)
-		if ueAMBRDown == 0 || ueAMBRUp == 0 {
-			return fmt.Errorf("s1ap: UE %d missing UE AMBR for Initial Context Setup (down=%d up=%d)", mmeUEID, ueAMBRDown, ueAMBRUp)
+		if effectiveAMBR.Downlink == 0 || effectiveAMBR.Uplink == 0 {
+			return fmt.Errorf("s1ap: UE %d missing effective UE AMBR for Initial Context Setup (down=%d up=%d)", mmeUEID, effectiveAMBR.Downlink, effectiveAMBR.Uplink)
 		}
-		downlink := uint64(ueAMBRDown)
-		uplink := uint64(ueAMBRUp)
+		downlink := effectiveAMBR.Downlink
+		uplink := effectiveAMBR.Uplink
 		ambrValue := ies.EncodeUEAggregateMaxBitrate(downlink, uplink)
 		ieList = []pdu.ProtocolIE{
 			{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
@@ -773,8 +772,8 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbS1APID),
 		zap.Strings("ie_list", describeS1APIEList(ieList)),
-		zap.Uint64("ue_ambr_downlink", uint64(ueAMBRDown)),
-		zap.Uint64("ue_ambr_uplink", uint64(ueAMBRUp)),
+		zap.Uint64("ue_ambr_downlink", effectiveAMBR.Downlink),
+		zap.Uint64("ue_ambr_uplink", effectiveAMBR.Uplink),
 		zap.String("nas_ue_security_capability", hex.EncodeToString(ueCap)),
 		zap.String("kenb_source", kenbSource),
 		zap.Uint32("kenb_ul_nas_count", kenbULNASCount),

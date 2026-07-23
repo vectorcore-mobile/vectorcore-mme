@@ -85,6 +85,7 @@ func (m *Manager) GetByGUTI(gutiStr string) (*Context, bool) {
 func (m *Manager) Remove(ctx *Context) {
 	m.byMMEID.Delete(ctx.MMEUES1APID)
 	ctx.mu.Lock()
+	ctx.CancelActivationTimers()
 	imsi := ctx.IMSI
 	guti := ctx.GUTI
 	pendingOldGUTI := ctx.PendingOldGUTI

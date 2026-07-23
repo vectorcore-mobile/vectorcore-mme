@@ -76,8 +76,6 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 	ueNetCap := ue.UENetworkCapability
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
-	ueAMBRDown := ue.UEAMBRDown
-	ueAMBRUp := ue.UEAMBRUp
 	apn := ue.APN
 	apnCfg, haveAPNCfg := subscriberAPNConfigForResumeLocked(ue, ue.APN)
 	ue.Unlock()
@@ -118,10 +116,11 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
 		return
 	}
-	if ueAMBRDown == 0 || ueAMBRUp == 0 {
+	effectiveAMBR := s.logEffectiveUEAMBR(ue, "handover-request")
+	if effectiveAMBR.Downlink == 0 || effectiveAMBR.Uplink == 0 {
 		log.Warn("s1ap: HandoverRequired: missing UE AMBR",
-			zap.Uint32("ue_ambr_down", ueAMBRDown),
-			zap.Uint32("ue_ambr_up", ueAMBRUp))
+			zap.Uint64("ue_ambr_down", effectiveAMBR.Downlink),
+			zap.Uint64("ue_ambr_up", effectiveAMBR.Uplink))
 		metrics.HandoverTotal.WithLabelValues("preparation", "wrong_state").Inc()
 		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
 			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
@@ -187,7 +186,7 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 		SGWU_TEID:               sgwuTEID,
 		SGWU_IP:                 sgwuIP,
 	}
-	s.sendHandoverRequest(targetAddr, mmeUEID, b, uint64(ueAMBRDown), uint64(ueAMBRUp), nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg)
+	s.sendHandoverRequest(targetAddr, mmeUEID, b, effectiveAMBR.Downlink, effectiveAMBR.Uplink, nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg)
 }
 
 // handleHandoverRequestAck handles S1AP Handover Request Acknowledge from the target eNB.

@@ -59,6 +59,19 @@ type ERABSetupResult struct {
 	Cause      uint32
 }
 
+// initialIMSBearerSetupPlan is made while holding the UE lock. Marking the
+// staged activation consumed before releasing that lock guarantees that only
+// one handler or timer callback can dispatch the initial E-RAB Setup.
+type initialIMSBearerSetupPlan struct {
+	MMEUEID        uint32
+	Items          []ERABSetupItem
+	TransactionID  string
+	TransactionKey string
+	Aggregated     bool
+	Generation     uint64
+	Trigger        string
+}
+
 func defaultIMSERABSetupItem(pdn *uecontext.PDNContext, nasPDU []byte) ERABSetupItem {
 	return ERABSetupItem{
 		EBI:                     pdn.DefaultEBI,
@@ -76,29 +89,160 @@ func defaultIMSERABSetupItem(pdn *uecontext.PDNContext, nasPDU []byte) ERABSetup
 // window for an initial linked Create Bearer Request. NAS COUNT is consumed
 // when the activation is staged, so any dedicated NAS PDUs built during the
 // window use the next count values.
-func (s *Server) stageInitialIMSDefaultERABActivation(ue *uecontext.Context, pdn *uecontext.PDNContext, protected []byte, log *zap.Logger) {
+func (s *Server) stageInitialIMSDefaultERABActivation(ue *uecontext.Context, pdn *uecontext.PDNContext, plain, protected []byte, log *zap.Logger) {
 	if ue == nil || pdn == nil {
 		return
 	}
 	ue.Lock()
 	pdn.InitialERABAggregationPending = true
 	pdn.InitialERABActivationNAS = append([]byte(nil), protected...)
+	pdn.ActivationPlainNAS = append([]byte(nil), plain...)
 	pdn.State = "initial-erab-aggregation-pending"
+	pdn.InitialERABAggregationGeneration++
+	generation := pdn.InitialERABAggregationGeneration
 	ue.DLNASCount.Increment()
 	ue.LastDownlinkNASMessage = "Activate Default EPS Bearer Context Request"
 	mmeUEID := ue.MMEUES1APID
 	ebi := pdn.DefaultEBI
 	ue.StartTimer(imsInitialERABAggregationTimerName(ebi), imsInitialERABAggregationWindow, func() {
-		s.flushInitialIMSDefaultERABActivation(mmeUEID, ebi)
+		s.flushInitialIMSDefaultERABActivation(mmeUEID, ebi, generation)
 	})
+	plan, err := s.maybeFlushInitialIMSBearerSetupLocked(ue, pdn, "create-session-response", false)
 	ue.Unlock()
+	if err != nil {
+		log.Warn("s1ap: failed to reconcile staged IMS initial bearer setup", zap.Error(err), zap.Uint8("ebi", ebi))
+		return
+	}
+	if plan != nil {
+		s.dispatchInitialIMSBearerSetup(plan)
+		return
+	}
 	log.Debug("s1ap: IMS default bearer aggregation window started",
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint8("ebi", ebi),
+		zap.Uint64("aggregation_generation", generation),
 		zap.Duration("window", imsInitialERABAggregationWindow))
 }
 
-func (s *Server) flushInitialIMSDefaultERABActivation(mmeUEID uint32, ebi uint8) {
+// maybeFlushInitialIMSBearerSetupLocked reconciles the staged default bearer
+// and an already-pending linked Create Bearer transaction without depending on
+// which S11 handler won scheduling. The caller owns ue.Lock().
+func (s *Server) maybeFlushInitialIMSBearerSetupLocked(ue *uecontext.Context, pdn *uecontext.PDNContext, trigger string, timerExpired bool) (*initialIMSBearerSetupPlan, error) {
+	if ue == nil || pdn == nil || !pdn.InitialERABAggregationPending {
+		return nil, nil
+	}
+	var key string
+	var linkedTx *uecontext.DedicatedBearerTransaction
+	for candidateKey, tx := range ue.PendingBearerTransactions {
+		if tx != nil && tx.Kind == bearerTxCreate && tx.LinkedEBI == pdn.DefaultEBI && !isCreateBearerTerminal(tx.CreateState) && (tx.CreateState == uecontext.CreateBearerReceived || tx.CreateState == uecontext.CreateBearerWaitingForLink) {
+			key, linkedTx = candidateKey, tx
+			break
+		}
+	}
+	if linkedTx == nil && !timerExpired {
+		return nil, nil
+	}
+
+	nasPDU := append([]byte(nil), pdn.InitialERABActivationNAS...)
+	items := []ERABSetupItem{defaultIMSERABSetupItem(pdn, nasPDU)}
+	plan := &initialIMSBearerSetupPlan{
+		MMEUEID:    ue.MMEUES1APID,
+		Generation: pdn.InitialERABAggregationGeneration,
+		Trigger:    trigger,
+	}
+	if linkedTx != nil {
+		dedicatedItems, err := buildCreateBearerERABItemsLocked(ue, linkedTx)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, dedicatedItems...)
+		linkedTx.CreateState = uecontext.CreateBearerSettingUpERAB
+		linkedTx.State = string(linkedTx.CreateState)
+		plan.TransactionID = linkedTx.ID
+		plan.TransactionKey = key
+		plan.Aggregated = true
+	} else {
+		plan.TransactionID = fmt.Sprintf("ims-erab-%d-%d", ue.MMEUES1APID, pdn.DefaultEBI)
+	}
+	pdn.InitialERABAggregationPending = false
+	pdn.InitialERABActivationNAS = nil
+	pdn.InitialERABAggregationGeneration++ // invalidates a running stale callback
+	pdn.State = "erab-setup-pending"
+	ue.StopTimer(imsInitialERABAggregationTimerName(pdn.DefaultEBI))
+	plan.Items = items
+	return plan, nil
+}
+
+func (s *Server) dispatchInitialIMSBearerSetup(plan *initialIMSBearerSetupPlan) {
+	if plan == nil {
+		return
+	}
+	ebis := make([]uint8, 0, len(plan.Items))
+	for _, item := range plan.Items {
+		ebis = append(ebis, item.EBI)
+	}
+	mode := "fallback"
+	if plan.Aggregated {
+		mode = "aggregated"
+	}
+	procedureKind := "ims_default_bearer"
+	if plan.Aggregated {
+		procedureKind = "ims_initial_aggregate"
+	}
+	if err := s.SendERABSetupRequestTracked(plan.MMEUEID, plan.Items, procedureKind, plan.TransactionID); err != nil {
+		s.log.Warn("s1ap: initial IMS E-RAB Setup Request failed", zap.Uint32("mme_ue_id", plan.MMEUEID), zap.String("transaction_id", plan.TransactionID), zap.Error(err))
+		if plan.Aggregated {
+			if ue, ok := s.ueManager.GetByMMEID(plan.MMEUEID); ok {
+				s.failCreateBearerTransaction(ue, plan.TransactionKey, gtpv2.CauseRequestDenied)
+			}
+		}
+		return
+	}
+	s.log.Info("s1ap: initial IMS E-RAB Setup Request sent", zap.Uint32("mme_ue_id", plan.MMEUEID), zap.Uint8s("erab_ebis", ebis), zap.String("mode", mode), zap.String("trigger", plan.Trigger), zap.Uint64("aggregation_generation", plan.Generation), zap.String("linked_create_bearer_transaction_id", plan.TransactionID))
+	s.onInitialIMSERABSetupTransmitted(plan.MMEUEID, plan.Items, plan.TransactionKey, plan.TransactionID)
+	if plan.Aggregated {
+		if ue, ok := s.ueManager.GetByMMEID(plan.MMEUEID); ok {
+			ue.Lock()
+			if tx := ue.PendingBearerTransactions[plan.TransactionKey]; tx != nil && tx.ID == plan.TransactionID {
+				tx.CreateState = uecontext.CreateBearerWaitingResults
+				tx.State = string(tx.CreateState)
+			}
+			ue.Unlock()
+		}
+	}
+}
+
+// onInitialIMSERABSetupTransmitted is the single post-wire hook for both IMS
+// initial E-RAB send paths. It deliberately starts activation timers only
+// after SendERABSetupRequestTracked has succeeded.
+func (s *Server) onInitialIMSERABSetupTransmitted(mmeUEID uint32, items []ERABSetupItem, txKey, txID string) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return
+	}
+	for _, item := range items {
+		if len(item.NASPDU) == 0 {
+			continue
+		}
+		if pdn := findPDNByEBI(ue, item.EBI); pdn != nil {
+			s.startDefaultT3485(ue, item.EBI, item.NASPDU)
+			continue
+		}
+		if txKey == "" {
+			continue
+		}
+		s.startDedicatedT3485(ue, txKey, item.EBI, item.NASPDU)
+	}
+	s.log.Info("s1ap: initial IMS activation timers armed", zap.Uint32("mme_ue_id", mmeUEID), zap.String("transaction_id", txID), zap.String("transaction_key", txKey))
+}
+
+func findPDNByEBI(ue *uecontext.Context, ebi uint8) *uecontext.PDNContext {
+	ue.Lock()
+	defer ue.Unlock()
+	return findPDNByLinkedEBILocked(ue, ebi)
+}
+
+func (s *Server) flushInitialIMSDefaultERABActivation(mmeUEID uint32, ebi uint8, generation uint64) {
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
 		return
@@ -111,22 +255,17 @@ func (s *Server) flushInitialIMSDefaultERABActivation(mmeUEID uint32, ebi uint8)
 			break
 		}
 	}
-	if pdn == nil || !pdn.InitialERABAggregationPending {
+	if pdn == nil || !pdn.InitialERABAggregationPending || pdn.InitialERABAggregationGeneration != generation {
 		ue.Unlock()
 		return
 	}
-	nasPDU := append([]byte(nil), pdn.InitialERABActivationNAS...)
-	pdn.InitialERABAggregationPending = false
-	pdn.InitialERABActivationNAS = nil
-	pdn.State = "erab-setup-pending"
-	ue.StopTimer(imsInitialERABAggregationTimerName(ebi))
-	item := defaultIMSERABSetupItem(pdn, nasPDU)
-	transactionID := fmt.Sprintf("ims-erab-%d-%d", mmeUEID, ebi)
+	plan, err := s.maybeFlushInitialIMSBearerSetupLocked(ue, pdn, "aggregation-timer", true)
 	ue.Unlock()
-	if err := s.SendERABSetupRequestTracked(mmeUEID, []ERABSetupItem{item}, "ims_default_bearer", transactionID); err != nil {
-		s.log.Warn("s1ap: failed to send timed IMS default E-RAB Setup Request",
-			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("ebi", ebi), zap.Error(err))
+	if err != nil {
+		s.log.Warn("s1ap: failed to reconcile IMS aggregation timer", zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("ebi", ebi), zap.Error(err))
+		return
 	}
+	s.dispatchInitialIMSBearerSetup(plan)
 }
 
 type ERABSetupResponse struct {
@@ -185,16 +324,16 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 		}()
 	}
 
-	downlink, uplink, err := subscriberUEAMBR(ue)
-	if err != nil {
+	effectiveAMBR := s.logEffectiveUEAMBR(ue, "erab-setup")
+	if effectiveAMBR.Downlink == 0 || effectiveAMBR.Uplink == 0 {
 		if transactionID != "" {
 			s.unregisterPendingERABProcedure(ue, transactionID)
 		}
-		return err
+		return fmt.Errorf("s1ap: UE %d missing effective UE AMBR for E-RAB Setup (down=%d up=%d)", mmeUEID, effectiveAMBR.Downlink, effectiveAMBR.Uplink)
 	}
 	msg, erabValue, err := BuildERABSetupRequest(mmeUEID, enbS1APID, &UEAggregateMaximumBitrate{
-		Downlink: downlink,
-		Uplink:   uplink,
+		Downlink: effectiveAMBR.Downlink,
+		Uplink:   effectiveAMBR.Uplink,
 	}, items)
 	if err != nil {
 		if transactionID != "" {
@@ -203,7 +342,7 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 		return err
 	}
 	for _, item := range items {
-		s.log.Debug("s1ap: E-RAB Setup Request item",
+		fields := []zap.Field{
 			zap.Uint32("mme_ue_id", mmeUEID),
 			zap.Uint32("enb_ue_id", enbS1APID),
 			zap.Uint64("s1_binding_generation", bindingGeneration),
@@ -213,7 +352,24 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 			zap.String("sgw_s1u_ip", item.SGWS1UIPv4.String()),
 			zap.Uint32("sgw_s1u_teid", item.SGWS1UTEID),
 			zap.Bool("nas_pdu_present", len(item.NASPDU) > 0),
-			zap.Int("nas_pdu_len", len(item.NASPDU)))
+			zap.Int("nas_pdu_len", len(item.NASPDU)),
+		}
+		if gbr, present := deriveGBRQosInformation(item.BearerQoS); present {
+			encoded, decoded, roundTripOK := encodeAndDecodeERABGBRQoSForDebug(gbr)
+			fields = append(fields,
+				zap.Uint64("max_dl_bps", gbr.MaxBitrateDL),
+				zap.Uint64("max_ul_bps", gbr.MaxBitrateUL),
+				zap.Uint64("gbr_dl_bps", gbr.GuaranteedBitrateDL),
+				zap.Uint64("gbr_ul_bps", gbr.GuaranteedBitrateUL),
+				zap.String("encoded_gbr_qos_bits_hex", hex.EncodeToString(encoded)),
+				zap.Uint64("decoded_max_dl_bps", decoded.MaxBitrateDL),
+				zap.Uint64("decoded_max_ul_bps", decoded.MaxBitrateUL),
+				zap.Uint64("decoded_gbr_dl_bps", decoded.GuaranteedBitrateDL),
+				zap.Uint64("decoded_gbr_ul_bps", decoded.GuaranteedBitrateUL),
+				zap.Bool("gbr_qos_round_trip_ok", roundTripOK),
+			)
+		}
+		s.log.Debug("s1ap: E-RAB Setup Request item", fields...)
 	}
 	s.log.Debug("s1ap: E-RAB Setup Request encoded",
 		zap.Uint32("mme_ue_id", mmeUEID),
@@ -398,7 +554,10 @@ func decodeBearerQoSBitrate(b []byte) uint64 {
 	for _, octet := range b {
 		out = (out << 8) | uint64(octet)
 	}
-	return out
+	// TS 29.274 Bearer QoS carries each five-octet bitrate in kbit/s.
+	// S1AP BitRate is expressed in bit/s, so preserve the unit conversion
+	// already used by the GTPv2 and NAS Bearer QoS paths.
+	return out * 1000
 }
 
 func encodeBitRateForERABSetup(w *aper.BitWriter, bitrate uint64) {
@@ -407,6 +566,37 @@ func encodeBitRateForERABSetup(w *aper.BitWriter, bitrate uint64) {
 		bitrate = maxBitRate
 	}
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(bitrate), 0, maxBitRate)
+}
+
+// encodeAndDecodeERABGBRQoSForDebug provides focused debug-level evidence for
+// the four S1AP BitRate fields without decoding the complete outbound PDU.
+func encodeAndDecodeERABGBRQoSForDebug(info erabGBRQosInformation) ([]byte, erabGBRQosInformation, bool) {
+	w := aper.NewBitWriter()
+	w.WriteBit(0) // GBR-QosInformation extension marker
+	w.WriteBit(0) // iE-Extensions absent
+	encodeBitRateForERABSetup(w, info.MaxBitrateDL)
+	encodeBitRateForERABSetup(w, info.MaxBitrateUL)
+	encodeBitRateForERABSetup(w, info.GuaranteedBitrateDL)
+	encodeBitRateForERABSetup(w, info.GuaranteedBitrateUL)
+	encoded := w.Bytes()
+
+	r := aper.NewBitReader(encoded)
+	if ext, err := r.ReadBit(); err != nil || ext != 0 {
+		return encoded, erabGBRQosInformation{}, false
+	}
+	if extensions, err := r.ReadBit(); err != nil || extensions != 0 {
+		return encoded, erabGBRQosInformation{}, false
+	}
+	decoded := erabGBRQosInformation{}
+	values := []*uint64{&decoded.MaxBitrateDL, &decoded.MaxBitrateUL, &decoded.GuaranteedBitrateDL, &decoded.GuaranteedBitrateUL}
+	for _, target := range values {
+		value, err := aper.DecodeConstrainedWholeNumber(r, 0, 10000000000)
+		if err != nil {
+			return encoded, erabGBRQosInformation{}, false
+		}
+		*target = uint64(value)
+	}
+	return encoded, decoded, decoded == info
 }
 
 func decodeERABSetupResponseList(data []byte) ([]ERABSetupSuccess, error) {

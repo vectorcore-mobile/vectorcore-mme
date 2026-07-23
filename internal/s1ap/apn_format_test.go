@@ -33,3 +33,16 @@ func TestAPNForNASCanonicalizesIMSCaseInsensitively(t *testing.T) {
 		t.Fatalf("apnForNAS() = %q, want %q", got, want)
 	}
 }
+
+func TestAPNForIMSDefaultBearerNASPreservesPresentationOnly(t *testing.T) {
+	srv := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435"}}
+	if got, want := srv.apnForNAS("ims"), "ims.mnc435.mcc311.gprs"; got != want {
+		t.Fatalf("normalized NAS APN = %q, want %q", got, want)
+	}
+	if got, want := srv.apnForIMSDefaultBearerNAS("ims"), "IMS.mnc435.mcc311.gprs"; got != want {
+		t.Fatalf("IMS default NAS presentation = %q, want %q", got, want)
+	}
+	if got, want := srv.apnForIMSDefaultBearerNAS("internet"), "internet"; got != want {
+		t.Fatalf("non-IMS NAS presentation = %q, want %q", got, want)
+	}
+}

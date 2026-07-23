@@ -167,6 +167,13 @@ func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log
 			return nil
 		}
 		return s.handleStandaloneBearerAccept(ue, accept, esmLog)
+	case esm.MsgActivateDefaultEPSBearerContextReject:
+		resp, err := esm.DecodeBearerProcedureResponse(result.Plain)
+		if err != nil {
+			esmLog.Warn("s1ap: malformed Activate Default EPS Bearer Context Reject", zap.Error(err))
+			return nil
+		}
+		return s.handleStandaloneBearerReject(ue, resp, esmLog)
 	case esm.MsgActivateDedicatedEPSBearerContextAccept,
 		esm.MsgActivateDedicatedEPSBearerContextReject,
 		esm.MsgModifyEPSBearerContextAccept,
@@ -192,6 +199,26 @@ func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log
 		esmLog.Warn("s1ap: unsupported ESM message")
 		return nil
 	}
+}
+
+func (s *Server) handleStandaloneBearerReject(ue *uecontext.Context, resp *esm.BearerProcedureResponse, log *zap.Logger) error {
+	if resp == nil {
+		return nil
+	}
+	ue.Lock()
+	pdn := findPDNByLinkedEBILocked(ue, resp.EPSBearerID)
+	if pdn == nil {
+		ue.Unlock()
+		log.Warn("s1ap: Activate Default EPS Bearer Context Reject for unknown bearer", zap.Uint8("ebi", resp.EPSBearerID))
+		return nil
+	}
+	stopDefaultT3485Locked(ue, pdn)
+	pdn.State = "activation-rejected"
+	ue.Unlock()
+	log.Info("s1ap: Activate Default EPS Bearer Context Reject received", zap.Uint8("ebi", resp.EPSBearerID), zap.Uint8("cause", resp.Cause))
+	s.failLinkedCreateBearerTransactions(ue, resp.EPSBearerID, gtpv2.CauseUERefuses)
+	s.sendDeleteSessionForPDN(ue, resp.EPSBearerID, log)
+	return nil
 }
 
 func (s *Server) handleESMStatus(ue *uecontext.Context, result *nas.DecodeResult, status *esm.ESMStatus, log *zap.Logger) error {
@@ -462,6 +489,7 @@ func (s *Server) handleStandaloneBearerAccept(ue *uecontext.Context, accept *esm
 	ue.Lock()
 	for _, pdn := range ue.PDNs {
 		if pdn.DefaultEBI == accept.EPSBearerID {
+			stopDefaultT3485Locked(ue, pdn)
 			pdn.NASAccepted = true
 			if pdn.ERABEstablished && pdn.ModifyBearerAccepted {
 				pdn.State = "active"
@@ -690,7 +718,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 	releasePendingPDNReservationLocked(ue, pdn)
 	ue.Unlock()
 
-	esmAPN := s.apnForNAS(pdn.APN)
+	esmAPN := s.apnForIMSDefaultBearerNAS(pdn.APN)
 	if pdn.QCI == 0 {
 		log.Error("s1ap: refusing default bearer activation without subscribed QCI", zap.String("apn", pdn.APN), zap.Uint8("ebi", pdn.DefaultEBI))
 		return
@@ -706,8 +734,8 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 			zap.Error(err))
 		return
 	}
-	s.stageInitialIMSDefaultERABActivation(ue, pdn, protected, log)
-	log.Info("s1ap: IMS Activate Default EPS Bearer Context Request sent",
+	s.stageInitialIMSDefaultERABActivation(ue, pdn, activate, protected, log)
+	log.Info("s1ap: IMS Activate Default EPS Bearer Context Request constructed and queued for E-RAB setup",
 		zap.String("apn", pdn.APN),
 		zap.String("canonical_apn", esmAPN),
 		zap.Uint8("pti", pti),

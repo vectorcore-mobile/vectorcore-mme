@@ -88,6 +88,7 @@ const (
 	CauseMandatoryIEMissing          uint8 = 70
 	CauseSystemFailure               uint8 = 72
 	CauseAllDynamicAddressesOccupied uint8 = 84
+	CauseUEIsNotResponding           uint8 = 87
 	CauseUnableToPageUE              uint8 = 90
 	CauseUERefuses                   uint8 = 88
 	CauseRequestRejected             uint8 = 94
@@ -153,6 +154,8 @@ func CauseName(cause uint8) string {
 		return "System failure"
 	case CauseAllDynamicAddressesOccupied:
 		return "All dynamic addresses are occupied"
+	case CauseUEIsNotResponding:
+		return "UE is not responding"
 	case CauseUnableToPageUE:
 		return "Unable to page UE"
 	case CauseUERefuses:

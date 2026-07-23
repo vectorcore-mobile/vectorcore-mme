@@ -124,6 +124,7 @@ func (s *Server) handleUEContextReleaseRequest(remoteAddr string, p *pdu.PDU, ie
 				zap.String("binding_state", uecontext.S1BindingReleasePending.String()),
 				zap.Bool("binding_preserved", true))
 			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
+			s.terminateIncompleteIMSActivationForS1Release(ue)
 			if s.startPreservedS1ReleaseRABR(ue) {
 				return
 			}
@@ -268,6 +269,7 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 			zap.String("skipped_bearers", skippedBearers),
 			zap.Bool("s1_connected", false))
 		metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "inbound", "idle").Inc()
+		s.terminateIncompleteIMSActivationForS1Release(ue)
 		s.failCreateBearersWaitingForLinkedBearer(ue, gtpv2.CauseRequestRejected, "ue_ecm_idle")
 
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
