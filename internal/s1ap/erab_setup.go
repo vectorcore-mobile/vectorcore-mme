@@ -20,6 +20,10 @@ import (
 const (
 	imsModifyBearerTimeout     = 2 * time.Second
 	imsModifyBearerSettleDelay = 750 * time.Millisecond
+	// The SGW's linked Create Bearer arrived 9.080 ms after the IMS CSRsp in
+	// the Nokia capture. Keep the initial default activation for 20 ms so the
+	// immediately associated dedicated bearers can share one E-RAB Setup.
+	imsInitialERABAggregationWindow = 20 * time.Millisecond
 )
 
 func imsModifyBearerTimerName(ebi uint8) string {
@@ -28,6 +32,10 @@ func imsModifyBearerTimerName(ebi uint8) string {
 
 func imsModifyBearerSettleTimerName(ebi uint8) string {
 	return fmt.Sprintf("IMSModifyBearerSettle:%d", ebi)
+}
+
+func imsInitialERABAggregationTimerName(ebi uint8) string {
+	return fmt.Sprintf("IMSInitialERABAggregation:%d", ebi)
 }
 
 type ERABSetupItem struct {
@@ -49,6 +57,76 @@ type ERABSetupResult struct {
 	ENBS1UTEID uint32
 	CauseGroup uint8
 	Cause      uint32
+}
+
+func defaultIMSERABSetupItem(pdn *uecontext.PDNContext, nasPDU []byte) ERABSetupItem {
+	return ERABSetupItem{
+		EBI:                     pdn.DefaultEBI,
+		QCI:                     pdn.QCI,
+		ARPPriority:             pdn.ARPPriority,
+		PreemptionCapability:    pdn.PreemptionCapability,
+		PreemptionVulnerability: pdn.PreemptionVulnerability,
+		SGWS1UIPv4:              append(net.IP(nil), pdn.SGWU_IP...),
+		SGWS1UTEID:              pdn.SGWU_TEID,
+		NASPDU:                  append([]byte(nil), nasPDU...),
+	}
+}
+
+// stageInitialIMSDefaultERABActivation starts a short, bounded procedure
+// window for an initial linked Create Bearer Request. NAS COUNT is consumed
+// when the activation is staged, so any dedicated NAS PDUs built during the
+// window use the next count values.
+func (s *Server) stageInitialIMSDefaultERABActivation(ue *uecontext.Context, pdn *uecontext.PDNContext, protected []byte, log *zap.Logger) {
+	if ue == nil || pdn == nil {
+		return
+	}
+	ue.Lock()
+	pdn.InitialERABAggregationPending = true
+	pdn.InitialERABActivationNAS = append([]byte(nil), protected...)
+	pdn.State = "initial-erab-aggregation-pending"
+	ue.DLNASCount.Increment()
+	ue.LastDownlinkNASMessage = "Activate Default EPS Bearer Context Request"
+	mmeUEID := ue.MMEUES1APID
+	ebi := pdn.DefaultEBI
+	ue.StartTimer(imsInitialERABAggregationTimerName(ebi), imsInitialERABAggregationWindow, func() {
+		s.flushInitialIMSDefaultERABActivation(mmeUEID, ebi)
+	})
+	ue.Unlock()
+	log.Debug("s1ap: IMS default bearer aggregation window started",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("ebi", ebi),
+		zap.Duration("window", imsInitialERABAggregationWindow))
+}
+
+func (s *Server) flushInitialIMSDefaultERABActivation(mmeUEID uint32, ebi uint8) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		return
+	}
+	ue.Lock()
+	var pdn *uecontext.PDNContext
+	for _, candidate := range ue.PDNs {
+		if candidate != nil && candidate.DefaultEBI == ebi {
+			pdn = candidate
+			break
+		}
+	}
+	if pdn == nil || !pdn.InitialERABAggregationPending {
+		ue.Unlock()
+		return
+	}
+	nasPDU := append([]byte(nil), pdn.InitialERABActivationNAS...)
+	pdn.InitialERABAggregationPending = false
+	pdn.InitialERABActivationNAS = nil
+	pdn.State = "erab-setup-pending"
+	ue.StopTimer(imsInitialERABAggregationTimerName(ebi))
+	item := defaultIMSERABSetupItem(pdn, nasPDU)
+	transactionID := fmt.Sprintf("ims-erab-%d-%d", mmeUEID, ebi)
+	ue.Unlock()
+	if err := s.SendERABSetupRequestTracked(mmeUEID, []ERABSetupItem{item}, "ims_default_bearer", transactionID); err != nil {
+		s.log.Warn("s1ap: failed to send timed IMS default E-RAB Setup Request",
+			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("ebi", ebi), zap.Error(err))
+	}
 }
 
 type ERABSetupResponse struct {
@@ -669,7 +747,7 @@ func (s *Server) applyERABSetupResponseForProcedure(ue *uecontext.Context, proc 
 			ENBS1UIPv4: append(net.IP(nil), success.ENBS1UAddr...),
 			ENBS1UTEID: success.ENBS1UTEID,
 		}
-		if proc.ProcedureKind == "dedicated_create_bearer" {
+		if proc.ProcedureKind == "dedicated_create_bearer" || (proc.ProcedureKind == "ims_initial_aggregate" && !isDefaultPDNEBILocked(ue, result.EBI)) {
 			s.completeDedicatedERABSetupForBearer(ue, result, log)
 			continue
 		}
@@ -682,11 +760,14 @@ func (s *Server) applyERABSetupResponseForProcedure(ue *uecontext.Context, proc 
 			CauseGroup: failure.CauseGroup,
 			Cause:      failure.Cause,
 		}
-		if proc.ProcedureKind == "dedicated_create_bearer" {
+		if proc.ProcedureKind == "dedicated_create_bearer" || (proc.ProcedureKind == "ims_initial_aggregate" && !isDefaultPDNEBILocked(ue, result.EBI)) {
 			s.completeDedicatedERABSetupForBearer(ue, result, log)
 			continue
 		}
 		s.completeIMSDefaultERABSetupForBearer(ue, result, log)
+		if proc.ProcedureKind == "ims_initial_aggregate" {
+			s.failPendingCreateBearersForLinkedEBI(ue, result.EBI, gtpv2.CauseRequestRejected, "initial_aggregate_default_erab_failed")
+		}
 	}
 	ue.Lock()
 	allCovered := true
@@ -700,6 +781,17 @@ func (s *Server) applyERABSetupResponseForProcedure(ue *uecontext.Context, proc 
 		delete(ue.PendingERABProcedures, proc.TransactionID)
 	}
 	ue.Unlock()
+}
+
+func isDefaultPDNEBILocked(ue *uecontext.Context, ebi uint8) bool {
+	ue.Lock()
+	defer ue.Unlock()
+	for _, pdn := range ue.PDNs {
+		if pdn != nil && pdn.DefaultEBI == ebi {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) completeIMSDefaultERABSetupForBearer(ue *uecontext.Context, result ERABSetupResult, log *zap.Logger) {

@@ -96,6 +96,8 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 	fingerprint := createBearerFingerprint(req)
 	var shouldPage bool
 	var shouldResume bool
+	var shouldAggregate bool
+	var aggregateItems []ERABSetupItem
 	var transactionID string
 	var assignedEBIs []uint8
 	var pageIMSI string
@@ -188,19 +190,31 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 		if qci == 0 {
 			qci = 9
 		}
+		legacyTransactionIdentifier := uint8(0)
+		if strings.EqualFold(linked.APN, "ims") && (qci == 1 || qci == 2) {
+			legacyTransactionIdentifier = allocateDedicatedLegacyTransactionIdentifierLocked(ue)
+			if legacyTransactionIdentifier == 0 {
+				ue.Unlock()
+				s.log.Warn("s1ap: no legacy transaction identifier available for IMS dedicated bearer",
+					zap.String("imsi", ue.IMSI), zap.Uint8("qci", qci))
+				s.sendCreateBearerResponse(peer, req.TEID, req.SeqNum, gtpv2.CauseRequestDenied, req.Bearers)
+				return
+			}
+		}
 		proc := &uecontext.DedicatedBearerContext{
-			TransactionID: transactionID,
-			RequestedEBI:  b.RequestedEBI,
-			AssignedEBI:   assigned,
-			LinkedEBI:     req.LinkedEBI,
-			PTI:           0,
-			QCI:           qci,
-			ARP:           b.ARP,
-			BearerQoS:     append([]byte(nil), b.BearerQoS...),
-			TFT:           append([]byte(nil), b.TFT...),
-			SGWS1UTEID:    b.SGWS1UTEID,
-			SGWS1UIP:      append(net.IP(nil), b.SGWS1UIP...),
-			State:         "create-pending",
+			TransactionID:               transactionID,
+			RequestedEBI:                b.RequestedEBI,
+			AssignedEBI:                 assigned,
+			LinkedEBI:                   req.LinkedEBI,
+			PTI:                         0,
+			LegacyTransactionIdentifier: legacyTransactionIdentifier,
+			QCI:                         qci,
+			ARP:                         b.ARP,
+			BearerQoS:                   append([]byte(nil), b.BearerQoS...),
+			TFT:                         append([]byte(nil), b.TFT...),
+			SGWS1UTEID:                  b.SGWS1UTEID,
+			SGWS1UIP:                    append(net.IP(nil), b.SGWS1UIP...),
+			State:                       "create-pending",
 		}
 		tx.Bearers[assigned] = proc
 		tx.EBIs = append(tx.EBIs, assigned)
@@ -235,7 +249,31 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 	emmState := ue.EMMState
 	ecmState := ue.ECMState
 	activeS1 := hasActiveS1BindingLocked(ue)
-	if !linkedBearerReadyLocked(ue, req.LinkedEBI) {
+	if activeS1 && ecmState == emm.ECMConnected && linked.InitialERABAggregationPending {
+		defaultNAS := append([]byte(nil), linked.InitialERABActivationNAS...)
+		linked.InitialERABAggregationPending = false
+		linked.InitialERABActivationNAS = nil
+		linked.State = "erab-setup-pending"
+		ue.StopTimer(imsInitialERABAggregationTimerName(req.LinkedEBI))
+		dedicatedItems, err := buildCreateBearerERABItemsLocked(ue, tx)
+		if err != nil {
+			delete(ue.PendingBearerTransactions, key)
+			releaseCreateBearerReservationsLocked(ue, tx)
+			ue.Unlock()
+			s.sendCreateBearerResponse(peer, req.TEID, req.SeqNum, gtpv2.CauseRequestDenied, req.Bearers)
+			return
+		}
+		aggregateItems = append([]ERABSetupItem{defaultIMSERABSetupItem(linked, defaultNAS)}, dedicatedItems...)
+		tx.CreateState = uecontext.CreateBearerSettingUpERAB
+		tx.State = string(tx.CreateState)
+		shouldAggregate = true
+		s.log.Info("s1ap: aggregating initial IMS default and dedicated bearers",
+			zap.String("imsi", imsi),
+			zap.Uint32("mme_ue_id", mmeID),
+			zap.Uint8("linked_ebi", req.LinkedEBI),
+			zap.Uint8s("erab_ebis", append([]uint8{req.LinkedEBI}, assignedEBIs...)),
+			zap.String("transaction_id", transactionID))
+	} else if !linkedBearerReadyLocked(ue, req.LinkedEBI) {
 		tx.CreateState = uecontext.CreateBearerWaitingForLink
 		tx.State = string(tx.CreateState)
 		s.log.Debug("s11: Create Bearer Request waiting for linked bearer readiness",
@@ -274,6 +312,21 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 	ue.Unlock()
 
 	s.startCreateBearerTimeout(ue, key)
+	if shouldAggregate {
+		if err := s.SendERABSetupRequestTracked(mmeID, aggregateItems, "ims_initial_aggregate", transactionID); err != nil {
+			s.log.Warn("s1ap: aggregated initial IMS E-RAB Setup Request failed",
+				zap.Uint32("mme_ue_id", mmeID), zap.String("transaction_id", transactionID), zap.Error(err))
+			s.failCreateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
+			return
+		}
+		ue.Lock()
+		if tx := ue.PendingBearerTransactions[key]; tx != nil && tx.ID == transactionID {
+			tx.CreateState = uecontext.CreateBearerWaitingResults
+			tx.State = string(tx.CreateState)
+		}
+		ue.Unlock()
+		return
+	}
 	if shouldPage {
 		if err := s.PageUE(pageIMSI); err != nil && err != ErrAlreadyPaging && err != ErrAlreadyConnected {
 			s.log.Warn("s1ap: paging UE for pending Create Bearer failed",
@@ -337,6 +390,46 @@ func (s *Server) ResumePendingNetworkBearerProcedures(ue *uecontext.Context) {
 	}
 }
 
+// buildCreateBearerERABItemsLocked builds the network-initiated dedicated
+// activation PDUs while the UE NAS COUNT and EBI reservations are stable.
+// The caller owns ue.Lock().
+func buildCreateBearerERABItemsLocked(ue *uecontext.Context, tx *uecontext.DedicatedBearerTransaction) ([]ERABSetupItem, error) {
+	items := make([]ERABSetupItem, 0, len(tx.EBIs))
+	for _, ebi := range tx.EBIs {
+		proc := tx.Bearers[ebi]
+		if proc == nil {
+			continue
+		}
+		res, ok := ue.EBIReservations[ebi]
+		if !ok || res.TransactionID != tx.ID {
+			return nil, fmt.Errorf("dedicated EBI %d reservation is not owned by %s", ebi, tx.ID)
+		}
+		optionalIEs := esm.ActivateDedicatedBearerOptionalIEs{}
+		if proc.LegacyTransactionIdentifier != 0 {
+			optionalIEs = esm.IMSDedicatedBearerInterworkingOptions(proc.LegacyTransactionIdentifier, proc.BearerQoS, proc.QCI)
+		}
+		plain := esm.EncodeActivateDedicatedEPSBearerContextRequestWithOptionalIEs(proc.AssignedEBI, proc.LinkedEBI, proc.PTI, proc.BearerQoS, proc.QCI, proc.TFT, optionalIEs, proc.PCO)
+		protected, _, err := protectNASLocked(ue, plain)
+		if err != nil {
+			return nil, fmt.Errorf("protect dedicated EBI %d: %w", ebi, err)
+		}
+		ue.DLNASCount.Increment()
+		proc.State = "nas-sent"
+		items = append(items, ERABSetupItem{
+			EBI:                     proc.AssignedEBI,
+			QCI:                     proc.QCI,
+			ARPPriority:             arpPriority(proc.ARP),
+			PreemptionCapability:    preemptionCapability(proc.ARP),
+			PreemptionVulnerability: preemptionVulnerability(proc.ARP),
+			BearerQoS:               append([]byte(nil), proc.BearerQoS...),
+			SGWS1UIPv4:              proc.SGWS1UIP.To4(),
+			SGWS1UTEID:              proc.SGWS1UTEID,
+			NASPDU:                  protected,
+		})
+	}
+	return items, nil
+}
+
 func (s *Server) resumeCreateBearerTransaction(ue *uecontext.Context, key string) {
 	ue.Lock()
 	tx := ue.PendingBearerTransactions[key]
@@ -365,43 +458,14 @@ func (s *Server) resumeCreateBearerTransaction(ue *uecontext.Context, key string
 	}
 	tx.CreateState = uecontext.CreateBearerActivatingNAS
 	tx.State = string(tx.CreateState)
-	var erabItems []ERABSetupItem
 	assignedEBIs := append([]uint8(nil), tx.EBIs...)
-	for _, ebi := range tx.EBIs {
-		proc := tx.Bearers[ebi]
-		if proc == nil {
-			continue
-		}
-		res, ok := ue.EBIReservations[ebi]
-		if !ok || res.TransactionID != tx.ID {
-			ue.Unlock()
-			s.failCreateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
-			return
-		}
-		plain := esm.EncodeActivateDedicatedEPSBearerContextRequest(proc.AssignedEBI, proc.LinkedEBI, proc.PTI, proc.BearerQoS, proc.QCI, proc.TFT, proc.PCO)
-		protected, _, err := protectNASLocked(ue, plain)
-		if err != nil {
-			ue.Unlock()
-			s.log.Warn("s1ap: failed to protect resumed Activate Dedicated EPS Bearer Context Request",
-				zap.String("transaction_id", tx.ID),
-				zap.Uint8("assigned_ebi", proc.AssignedEBI),
-				zap.Error(err))
-			s.failCreateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
-			return
-		}
-		ue.DLNASCount.Increment()
-		proc.State = "nas-sent"
-		erabItems = append(erabItems, ERABSetupItem{
-			EBI:                     proc.AssignedEBI,
-			QCI:                     proc.QCI,
-			ARPPriority:             arpPriority(proc.ARP),
-			PreemptionCapability:    preemptionCapability(proc.ARP),
-			PreemptionVulnerability: preemptionVulnerability(proc.ARP),
-			BearerQoS:               append([]byte(nil), proc.BearerQoS...),
-			SGWS1UIPv4:              proc.SGWS1UIP.To4(),
-			SGWS1UTEID:              proc.SGWS1UTEID,
-			NASPDU:                  protected,
-		})
+	erabItems, err := buildCreateBearerERABItemsLocked(ue, tx)
+	if err != nil {
+		ue.Unlock()
+		s.log.Warn("s1ap: failed to build resumed dedicated E-RAB Setup Request",
+			zap.String("transaction_id", tx.ID), zap.Error(err))
+		s.failCreateBearerTransaction(ue, key, gtpv2.CauseRequestDenied)
+		return
 	}
 	tx.CreateState = uecontext.CreateBearerSettingUpERAB
 	tx.State = string(tx.CreateState)
@@ -978,6 +1042,9 @@ func (s *Server) finalizeCreateBearerTransactionLocked(ue *uecontext.Context, ke
 	for _, proc := range tx.Bearers {
 		if proc.NASAccepted && proc.ERABEstablished {
 			proc.State = "active"
+			// The optional Transaction identifier belongs to the completed
+			// activation procedure. Do not reserve it for the bearer lifetime.
+			proc.LegacyTransactionIdentifier = 0
 			ue.DedicatedBearers[proc.AssignedEBI] = proc
 		}
 		delete(ue.EBIReservations, proc.AssignedEBI)
@@ -1237,6 +1304,28 @@ func assignDedicatedEBIsLocked(ue *uecontext.Context, bearers []gtpv2.CreateBear
 		}
 	}
 	return gtpv2.AssignRequestedBearerIDs(bearers, used)
+}
+
+// allocateDedicatedLegacyTransactionIdentifierLocked reserves one of the
+// network-initiated PDP transaction identifiers. Value 1 is used by the IMS
+// default bearer profile, so dedicated IMS procedures start at 2. The value
+// is held only by pending activation procedures and is released on every
+// terminal outcome.
+func allocateDedicatedLegacyTransactionIdentifierLocked(ue *uecontext.Context) uint8 {
+	used := map[uint8]bool{1: true}
+	for _, tx := range ue.PendingBearerTransactions {
+		for _, proc := range tx.Bearers {
+			if proc != nil && proc.LegacyTransactionIdentifier != 0 {
+				used[proc.LegacyTransactionIdentifier] = true
+			}
+		}
+	}
+	for candidate := uint8(2); candidate <= 7; candidate++ {
+		if !used[candidate] {
+			return candidate
+		}
+	}
+	return 0
 }
 
 func hasActiveS1BindingLocked(ue *uecontext.Context) bool {

@@ -85,6 +85,18 @@ func negotiatedPDNTypeCause(requested, subscribedPolicy, networkSelected uint8, 
 	}
 }
 
+// imsDefaultBearerOptionalIEs selects the legacy inter-system mobility
+// parameters only for the IMS signalling APN with its standardized QCI 5.
+// This is APN/bearer policy, not a handset compatibility condition; all other
+// PDNs retain their existing activation encoding unless their policy later
+// explicitly selects such parameters.
+func imsDefaultBearerOptionalIEs(apn string, qci uint8, apnAMBRUpBps, apnAMBRDownBps uint32) esm.ActivateDefaultBearerOptionalIEs {
+	if !strings.EqualFold(apn, "ims") || qci != 5 {
+		return esm.ActivateDefaultBearerOptionalIEs{}
+	}
+	return esm.IMSDefaultBearerInterworkingOptions(apnAMBRUpBps, apnAMBRDownBps)
+}
+
 func (s *Server) processESM(ue *uecontext.Context, result *nas.DecodeResult, log *zap.Logger) error {
 	msg, err := esm.Decode(result.Plain)
 	if err != nil || msg == nil {
@@ -684,7 +696,8 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 		return
 	}
 	downgradeCause := negotiatedPDNTypeCause(pdn.RequestedPDNType, pdn.SubscribedPDNTypePolicy, pdn.NetworkPDNType, pdn.UEIPv4)
-	activate := esm.EncodePDNConnectivityAcceptWithQoSAndCause(pti, esmAPN, pdn.DefaultEBI, pdn.UEIPv4, pdn.QCI, pdn.APNAMBRUp, pdn.APNAMBRDown, downgradeCause, pdn.PGWPCO)
+	optionalIEs := imsDefaultBearerOptionalIEs(pdn.APN, pdn.QCI, pdn.APNAMBRUp, pdn.APNAMBRDown)
+	activate := esm.EncodePDNConnectivityAcceptWithQoSAndCauseAndOptionalIEs(pti, esmAPN, pdn.DefaultEBI, pdn.UEIPv4, pdn.QCI, pdn.APNAMBRUp, pdn.APNAMBRDown, downgradeCause, pdn.PGWPCO, optionalIEs)
 	protected, _, err := s.protectNAS(ue, activate)
 	if err != nil {
 		log.Warn("s1ap: failed to protect IMS Activate Default EPS Bearer Context Request",
@@ -693,28 +706,7 @@ func (s *Server) handlePendingPDNCSRResult(ue *uecontext.Context, resp *gtpv2.Cr
 			zap.Error(err))
 		return
 	}
-	imsERABTxID := fmt.Sprintf("ims-erab-%d-%d", ue.MMEUES1APID, pdn.DefaultEBI)
-	if err := s.SendERABSetupRequestTracked(ue.MMEUES1APID, []ERABSetupItem{{
-		EBI:                     pdn.DefaultEBI,
-		QCI:                     pdn.QCI,
-		ARPPriority:             pdn.ARPPriority,
-		PreemptionCapability:    pdn.PreemptionCapability,
-		PreemptionVulnerability: pdn.PreemptionVulnerability,
-		SGWS1UIPv4:              pdn.SGWU_IP,
-		SGWS1UTEID:              pdn.SGWU_TEID,
-		NASPDU:                  protected,
-	}}, "ims_default_bearer", imsERABTxID); err != nil {
-		log.Warn("s1ap: failed to send IMS E-RAB Setup Request",
-			zap.String("apn", pdn.APN),
-			zap.Uint8("ebi", pdn.DefaultEBI),
-			zap.Error(err))
-		return
-	}
-	ue.Lock()
-	ue.DLNASCount.Increment()
-	ue.LastDownlinkNASMessage = "Activate Default EPS Bearer Context Request"
-	pdn.State = "erab-setup-pending"
-	ue.Unlock()
+	s.stageInitialIMSDefaultERABActivation(ue, pdn, protected, log)
 	log.Info("s1ap: IMS Activate Default EPS Bearer Context Request sent",
 		zap.String("apn", pdn.APN),
 		zap.String("canonical_apn", esmAPN),

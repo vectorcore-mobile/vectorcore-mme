@@ -7,7 +7,7 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 )
 
-const normalizedDedicatedBearerMaxBitrateBps uint64 = 10_240_000 * 1024
+const normalizedDedicatedBearerMaxBitrateBps uint64 = 10_240_000_000
 
 type BearerProcedureResponse struct {
 	EPSBearerID            uint8
@@ -37,7 +37,22 @@ type DedicatedBearerQoSDebugInfo struct {
 	EncodedHex             string
 }
 
+// ActivateDedicatedBearerOptionalIEs holds the optional inter-system
+// mobility parameters selected by bearer policy.
+type ActivateDedicatedBearerOptionalIEs struct {
+	TransactionIdentifier *uint8
+	NegotiatedQoS         *NegotiatedQoS
+	LLCSAPI               *uint8
+	RadioPriority         *uint8
+}
+
 func EncodeActivateDedicatedEPSBearerContextRequest(assignedEBI, linkedEBI, pti uint8, qos []byte, qci uint8, tft []byte, pco []byte) []byte {
+	return EncodeActivateDedicatedEPSBearerContextRequestWithOptionalIEs(assignedEBI, linkedEBI, pti, qos, qci, tft, ActivateDedicatedBearerOptionalIEs{}, pco)
+}
+
+// EncodeActivateDedicatedEPSBearerContextRequestWithOptionalIEs encodes the
+// optional IEs in TS 24.301 §8.3.3 order after the mandatory TFT.
+func EncodeActivateDedicatedEPSBearerContextRequestWithOptionalIEs(assignedEBI, linkedEBI, pti uint8, qos []byte, qci uint8, tft []byte, optionalIEs ActivateDedicatedBearerOptionalIEs, pco []byte) []byte {
 	buf := []byte{
 		(assignedEBI << 4) | PDEPSSessionMgmt,
 		pti,
@@ -50,6 +65,21 @@ func EncodeActivateDedicatedEPSBearerContextRequest(assignedEBI, linkedEBI, pti 
 	}
 	buf = append(buf, byte(len(tft)))
 	buf = append(buf, tft...)
+	if optionalIEs.TransactionIdentifier != nil {
+		buf = append(buf, 0x5d, 0x01, (*optionalIEs.TransactionIdentifier&0x0f)<<4)
+	}
+	if optionalIEs.NegotiatedQoS != nil {
+		if negotiated, ok := encodeNegotiatedQoS(*optionalIEs.NegotiatedQoS); ok {
+			buf = append(buf, 0x30, byte(len(negotiated)))
+			buf = append(buf, negotiated...)
+		}
+	}
+	if optionalIEs.LLCSAPI != nil {
+		buf = append(buf, 0x32, *optionalIEs.LLCSAPI&0x0f)
+	}
+	if optionalIEs.RadioPriority != nil {
+		buf = append(buf, 0x80|(*optionalIEs.RadioPriority&0x07))
+	}
 	if len(pco) > 0 {
 		if len(pco) > 255 {
 			pco = pco[:255]
@@ -58,6 +88,46 @@ func EncodeActivateDedicatedEPSBearerContextRequest(assignedEBI, linkedEBI, pti 
 		buf = append(buf, pco...)
 	}
 	return buf
+}
+
+// IMSDedicatedBearerInterworkingOptions derives the R99 inter-system
+// mobility profile from the QCI 1 or QCI 2 GBR bearer policy.
+func IMSDedicatedBearerInterworkingOptions(transactionIdentifier uint8, rawQoS []byte, fallbackQCI uint8) ActivateDedicatedBearerOptionalIEs {
+	if transactionIdentifier == 0 || (fallbackQCI != 1 && fallbackQCI != 2) {
+		return ActivateDedicatedBearerOptionalIEs{}
+	}
+	parsed, err := gtpv2.ParseBearerQoS(rawQoS)
+	if err != nil || parsed == nil {
+		return ActivateDedicatedBearerOptionalIEs{}
+	}
+	qci := parsed.QCI
+	if qci == 0 {
+		qci = fallbackQCI
+	}
+	if qci != 1 && qci != 2 {
+		return ActivateDedicatedBearerOptionalIEs{}
+	}
+	ulMBR, dlMBR, ulGBR, dlGBR := normalizeDedicatedBearerRates(parsed)
+	if ulMBR > uint64(^uint32(0)) || dlMBR > uint64(^uint32(0)) || ulGBR > uint64(^uint32(0)) || dlGBR > uint64(^uint32(0)) {
+		return ActivateDedicatedBearerOptionalIEs{}
+	}
+	llcSAPI, radioPriority := uint8(3), uint8(4)
+	profile := NegotiatedQoS{
+		DelayClass: 1, ReliabilityClass: 4, PrecedenceClass: 1, PeakThroughput: 5, MeanThroughput: 31,
+		TrafficClass: 1, DeliveryOrder: 2, DeliveryOfErroneousSDUs: 3, MaximumSDUSize: 150,
+		MaximumBitRateUplinkBps: uint32(ulMBR), MaximumBitRateDownlinkBps: uint32(dlMBR),
+		ResidualBER: 7, TrafficHandlingPriority: 3,
+		GuaranteedBitRateUplinkBps: uint32(ulGBR), GuaranteedBitRateDownlinkBps: uint32(dlGBR),
+	}
+	if qci == 1 {
+		profile.SDUErrorRatio = 1
+		profile.TransferDelay = 10
+		profile.SourceStatisticsDescriptor = 1 // speech
+	} else {
+		profile.SDUErrorRatio = 3
+		profile.TransferDelay = 15
+	}
+	return ActivateDedicatedBearerOptionalIEs{TransactionIdentifier: &transactionIdentifier, NegotiatedQoS: &profile, LLCSAPI: &llcSAPI, RadioPriority: &radioPriority}
 }
 
 func EncodeModifyEPSBearerContextRequest(ebi, pti, qci uint8, qos []byte, tft []byte, pco []byte) []byte {
@@ -256,7 +326,9 @@ func encodeNASQoSFromBps(out *nasEPSQoSBitRate, input uint64) uint8 {
 	if out == nil {
 		return 0
 	}
-	input /= 1024
+	// TS 24.008 §10.5.6.5 uses decimal kbit/s. Round upward so the encoded
+	// rate never advertises less than the admitted bit/s rate.
+	input = (input + 999) / 1000
 	if input < 1 {
 		out.base = 0xff
 		return 1
@@ -266,19 +338,11 @@ func encodeNASQoSFromBps(out *nasEPSQoSBitRate, input uint64) uint8 {
 		return 1
 	}
 	if input <= 568 {
-		out.base = uint8(((input - 64) / 8) + 0b01000000)
-		return 1
-	}
-	if input < 576 {
-		out.base = 0b01111111
+		out.base = uint8(((input - 64 + 7) / 8) + 0b01000000)
 		return 1
 	}
 	if input <= 8640 {
-		out.base = uint8(((input - 576) / 64) + 0b10000000)
-		return 1
-	}
-	if input < 8700 {
-		out.base = 0b11111110
+		out.base = uint8(((input - 576 + 63) / 64) + 0b10000000)
 		return 1
 	}
 	if input <= 16000 {
@@ -286,59 +350,32 @@ func encodeNASQoSFromBps(out *nasEPSQoSBitRate, input uint64) uint8 {
 		out.extended = uint8((input - 8600) / 100)
 		return 2
 	}
-	if input < 17*1024 {
+	if input <= 128_000 {
 		out.base = 0b11111110
-		out.extended = 0b01001010
+		out.extended = uint8(((input - 16_000 + 999) / 1000) + 0b01001010)
 		return 2
 	}
-	if input <= 128*1024 {
+	if input <= 256_000 {
 		out.base = 0b11111110
-		out.extended = uint8(((input - (16 * 1024)) / 1024) + 0b01001010)
+		out.extended = uint8(((input - 128_000 + 1999) / 2000) + 0b10111010)
 		return 2
 	}
-	if input < 130*1024 {
-		out.base = 0b11111110
-		out.extended = 0b10111010
-		return 2
-	}
-	if input <= 256*1024 {
-		out.base = 0b11111110
-		out.extended = uint8(((input - (128 * 1024)) / (2 * 1024)) + 0b10111010)
-		return 2
-	}
-	if input < 260*1024 {
+	if input <= 500_000 {
 		out.base = 0b11111110
 		out.extended = 0b11111010
-		return 2
-	}
-	if input <= 500*1024 {
-		out.base = 0b11111110
-		out.extended = 0b11111010
-		out.extended2 = uint8((input - (256 * 1024)) / (4 * 1024))
+		out.extended2 = uint8((input - 256_000 + 3999) / 4000)
 		return 3
 	}
-	if input < 510*1024 {
+	if input <= 1_500_000 {
 		out.base = 0b11111110
 		out.extended = 0b11111010
-		out.extended2 = 0b00111101
+		out.extended2 = uint8(((input - 500_000 + 9999) / 10_000) + 0b00111101)
 		return 3
 	}
-	if input <= 1500*1024 {
+	if input <= 10_000_000 {
 		out.base = 0b11111110
 		out.extended = 0b11111010
-		out.extended2 = uint8(((input - (500 * 1024)) / (10 * 1024)) + 0b00111101)
-		return 3
-	}
-	if input < 1600*1024 {
-		out.base = 0b11111110
-		out.extended = 0b11111010
-		out.extended2 = 0b10100001
-		return 3
-	}
-	if input <= 10*1000*1024 {
-		out.base = 0b11111110
-		out.extended = 0b11111010
-		out.extended2 = uint8(((input - (1500 * 1024)) / (100 * 1024)) + 0b10100001)
+		out.extended2 = uint8(((input - 1_500_000 + 99_999) / 100_000) + 0b10100001)
 		return 3
 	}
 	out.base = 0b11111110

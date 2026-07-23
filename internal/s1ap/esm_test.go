@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"bytes"
 	"encoding/hex"
 	"net"
 	"os"
@@ -761,12 +762,12 @@ func TestProcessESM_PDNConnectivityRequestUsesSubscribedQoSAndAMBR(t *testing.T)
 		"ims": {
 			ServiceSelection:        "ims",
 			PDNType:                 gtpv2.PDNTypeIPv4,
-			QCI:                     1,
-			ARPPriority:             4,
-			PreemptionCapability:    true,
+			QCI:                     5,
+			ARPPriority:             1,
+			PreemptionCapability:    false,
 			PreemptionVulnerability: false,
-			APNAMBRUp:               384,
-			APNAMBRDown:             512,
+			APNAMBRUp:               3_850_000,
+			APNAMBRDown:             1_530_000,
 		},
 	}
 	ue.Unlock()
@@ -787,23 +788,201 @@ func TestProcessESM_PDNConnectivityRequestUsesSubscribedQoSAndAMBR(t *testing.T)
 	if got, want := csr.PDNType, uint8(gtpv2.PDNTypeIPv4); got != want {
 		t.Fatalf("PDN type got %d, want %d", got, want)
 	}
-	if got, want := csr.BearerQCI, uint8(1); got != want {
+	ue.Lock()
+	pending := ue.PendingPDN
+	ue.Unlock()
+	if pending == nil {
+		t.Fatal("PendingPDN missing")
+	}
+	if got, want := pending.RequestedPDNType, uint8(esm.PDNTypeIPv4v6); got != want {
+		t.Fatalf("requested PDN type got %d, want IPv4v6 %d", got, want)
+	}
+	if got, want := pending.PDNType, uint8(gtpv2.PDNTypeIPv4); got != want {
+		t.Fatalf("selected S11 PDN type got %d, want IPv4 %d", got, want)
+	}
+	if got, want := csr.BearerQCI, uint8(5); got != want {
 		t.Fatalf("BearerQCI got %d, want %d", got, want)
 	}
-	if got, want := csr.BearerPriorityLevel, uint8(4); got != want {
+	if got, want := csr.BearerPriorityLevel, uint8(1); got != want {
 		t.Fatalf("BearerPriorityLevel got %d, want %d", got, want)
 	}
-	if got, want := csr.PreemptionCapability, true; got != want {
+	if got, want := csr.PreemptionCapability, false; got != want {
 		t.Fatalf("PreemptionCapability got %t, want %t", got, want)
 	}
 	if got, want := csr.PreemptionVulnerability, false; got != want {
 		t.Fatalf("PreemptionVulnerability got %t, want %t", got, want)
 	}
-	if got, want := csr.UplinkAMBRKbps, uint32(384); got != want {
+	if got, want := csr.UplinkAMBRKbps, uint32(3_850_000); got != want {
 		t.Fatalf("UplinkAMBRKbps got %d, want %d", got, want)
 	}
-	if got, want := csr.DownlinkAMBRKbps, uint32(512); got != want {
+	if got, want := csr.DownlinkAMBRKbps, uint32(1_530_000); got != want {
 		t.Fatalf("DownlinkAMBRKbps got %d, want %d", got, want)
+	}
+}
+
+func TestHandlePendingPDNCSRResultNokiaIMSIPv4v6Downgrade(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	srv.enbTracker = peertracker.New()
+	const remoteAddr = "10.0.0.26:36412"
+	ch := registerTestENBWithChan(srv, remoteAddr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "311435000070573"
+	ue.ENBGlobalID = remoteAddr
+	ue.ENBS1APID = 226
+	ue.ECMState = emm.ECMConnected
+	ue.UEAMBRDown = 100_000_000
+	ue.UEAMBRUp = 100_000_000
+	ue.KNASint = make([]byte, 16)
+	ue.KNASenc = make([]byte, 16)
+	ue.IntAlg = 0
+	ue.EncAlg = 0
+	ue.PendingPDN = &uecontext.PDNContext{
+		APN:                     "ims",
+		ProcedureTransactionID:  2,
+		RequestedPDNType:        esm.PDNTypeIPv4v6,
+		SubscribedPDNType:       gtpv2.PDNTypeIPv4,
+		SubscribedPDNTypePolicy: 0,
+		PDNType:                 gtpv2.PDNTypeIPv4,
+		DefaultEBI:              6,
+		QCI:                     5,
+		ARPPriority:             1,
+		APNAMBRUp:               3_850_000,
+		APNAMBRDown:             1_530_000,
+		State:                   "csr-sent",
+	}
+	ue.Unlock()
+
+	pco := []byte{0x80, 0x00, 0x0d, 0x04, 10, 90, 250, 10}
+	srv.handlePendingPDNCSRResult(ue, &gtpv2.CreateSessionResponse{
+		Cause:     gtpv2.CauseRequestAccepted,
+		EBI:       6,
+		SGWC_TEID: 0x698c2b89,
+		SGWC_IP:   []byte{10, 90, 250, 59},
+		SGWU_TEID: 0x9942c914,
+		SGWU_IP:   []byte{10, 90, 250, 59},
+		UEIPv4:    []byte{10, 150, 3, 193},
+		PDNType:   gtpv2.PDNTypeIPv4,
+		PCO:       pco,
+	}, nil, zap.NewNop())
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no IMS E-RAB Setup Request sent")
+	}
+	req := decodeERABSetupRequest(t, raw)
+	if len(req.Items) != 1 {
+		t.Fatalf("E-RAB item count got %d, want 1", len(req.Items))
+	}
+	item := req.Items[0]
+	if got, want := item.EBI, uint8(6); got != want {
+		t.Fatalf("E-RAB EBI got %d, want %d", got, want)
+	}
+	if got, want := item.QCI, uint8(5); got != want {
+		t.Fatalf("S1AP QCI got %d, want %d", got, want)
+	}
+	plain := item.NASPDU[6:]
+	if got, want := plain[:5], []byte{0x62, 0x02, esm.MsgActivateDefaultEPSBearerContextRequest, 0x01, 0x05}; !bytes.Equal(got, want) {
+		t.Fatalf("NAS EBI/PTI/type/QCI got %x, want %x", got, want)
+	}
+	if !bytes.Contains(plain, []byte{0x5e, 0x02, 0x8f, 0xb4, 0x58, esm.ESMCausePDNTypeIPv4OnlyAllowed, 0x27, byte(len(pco))}) {
+		t.Fatalf("NAS downgrade cause and ordering missing: %x", plain)
+	}
+	if !bytes.Contains(plain, []byte{
+		0x5d, 0x01, 0x10,
+		0x30, 0x0c, 0x0b, 0x91, 0x1f, 0x73, 0x96, 0xb4, 0x8f, 0x76, 0x49, 0xff, 0xff, 0x10,
+		0x32, 0x03, 0x84,
+		0x5e, 0x02, 0x8f, 0xb4,
+	}) {
+		t.Fatalf("IMS interworking IEs missing or out of order: %x", plain)
+	}
+	if !bytes.HasSuffix(plain, pco) {
+		t.Fatalf("NAS PCO got %x, want suffix %x", plain, pco)
+	}
+}
+
+func TestInitialIMSCreateBearerAggregatesDefaultAndDedicatedERABs(t *testing.T) {
+	srv := newTestServer(&mockS11{})
+	srv.enbTracker = peertracker.New()
+	const remoteAddr = "10.0.0.27:36412"
+	ch := registerTestENBWithChan(srv, remoteAddr)
+
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "311435000070573"
+	ue.ENBGlobalID = remoteAddr
+	ue.ENBS1APID = 227
+	ue.ECMState = emm.ECMConnected
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.DefaultEBI = 5
+	ue.UEAMBRDown = 100_000_000
+	ue.UEAMBRUp = 100_000_000
+	ue.KNASint = make([]byte, 16)
+	ue.KNASenc = make([]byte, 16)
+	ue.IntAlg = 0
+	ue.EncAlg = 0
+	ue.PendingPDN = &uecontext.PDNContext{
+		APN:                     "ims",
+		ProcedureTransactionID:  2,
+		RequestedPDNType:        esm.PDNTypeIPv4v6,
+		SubscribedPDNType:       gtpv2.PDNTypeIPv4,
+		SubscribedPDNTypePolicy: 0,
+		PDNType:                 gtpv2.PDNTypeIPv4,
+		DefaultEBI:              6,
+		LocalS11TEID:            2,
+		QCI:                     5,
+		ARPPriority:             1,
+		APNAMBRUp:               3_850_000,
+		APNAMBRDown:             1_530_000,
+		State:                   "csr-sent",
+	}
+	ue.Unlock()
+
+	srv.handlePendingPDNCSRResult(ue, &gtpv2.CreateSessionResponse{
+		Cause: gtpv2.CauseRequestAccepted, EBI: 6, SGWC_TEID: 0x698c2b89,
+		SGWC_IP: []byte{10, 90, 250, 59}, SGWU_TEID: 0x9942c914, SGWU_IP: []byte{10, 90, 250, 59},
+		UEIPv4: []byte{10, 150, 3, 197}, PDNType: gtpv2.PDNTypeIPv4,
+	}, nil, zap.NewNop())
+
+	qos2 := []byte{0x10, 0x02, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80}
+	qos1 := []byte{0x08, 0x01, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80, 0, 0, 0, 0, 0x80}
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", &gtpv2.CreateBearerRequest{
+		TEID: 2, SeqNum: 53356, LinkedEBI: 6,
+		Bearers: []gtpv2.CreateBearerBearer{
+			{NeedsEBIAllocation: true, QCI: 2, ARP: 0x10, BearerQoS: qos2, TFT: []byte{0x21, 0x30, 0x30}, SGWS1UTEID: 0x6dc0a11d, SGWS1UIP: net.IPv4(10, 90, 250, 59)},
+			{NeedsEBIAllocation: true, QCI: 1, ARP: 0x08, BearerQoS: qos1, TFT: []byte{0x21, 0x30, 0x35}, SGWS1UTEID: 0x169623bd, SGWS1UIP: net.IPv4(10, 90, 250, 59)},
+		},
+	})
+
+	select {
+	case raw := <-ch:
+		req := decodeERABSetupRequest(t, raw)
+		if len(req.Items) != 3 {
+			t.Fatalf("E-RAB item count got %d, want 3", len(req.Items))
+		}
+		for i, want := range []struct {
+			ebi, qci uint8
+			gbr      bool
+		}{{6, 5, false}, {7, 2, true}, {8, 1, true}} {
+			got := req.Items[i]
+			if got.EBI != want.ebi || got.QCI != want.qci || got.GBRQosInformationPresent != want.gbr || !got.NASPDUPresent {
+				t.Fatalf("item %d got EBI/QCI/GBR/NAS=%d/%d/%t/%t, want %d/%d/%t/true", i, got.EBI, got.QCI, got.GBRQosInformationPresent, got.NASPDUPresent, want.ebi, want.qci, want.gbr)
+			}
+		}
+		if req.Items[0].NASPDU[8] != esm.MsgActivateDefaultEPSBearerContextRequest || req.Items[1].NASPDU[8] != esm.MsgActivateDedicatedEPSBearerContextRequest || req.Items[2].NASPDU[8] != esm.MsgActivateDedicatedEPSBearerContextRequest {
+			t.Fatalf("unexpected NAS message types in aggregated request")
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no aggregated E-RAB Setup Request sent")
+	}
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.PDNs["ims"].InitialERABAggregationPending {
+		t.Fatal("aggregation state remains pending after aggregate send")
 	}
 }
 
@@ -884,6 +1063,12 @@ func TestHandlePendingPDNCSRResult_UsesPDNQoSForERABSetup(t *testing.T) {
 	}
 	if got, want := item.PreemptionVulnerability, false; got != want {
 		t.Fatalf("PreemptionVulnerability got %t, want %t", got, want)
+	}
+	plain := item.NASPDU[6:]
+	for _, ie := range [][]byte{{0x5d, 0x01, 0x10}, {0x30, 0x0c}, {0x32, 0x03}, {0x84}} {
+		if bytes.Contains(plain, ie) {
+			t.Fatalf("non-IMS activation unexpectedly contains interworking IE %x: %x", ie, plain)
+		}
 	}
 }
 

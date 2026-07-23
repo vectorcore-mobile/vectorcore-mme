@@ -318,32 +318,37 @@ type PDNContext struct {
 	PreemptionVulnerability bool
 	// APN AMBR is retained with the PDN so that every access-side encoding
 	// uses the same subscribed policy as the S11 Create Session request.
-	APNAMBRDown                uint32
-	APNAMBRUp                  uint32
-	LocalS11TEID               uint32
-	SGWAddress                 string
-	SGWC_TEID                  uint32
-	SGWC_IP                    net.IP
-	SGWU_TEID                  uint32
-	SGWU_IP                    net.IP
-	ENBU_TEID                  uint32
-	ENBU_IP                    net.IP
-	UEIPv4                     net.IP
-	UEPCO                      []byte
-	PGWPCO                     []byte
-	NASAccepted                bool
-	ERABEstablished            bool
-	ModifyBearerSent           bool
-	ModifyBearerAccepted       bool
-	ModifyBearerFailed         bool
-	ModifyBearerDeferred       bool
-	ModifyBearerFallbackSent   bool
-	ModifyBearerRetryAttempts  uint8
-	DisconnectRequested        bool
-	DisconnectNASAccepted      bool
-	State                      string
-	SessionCreatedAt           time.Time
-	LastSuccessfulS11Procedure string
+	APNAMBRDown  uint32
+	APNAMBRUp    uint32
+	LocalS11TEID uint32
+	SGWAddress   string
+	SGWC_TEID    uint32
+	SGWC_IP      net.IP
+	SGWU_TEID    uint32
+	SGWU_IP      net.IP
+	ENBU_TEID    uint32
+	ENBU_IP      net.IP
+	UEIPv4       net.IP
+	UEPCO        []byte
+	PGWPCO       []byte
+	// InitialERABAggregationPending holds the already protected IMS default
+	// bearer activation briefly while a linked Create Bearer Request can join
+	// the same initial E-RAB Setup procedure.
+	InitialERABAggregationPending bool
+	InitialERABActivationNAS      []byte
+	NASAccepted                   bool
+	ERABEstablished               bool
+	ModifyBearerSent              bool
+	ModifyBearerAccepted          bool
+	ModifyBearerFailed            bool
+	ModifyBearerDeferred          bool
+	ModifyBearerFallbackSent      bool
+	ModifyBearerRetryAttempts     uint8
+	DisconnectRequested           bool
+	DisconnectNASAccepted         bool
+	State                         string
+	SessionCreatedAt              time.Time
+	LastSuccessfulS11Procedure    string
 }
 
 type CreateBearerState string
@@ -374,6 +379,9 @@ type DedicatedBearerContext struct {
 	AssignedEBI   uint8
 	LinkedEBI     uint8
 	PTI           uint8
+	// LegacyTransactionIdentifier is retained for the optional TS 24.301
+	// Transaction identifier IE while this network-initiated procedure lives.
+	LegacyTransactionIdentifier uint8
 
 	QCI       uint8
 	ARP       uint8
