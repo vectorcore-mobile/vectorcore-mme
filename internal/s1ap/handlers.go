@@ -129,31 +129,33 @@ func (NoopS10Client) LocalAddr() string                                        {
 
 // Server is the S1AP layer: manages eNB connections and dispatches messages.
 type Server struct {
-	cfg          config.S1APConfig
-	nfCfg        config.NFConfig
-	secCfg       config.SecurityConfig
-	s10Cfg       config.S10Config
-	nasCfg       config.NASConfig
-	pagingCfg    config.PagingConfig
-	operCfg      config.OperatorConfig
-	store        repository.Repository
-	ueManager    *uecontext.Manager
-	enbTracker   *peertracker.Tracker
-	gutiAlloc    *uecontext.GUTIAllocator
-	s6a          S6aClient
-	s10          S10Client
-	s11          S11Client
-	s11LocalIP   []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
-	pgwIP        []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
-	gatewaySel   *gateway.Selector
-	restartEpoch string
-	log          *zap.Logger
-	sms          *smsservice.Service
-	smsTimeout   time.Duration
-	pendingMTSMS sync.Map // IMSI -> *pendingMTSMS
-	pendingMOSMS sync.Map // imsi:cp-ti -> *pendingMOSMS
-	smsMu        sync.Mutex
-	nextMTSMSTI  map[string]uint8
+	cfg                config.S1APConfig
+	nfCfg              config.NFConfig
+	secCfg             config.SecurityConfig
+	s10Cfg             config.S10Config
+	nasCfg             config.NASConfig
+	emmTimersCfg       config.EMMTimersConfig
+	pagingCfg          config.PagingConfig
+	operCfg            config.OperatorConfig
+	store              repository.Repository
+	ueManager          *uecontext.Manager
+	enbTracker         *peertracker.Tracker
+	gutiAlloc          *uecontext.GUTIAllocator
+	s6a                S6aClient
+	s10                S10Client
+	s11                S11Client
+	s11LocalIP         []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
+	pgwIP              []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
+	gatewaySel         *gateway.Selector
+	restartEpoch       string
+	recoveryPersistent bool
+	log                *zap.Logger
+	sms                *smsservice.Service
+	smsTimeout         time.Duration
+	pendingMTSMS       sync.Map // IMSI -> *pendingMTSMS
+	pendingMOSMS       sync.Map // imsi:cp-ti -> *pendingMOSMS
+	smsMu              sync.Mutex
+	nextMTSMSTI        map[string]uint8
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
@@ -169,6 +171,7 @@ func NewServer(
 	secCfg config.SecurityConfig,
 	s10Cfg config.S10Config,
 	nasCfg config.NASConfig,
+	emmTimersCfg config.EMMTimersConfig,
 	pagingCfg config.PagingConfig,
 	operCfg config.OperatorConfig,
 	store repository.Repository,
@@ -191,6 +194,7 @@ func NewServer(
 		secCfg:       secCfg,
 		s10Cfg:       s10Cfg,
 		nasCfg:       nasCfg,
+		emmTimersCfg: emmTimersCfg,
 		pagingCfg:    pagingCfg,
 		operCfg:      operCfg,
 		store:        store,
@@ -212,6 +216,10 @@ func NewServer(
 func (s *Server) SetRecoveryEpoch(epoch string) {
 	s.restartEpoch = epoch
 }
+
+// SetPersistentRecovery gates durable UE deadline snapshots. In-memory mode
+// deliberately keeps the historical restart semantics: all UE state is lost.
+func (s *Server) SetPersistentRecovery(enabled bool) { s.recoveryPersistent = enabled }
 
 func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 	s.gatewaySel = selector
@@ -600,6 +608,7 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 				zap.String("delete_reason", "s1_only_disconnect"),
 				zap.Bool("s11_delete_required", false))
 			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
+			s.armReachabilityForIdle(ue, "enb-disconnect")
 			preserved++
 			continue
 		}

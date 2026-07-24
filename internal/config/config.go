@@ -25,7 +25,16 @@ type Config struct {
 	API              APIConfig              `yaml:"api"`
 	Security         SecurityConfig         `yaml:"security"`
 	NAS              NASConfig              `yaml:"nas"`
+	EMMTimers        EMMTimersConfig        `yaml:"emm_timers"`
 	Operator         OperatorConfig         `yaml:"operator"`
+}
+
+// EMMTimersConfig contains MME-side reachability supervision timers.  T3412
+// remains in nas.timers because it is encoded and sent to the UE.
+type EMMTimersConfig struct {
+	MobileReachableGuardSeconds         int `yaml:"mobile_reachable_guard_seconds"`
+	ImplicitDetachSeconds               int `yaml:"implicit_detach_seconds"`
+	ImplicitDetachCleanupTimeoutSeconds int `yaml:"implicit_detach_cleanup_timeout_seconds"`
 }
 
 type NASConfig struct {
@@ -361,6 +370,11 @@ func Load(path string) (*Config, error) {
 				T3423: nastimer.DefaultT3423,
 			},
 		},
+		EMMTimers: EMMTimersConfig{
+			MobileReachableGuardSeconds:         240,
+			ImplicitDetachSeconds:               300,
+			ImplicitDetachCleanupTimeoutSeconds: 30,
+		},
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -439,6 +453,20 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.NAS.Timers.T3412 <= 0 {
 		return nil, fmt.Errorf("config: nas.timers.t3412 must be greater than 0")
+	}
+	if cfg.EMMTimers.MobileReachableGuardSeconds < 0 {
+		return nil, fmt.Errorf("config: emm_timers.mobile_reachable_guard_seconds must not be negative")
+	}
+	if cfg.EMMTimers.ImplicitDetachSeconds <= 0 {
+		return nil, fmt.Errorf("config: emm_timers.implicit_detach_seconds must be greater than 0")
+	}
+	if cfg.EMMTimers.ImplicitDetachCleanupTimeoutSeconds <= 0 {
+		return nil, fmt.Errorf("config: emm_timers.implicit_detach_cleanup_timeout_seconds must be greater than 0")
+	}
+	// Keep duration conversion and the derived deadline safely within int64.
+	if int64(cfg.NAS.Timers.T3412) > int64(^uint64(0)>>1)/int64(time.Second) ||
+		int64(cfg.EMMTimers.MobileReachableGuardSeconds) > int64(^uint64(0)>>1)/int64(time.Second)-int64(cfg.NAS.Timers.T3412) {
+		return nil, fmt.Errorf("config: emm_timers mobile-reachable duration overflows")
 	}
 	if _, err := nastimer.EncodeGPRSTimer(cfg.NAS.Timers.T3412); err != nil {
 		return nil, fmt.Errorf("config: nas.timers.t3412: %w", err)

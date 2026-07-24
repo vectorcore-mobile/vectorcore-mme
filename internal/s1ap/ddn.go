@@ -69,6 +69,12 @@ func (s *Server) HandleDownlinkDataNotification(peer string, req *gtpv2.Downlink
 	ecmState = ue.ECMState
 	bindingGen = ue.S1BindingGeneration
 	cause = s.validateDDNLocked(ue, pdn, peer, req)
+	if cause == gtpv2.CauseRequestAccepted && ue.ReachabilityState != "reachable" {
+		// TS 23.401 §4.3.5: with PPF clear the MME shall not page an
+		// unreachable UE and rejects the DDN. Preserve existing DDN handling
+		// for reachable contexts rather than inventing a new cause.
+		cause = gtpv2.CauseContextNotFound
+	}
 	if cause == gtpv2.CauseRequestAccepted && ecmState == emm.ECMConnected {
 		cause = gtpv2.CauseRequestAccepted
 	}

@@ -373,6 +373,27 @@ http://<host>:8085/openapi.json
 
 UE API entries include `emm_state`, `ecm_state`, `registration_status`, `connection_status`, and `s1_connected`. A UE can be `registration_status=registered` with `connection_status=idle` after radio loss or inactivity release; that state retains the EPS session and is not an explicit detach.
 
+### MME reachability lifecycle
+
+`nas.timers.t3412` is the UE-facing periodic TAU timer. The MME separately
+uses `emm_timers.mobile_reachable_guard_seconds` and
+`emm_timers.implicit_detach_seconds`. On ECM-IDLE entry, the MME starts a
+mobile-reachable timer of the effective encoded T3412 value plus the guard
+(default `3240 + 240` seconds). Its expiry marks the UE unreachable and starts
+the implicit-detach grace period (default 300 seconds); it does not release
+S1 resources or delete PDNs. A verified UE return cancels the grace period and
+keeps bearer state. If the grace period expires, one S11 Delete Session Request
+is issued per remaining PDN and ordinary detached-context cleanup finalizes the
+indexes after responses. A zero guard is valid; implicit detach must be
+positive. In-memory contexts do not survive restart; database recovery remains
+the existing stale-session recovery mechanism. UE API responses expose the
+reachability state, timer deadlines/remaining values, refresh reason, and
+terminal-cleanup flag.
+
+Reachability snapshots are written and restored only when `database.mode` is
+not `memory`. In-memory mode writes no reachability recovery records and an
+MME restart discards UE state after normal shutdown stops all UE timers.
+
 ### NAS Feature Advertisement
 
 IMS voice-over-PS support is disabled by default. Enable it only when IMS service and the `ims` APN are available:

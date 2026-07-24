@@ -508,6 +508,7 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 	}
 
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "complete").Inc()
+	s.refreshReachability(ue, "tau-complete")
 	log.Info("nas: TAU Complete: UE re-registered",
 		zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
 

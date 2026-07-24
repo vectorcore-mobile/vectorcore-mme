@@ -609,6 +609,12 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	ue.Unlock()
 
 	log := s.log.With(zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("msg_type", result.MsgType))
+	// A successfully verified, protected uplink NAS message proves that an
+	// already registered UE has returned. Detach is deliberately excluded: it
+	// owns a different cleanup lifecycle.
+	if result.SecHeaderType != emm.SecurityHeaderPlain && result.MsgType != emm.MsgDetachRequest {
+		s.refreshReachability(ue, "integrity-protected-uplink-nas")
+	}
 
 	switch result.MsgType {
 	case emm.MsgUplinkNASTransport:
@@ -987,6 +993,7 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	}
 
 	metrics.AttachedUEs.Inc()
+	s.refreshReachability(ue, "attach-complete")
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "complete").Inc()
 	log.Info("s1ap: UE attached",
 		zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
@@ -1102,6 +1109,7 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 	if err != nil {
 		return fmt.Errorf("processDetach: decode detach request: %w", err)
 	}
+	s.cancelReachabilityForDetach(ue)
 
 	ue.Lock()
 	mmeUEID := ue.MMEUES1APID

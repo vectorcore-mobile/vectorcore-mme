@@ -98,6 +98,11 @@ var (
 		Name:      "attached_total",
 		Help:      "Number of currently attached UEs.",
 	})
+	MobileReachableExpiriesTotal       = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Name: "mobile_reachable_expiries_total", Help: "MME mobile-reachable timer expiries."})
+	ImplicitDetachExpiriesTotal        = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Name: "implicit_detach_expiries_total", Help: "MME implicit-detach timer expiries."})
+	ImplicitDetachRecoveriesTotal      = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Name: "implicit_detach_recoveries_total", Help: "UE returns that cancel implicit detach."})
+	ImplicitDetachCleanupFailuresTotal = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Name: "implicit_detach_cleanup_failures_total", Help: "Terminal cleanup DSR failures."})
+	ImplicitDetachCleanupTimeoutsTotal = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Name: "implicit_detach_cleanup_timeouts_total", Help: "Terminal cleanup deadline expiries."})
 
 	// Paging metrics
 	PagingTotal = promauto.NewCounterVec(prometheus.CounterOpts{

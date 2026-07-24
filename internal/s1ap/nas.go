@@ -818,6 +818,20 @@ func (s *Server) HandleDSRResult(mmeUEID uint32, linkedEBI uint8, err error) {
 			zap.Uint32("mme_ue_id", mmeUEID),
 			zap.Uint8("linked_ebi", linkedEBI),
 			zap.Error(err))
+		// Terminal implicit detach is a local ownership boundary. A rejected
+		// DSR is recorded and that PDN is completed locally; the overall
+		// cleanup deadline remains the safety net for missing responses.
+		if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
+			metrics.ImplicitDetachCleanupFailuresTotal.Inc()
+			ue.Lock()
+			terminal := ue.ImplicitDetachCleanupStarted
+			ue.Unlock()
+			if terminal && s.cleanupDisconnectedPDN(mmeUEID, linkedEBI, "s11-delete-session-failed") {
+				if s.detachedUEDeleteSessionsComplete(mmeUEID) {
+					s.cleanupDetachedUE(mmeUEID, "implicit-detach-dsr-failed")
+				}
+			}
+		}
 		return
 	}
 	s.log.Info("s1ap: DSRsp accepted, session deleted",
@@ -895,6 +909,10 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 	ue.Lock()
 	emmState := ue.EMMState
 	imsi := ue.IMSI
+	ue.ImplicitDetachCleanupGeneration++
+	ue.ImplicitDetachCleanupTimerActive = false
+	ue.ImplicitDetachCleanupDeadline = time.Time{}
+	ue.StopTimer(uecontext.TimerImplicitDetachCleanup)
 	ue.Unlock()
 	if emmState != emm.StateDeregisteredInitiated {
 		s.log.Debug("s1ap: DSRsp cleanup skipped, UE is not detaching",
@@ -905,6 +923,7 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 		return
 	}
 
+	s.cleanupUEOwnedSMS(ue)
 	s.ueManager.Remove(ue)
 	metrics.AttachedUEs.Dec()
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateDetached, "DELETED")

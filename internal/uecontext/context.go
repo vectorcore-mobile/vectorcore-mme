@@ -282,6 +282,22 @@ type Context struct {
 	// Active timers
 	timers map[string]*time.Timer
 
+	// MME-side reachability state. These fields are protected by mu; generations
+	// make a queued time.AfterFunc harmless after refresh, removal, or ID reuse.
+	ReachabilityState                string
+	MobileReachableGeneration        uint64
+	MobileReachableDeadline          time.Time
+	MobileReachableTimerActive       bool
+	ImplicitDetachGeneration         uint64
+	ImplicitDetachDeadline           time.Time
+	ImplicitDetachTimerActive        bool
+	LastReachabilityRefresh          time.Time
+	LastReachabilityReason           string
+	ImplicitDetachCleanupStarted     bool
+	ImplicitDetachCleanupGeneration  uint64
+	ImplicitDetachCleanupDeadline    time.Time
+	ImplicitDetachCleanupTimerActive bool
+
 	// Created / last updated
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -474,6 +490,7 @@ func NewContext(mmeID uint32) *Context {
 		CreatedAt:                 time.Now(),
 		UpdatedAt:                 time.Now(),
 		NASKSI:                    0x07,
+		ReachabilityState:         "reachable",
 	}
 }
 
@@ -628,6 +645,9 @@ const (
 	TimerT3460 = "T3460" // Authentication Request timer (6s)
 	TimerT3470 = "T3470" // Identity Request timer (6s)
 
-	TimerCreateBearerPrefix = "CreateBearer:"
-	TimerUpdateBearerPrefix = "UpdateBearer:"
+	TimerCreateBearerPrefix    = "CreateBearer:"
+	TimerUpdateBearerPrefix    = "UpdateBearer:"
+	TimerMobileReachable       = "MME-MobileReachable"
+	TimerImplicitDetach        = "MME-ImplicitDetach"
+	TimerImplicitDetachCleanup = "MME-ImplicitDetachCleanup"
 )

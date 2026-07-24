@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) persistUERecoverySnapshot(ue *uecontext.Context, recoveryState, sessionState string) {
-	if s.store == nil || ue == nil {
+	if !s.recoveryPersistent || s.store == nil || ue == nil {
 		return
 	}
 	ueRec, sessRec := s.buildRecoveryRecordsLocked(ue, recoveryState, sessionState)
@@ -44,24 +44,44 @@ func (s *Server) buildRecoveryRecordsLocked(ue *uecontext.Context, recoveryState
 	defer ue.Unlock()
 
 	rec := &models.UERecoveryRecord{
-		IMSI:             ue.IMSI,
-		IMEISV:           ue.IMEI,
-		MSISDN:           ue.MSISDN,
-		CallID:           ue.MMEUES1APID,
-		ContextID:        ue.MMEUES1APID,
-		MMEInstance:      s.nfCfg.OriginHost,
-		RestartEpoch:     s.restartEpoch,
-		LastEMMState:     ue.EMMState.String(),
-		LastECMState:     ue.ECMState.String(),
-		RecoveryState:    recoveryState,
-		NASIntegrityAlg:  ue.IntAlg,
-		NASCipheringAlg:  ue.EncAlg,
-		UplinkNASCount:   uint32(ue.ULNASCount),
-		DownlinkNASCount: uint32(ue.DLNASCount),
-		KASME:            append([]byte(nil), ue.KASME...),
-		ENBID:            ue.ENBGlobalID,
-		LastSeenAt:       &now,
-		UpdatedAt:        now,
+		IMSI:                   ue.IMSI,
+		IMEISV:                 ue.IMEI,
+		MSISDN:                 ue.MSISDN,
+		CallID:                 ue.MMEUES1APID,
+		ContextID:              ue.MMEUES1APID,
+		MMEInstance:            s.nfCfg.OriginHost,
+		RestartEpoch:           s.restartEpoch,
+		LastEMMState:           ue.EMMState.String(),
+		LastECMState:           ue.ECMState.String(),
+		RecoveryState:          recoveryState,
+		NASIntegrityAlg:        ue.IntAlg,
+		NASCipheringAlg:        ue.EncAlg,
+		UplinkNASCount:         uint32(ue.ULNASCount),
+		DownlinkNASCount:       uint32(ue.DLNASCount),
+		KASME:                  append([]byte(nil), ue.KASME...),
+		ENBID:                  ue.ENBGlobalID,
+		LastSeenAt:             &now,
+		UpdatedAt:              now,
+		ReachabilityState:      ue.ReachabilityState,
+		LastReachabilityReason: ue.LastReachabilityReason,
+		TerminalCleanupActive:  ue.ImplicitDetachCleanupStarted,
+		ReachabilityGeneration: ue.MobileReachableGeneration,
+	}
+	if !ue.MobileReachableDeadline.IsZero() {
+		v := ue.MobileReachableDeadline
+		rec.MobileReachableDeadline = &v
+	}
+	if !ue.ImplicitDetachDeadline.IsZero() {
+		v := ue.ImplicitDetachDeadline
+		rec.ImplicitDetachDeadline = &v
+	}
+	if !ue.ImplicitDetachCleanupDeadline.IsZero() {
+		v := ue.ImplicitDetachCleanupDeadline
+		rec.TerminalCleanupDeadline = &v
+	}
+	if !ue.LastReachabilityRefresh.IsZero() {
+		v := ue.LastReachabilityRefresh
+		rec.LastReachabilityRefresh = &v
 	}
 	if recoveryState == models.RecoveryStateActiveSnapshot || recoveryState == models.RecoveryStateRecovered {
 		rec.AttachedAt = &now

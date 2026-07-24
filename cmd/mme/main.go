@@ -123,8 +123,9 @@ func main() {
 
 	// S1AP server (accepts eNB SCTP connections)
 	gatewaySelector := gateway.NewSelector(*cfg, log)
-	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
+	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.EMMTimers, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
+	s1apSrv.SetPersistentRecovery(databaseMode(cfg.Database) != "memory")
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	if cfg.SGd.Enabled {
 		s1apSrv.SetSMSService(smsservice.New(s6aHandlers))

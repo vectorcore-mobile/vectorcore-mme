@@ -367,6 +367,7 @@ func (s *Server) handleENBReset(remoteAddr string) {
 				zap.String("delete_reason", "s1_reset"),
 				zap.Bool("s11_delete_required", false))
 			s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_RESET")
+			s.armReachabilityForIdle(ue, "enb-reset")
 			s.failCreateBearersWaitingForLinkedBearer(ue, 94, "s1_reset")
 			preserved++
 			continue

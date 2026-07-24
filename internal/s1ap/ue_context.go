@@ -273,6 +273,7 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		s.failCreateBearersWaitingForLinkedBearer(ue, gtpv2.CauseRequestRejected, "ue_ecm_idle")
 
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "S1_RELEASED")
+		s.armReachabilityForIdle(ue, "ue-context-release-complete")
 		return
 
 	case emm.StateDeregisteredInitiated:

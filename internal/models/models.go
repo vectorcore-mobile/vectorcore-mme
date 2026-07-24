@@ -61,6 +61,15 @@ type UERecoveryRecord struct {
 	ECGI   string `gorm:"column:ecgi;size:32" json:"ecgi,omitempty"`
 	ENBID  string `gorm:"column:enb_id;size:64" json:"enb_id,omitempty"`
 
+	ReachabilityState       string     `gorm:"column:reachability_state;size:64" json:"reachability_state,omitempty"`
+	MobileReachableDeadline *time.Time `gorm:"column:mobile_reachable_deadline" json:"mobile_reachable_deadline,omitempty"`
+	ImplicitDetachDeadline  *time.Time `gorm:"column:implicit_detach_deadline" json:"implicit_detach_deadline,omitempty"`
+	TerminalCleanupDeadline *time.Time `gorm:"column:terminal_cleanup_deadline" json:"terminal_cleanup_deadline,omitempty"`
+	LastReachabilityRefresh *time.Time `gorm:"column:last_reachability_refresh" json:"last_reachability_refresh,omitempty"`
+	LastReachabilityReason  string     `gorm:"column:last_reachability_reason;size:128" json:"last_reachability_reason,omitempty"`
+	TerminalCleanupActive   bool       `gorm:"column:terminal_cleanup_active" json:"terminal_cleanup_active,omitempty"`
+	ReachabilityGeneration  uint64     `gorm:"column:reachability_generation" json:"reachability_generation,omitempty"`
+
 	AttachedAt *time.Time `gorm:"column:attached_at" json:"attached_at,omitempty"`
 	LastSeenAt *time.Time `gorm:"column:last_seen_at" json:"last_seen_at,omitempty"`
 	StaleAt    *time.Time `gorm:"column:stale_at" json:"stale_at,omitempty"`

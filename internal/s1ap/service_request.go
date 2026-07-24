@@ -202,6 +202,9 @@ func (s *Server) handleServiceRequest(
 		zap.String("nas_hex_used_for_mac", serviceRequestMACInputHex(macDetails)),
 		zap.String("computed_short_mac_hex", serviceRequestComputedShortMACHex(macDetails)),
 		zap.String("expected_short_mac_hex", serviceRequestExpectedShortMACHex(macDetails)))
+	// Short-MAC verification binds this return to the retained EPS context; a
+	// bare Initial UE Message must never cancel implicit detach.
+	s.refreshReachability(realUE, "service-request-short-mac")
 
 	if resumePending {
 		realUE.Lock()
