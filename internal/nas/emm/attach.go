@@ -51,6 +51,7 @@ type AttachAcceptParams struct {
 	GUTI                     *GUTI
 	ESMContainer             []byte
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
+	AdditionalUpdateResult   *uint8
 }
 
 // DecodeAttachRequest decodes a NAS Attach Request message body (after the 2-byte header).
@@ -253,6 +254,11 @@ func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 
 	if params.EPSNetworkFeatureSupport != nil {
 		b = append(b, EncodeEPSNetworkFeatureSupport(*params.EPSNetworkFeatureSupport)...)
+	}
+
+	if params.AdditionalUpdateResult != nil {
+		// TS 24.301 §9.9.3.0A: type-1 IEI 0xF; value zero is explicit F0.
+		b = append(b, 0xf0|(*params.AdditionalUpdateResult&0x03))
 	}
 
 	return b

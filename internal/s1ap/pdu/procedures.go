@@ -106,6 +106,7 @@ const (
 	IECGI                                       uint16 = 100
 	IEGUMMEI                                    uint16 = 75
 	IEERABList                                  uint16 = 92
+	IEUEAssociatedLogicalS1ConnectionItem       uint16 = 91
 	IEResetType                                 uint16 = 92
 	IEUEAssociatedLogicalS1ConnectionListResAck uint16 = 93
 	IEUES1APIDs                                 uint16 = 99  // UE-S1AP-IDs CHOICE (for UE Context Release Command)

@@ -24,6 +24,9 @@ type TAUAcceptParams struct {
 	GUTI                     *GUTI
 	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
+	LAI                      *LAI
+	AdditionalUpdateResult   *uint8
+	EMMCause                 *uint8
 }
 
 // TAUAccept holds decoded fields used by tests and diagnostics.
@@ -34,6 +37,9 @@ type TAUAccept struct {
 	GUTI                     *GUTI
 	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
+	LAI                      *LAI
+	AdditionalUpdateResult   *uint8
+	EMMCause                 *uint8
 }
 
 // EPSBearerContextStatus captures the active EPS bearer bitmap communicated in
@@ -110,6 +116,8 @@ const (
 	EPSUpdateResultCombinedTALAUpdated    uint8 = 0x01
 	EPSUpdateResultTAUpdatedISR           uint8 = 0x02
 	EPSUpdateResultCombinedTALAUpdatedISR uint8 = 0x03
+
+	AdditionalUpdateResultSMSOnly uint8 = 0x02
 )
 
 // DecodeTAURequest decodes a TAU Request message body (after the 2-byte NAS header).
@@ -250,7 +258,7 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 	b = append(b, params.UpdateResult&0x07)
 
 	// T3412 value IE: IEI=0x5A, length=1, value
-	b = append(b, 0x5A, 0x01, params.T3412)
+	b = append(b, 0x5A, params.T3412)
 
 	// TAI list IE: IEI=0x54, length, value
 	taiBytes := encodeTAIList(params.TAIList)
@@ -271,6 +279,11 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 		b = append(b, 0x57, byte(len(value)))
 		b = append(b, value...)
 	}
+	if params.LAI != nil {
+		lai := params.LAI.Encode()
+		b = append(b, 0x13, byte(len(lai)))
+		b = append(b, lai...)
+	}
 
 	if params.T3402 != nil {
 		b = append(b, 0x17, *params.T3402)
@@ -282,6 +295,14 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 
 	if params.EPSNetworkFeatureSupport != nil {
 		b = append(b, EncodeEPSNetworkFeatureSupport(*params.EPSNetworkFeatureSupport)...)
+	}
+	if params.AdditionalUpdateResult != nil {
+		// TS 24.301 §9.9.3.0A: type-1 IEI 0xF, bits 2..1 carry the result.
+		b = append(b, 0xf0|(*params.AdditionalUpdateResult&0x03))
+	}
+	if params.EMMCause != nil {
+		// EMM cause is a one-octet TV IE (IEI 0x53) in TAU Accept.
+		b = append(b, 0x53, *params.EMMCause)
 	}
 
 	return b
@@ -302,17 +323,23 @@ func DecodeTAUAccept(data []byte) (*TAUAccept, error) {
 	for offset < len(data) {
 		iei := data[offset]
 		offset++
+		if iei&0xf0 == 0xf0 { // Additional update result (type 1)
+			v := iei & 0x03
+			if v == 0x03 {
+				return nil, fmt.Errorf("emm: TAU Accept reserved additional update result")
+			}
+			out.AdditionalUpdateResult = &v
+			continue
+		}
 		switch iei {
-		case 0x5A: // T3412 value
-			if offset+2 > len(data) {
+		case 0x5A: // T3412 value — TV format: IEI followed directly by value
+			if offset >= len(data) {
 				return nil, fmt.Errorf("emm: TAU Accept truncated T3412")
 			}
-			if data[offset] != 1 {
-				return nil, fmt.Errorf("emm: TAU Accept invalid T3412 length %d", data[offset])
-			}
-			v := data[offset+1]
+
+			v := data[offset]
 			out.T3412 = &v
-			offset += 2
+			offset++
 		case 0x54: // TAI list
 			if offset >= len(data) {
 				return nil, fmt.Errorf("emm: TAU Accept truncated TAI list length")
@@ -357,6 +384,28 @@ func DecodeTAUAccept(data []byte) (*TAUAccept, error) {
 			}
 			out.EPSBearerStatus = status
 			offset += l
+		case 0x13: // Location area identification
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated LAI length")
+			}
+			l := int(data[offset])
+			offset++
+			if l != 5 || offset+l > len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept invalid LAI length %d", l)
+			}
+			lai, err := DecodeLAI(data[offset : offset+l])
+			if err != nil {
+				return nil, err
+			}
+			out.LAI = &lai
+			offset += l
+		case 0x53: // EMM cause (TV)
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated EMM cause")
+			}
+			v := data[offset]
+			out.EMMCause = &v
+			offset++
 		case 0x17: // T3402 value
 			if offset >= len(data) {
 				return nil, fmt.Errorf("emm: TAU Accept truncated T3402")

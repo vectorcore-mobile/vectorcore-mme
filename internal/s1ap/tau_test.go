@@ -164,12 +164,33 @@ func TestValidateTAI_NotMatching(t *testing.T) {
 	}
 }
 
-func TestAttachAcceptResultForCombinedRequest(t *testing.T) {
-	if got, want := attachAcceptResultForRequest(emm.AttachTypeCombinedEPSAndIMSI), emm.AttachTypeCombinedEPSAndIMSI; got != want {
-		t.Fatalf("combined attach result got %#x, want %#x", got, want)
-	}
-	if got, want := attachAcceptResultForRequest(emm.AttachTypeEPSOnly), emm.AttachTypeEPSOnly; got != want {
-		t.Fatalf("EPS-only attach result got %#x, want %#x", got, want)
+func TestAttachAcceptRegistrationUsesPerUECompletedSGdOutcome(t *testing.T) {
+	srv := newTAUTestServer()
+	for _, tc := range []struct {
+		name       string
+		attachType uint8
+		sgdEnabled bool
+		smsState   uecontext.SMSRegistrationState
+		result     uint8
+		f0         bool
+	}{
+		{"combined_registered", emm.AttachTypeCombinedEPSAndIMSI, true, uecontext.SMSRegistrationRegistered, emm.AttachTypeCombinedEPSAndIMSI, true},
+		{"combined_sgd_disabled", emm.AttachTypeCombinedEPSAndIMSI, false, uecontext.SMSRegistrationRegistered, emm.AttachTypeEPSOnly, false},
+		{"combined_pending", emm.AttachTypeCombinedEPSAndIMSI, true, uecontext.SMSRegistrationPending, emm.AttachTypeEPSOnly, false},
+		{"combined_rejected", emm.AttachTypeCombinedEPSAndIMSI, true, uecontext.SMSRegistrationRejected, emm.AttachTypeEPSOnly, false},
+		{"combined_not_requested", emm.AttachTypeCombinedEPSAndIMSI, true, uecontext.SMSRegistrationNotRequested, emm.AttachTypeEPSOnly, false},
+		{"eps_only_registered", emm.AttachTypeEPSOnly, true, uecontext.SMSRegistrationRegistered, emm.AttachTypeEPSOnly, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv.sgdCfg = config.SGdConfig{Enabled: tc.sgdEnabled}
+			got, additional := srv.attachAcceptRegistration(tc.attachType, tc.smsState)
+			if got != tc.result {
+				t.Fatalf("result got %#x, want %#x", got, tc.result)
+			}
+			if (additional != nil) != tc.f0 || additional != nil && *additional != 0 {
+				t.Fatalf("additional update result got %v, want F0 present=%t", additional, tc.f0)
+			}
+		})
 	}
 }
 
@@ -227,7 +248,7 @@ func TestProcessTrackingAreaUpdate_Accept(t *testing.T) {
 	}
 }
 
-func TestProcessTrackingAreaUpdate_CombinedRequestUsesCombinedResult(t *testing.T) {
+func TestProcessTrackingAreaUpdate_CombinedRequestWithoutSGsUsesEPSResultAndCause(t *testing.T) {
 	srv := newTAUTestServer()
 	const remoteAddr = "10.0.0.11:36412"
 	ch := setupSendCapture(srv, remoteAddr)
@@ -255,8 +276,72 @@ func TestProcessTrackingAreaUpdate_CombinedRequestUsesCombinedResult(t *testing.
 	if plain[0] != emm.PDEPSMobilityMgmt || plain[1] != emm.MsgTrackingAreaUpdateAccept {
 		t.Fatalf("plain NAS is not TAU Accept: %x", plain)
 	}
-	if got, want := plain[2], emm.EPSUpdateResultCombinedTALAUpdated; got != want {
-		t.Fatalf("TAU update result got %#x, want combined TA/LA updated %#x", got, want)
+	accept, err := emm.DecodeTAUAccept(plain)
+	if err != nil {
+		t.Fatalf("decode TAU Accept: %v", err)
+	}
+	if got, want := accept.UpdateResult, emm.EPSUpdateResultTAUpdated; got != want {
+		t.Fatalf("TAU update result got %#x, want TA updated %#x", got, want)
+	}
+	if accept.EMMCause == nil || *accept.EMMCause != emm.CauseCSDomainNotAvailable {
+		t.Fatalf("TAU Accept EMM cause got %v, want CS domain not available (%#x)", accept.EMMCause, emm.CauseCSDomainNotAvailable)
+	}
+	if accept.GUTI != nil {
+		t.Fatalf("EPS-only combined TAU unexpectedly fabricated GUTI/TMSI: %+v", accept.GUTI)
+	}
+}
+
+func TestProcessTrackingAreaUpdate_CombinedRequestWithOperationalSMSInMMEUsesSMSOnlyResult(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.sgdCfg = config.SGdConfig{Enabled: true}
+	const remoteAddr = "10.0.0.12:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.SMSRegistrationState = uecontext.SMSRegistrationRegistered
+	ue.TAI = &emm.TAI{PLMN: [3]byte{0x00, 0xf1, 0x10}, TAC: 1}
+	ue.PDNs["internet"] = &uecontext.PDNContext{APN: "internet", DefaultEBI: 5, SGWC_TEID: 0x1005, SGWU_TEID: 0x2005, State: "active", NASAccepted: true, ERABEstablished: true}
+	ue.PDNs["ims"] = &uecontext.PDNContext{APN: "ims", DefaultEBI: 6, SGWC_TEID: 0x1006, SGWU_TEID: 0x2006, State: "active", NASAccepted: true, ERABEstablished: true}
+	ue.DedicatedBearers[7] = &uecontext.DedicatedBearerContext{AssignedEBI: 7, LinkedEBI: 6, State: "active", NASAccepted: true, ERABEstablished: true}
+	ue.DedicatedBearers[8] = &uecontext.DedicatedBearerContext{AssignedEBI: 8, LinkedEBI: 6, State: "active", NASAccepted: true, ERABEstablished: true}
+	ue.DedicatedBearers[9] = &uecontext.DedicatedBearerContext{AssignedEBI: 9, LinkedEBI: 6, State: "active", NASAccepted: true, ERABEstablished: true}
+	ue.Unlock()
+
+	innerBody := []byte{(0x07 << 4) | emm.EPSUpdateTypeCombined, 0x00, 0x01, 0xe0}
+	if err := srv.processTrackingAreaUpdate(ue, innerBody, srv.log.With(zap.String("test", "tau-sms-only"))); err != nil {
+		t.Fatalf("processTrackingAreaUpdate error: %v", err)
+	}
+	select {
+	case sent := <-ch:
+		plain := decodeDownlinkNASFromRawPDU(t, sent)[6:]
+		accept, err := emm.DecodeTAUAccept(plain)
+		if err != nil {
+			t.Fatalf("DecodeTAUAccept: %v", err)
+		}
+		if got, want := accept.UpdateResult, emm.EPSUpdateResultCombinedTALAUpdated; got != want {
+			t.Fatalf("update result got %#x, want combined TA/LA updated %#x", got, want)
+		}
+		if accept.EMMCause != nil {
+			t.Fatalf("SMS-in-MME TAU unexpectedly included EMM cause %#x", *accept.EMMCause)
+		}
+		if accept.AdditionalUpdateResult != nil {
+			t.Fatalf("combined SGd TAU unexpectedly included Additional Update Result %#x", *accept.AdditionalUpdateResult)
+		}
+		if accept.LAI != nil {
+			t.Fatalf("combined SGd TAU unexpectedly included LAI %+v", accept.LAI)
+		}
+		for _, ebi := range []uint8{5, 6, 7, 8, 9} {
+			if accept.EPSBearerStatus == nil || !accept.EPSBearerStatus.HasEBI(ebi) {
+				t.Fatalf("TAU Accept missing retained EBI %d: %+v", ebi, accept.EPSBearerStatus)
+			}
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Accept sent")
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.PDNs["ims"] == nil || ue.DedicatedBearers[7] == nil || ue.DedicatedBearers[8] == nil || ue.DedicatedBearers[9] == nil {
+		t.Fatal("ordinary SMS-only TAU mutated IMS PDN or its linked dedicated bearers")
 	}
 }
 
@@ -440,7 +525,7 @@ func TestHandleIdleTAUMessage_KnownGUTI_Plain(t *testing.T) {
 	}
 }
 
-func TestHandleIdleTAUMessage_KnownGUTI_PlainReleasesS1Context(t *testing.T) {
+func TestHandleIdleTAUMessage_InactiveInitialUEReleasesS1AfterTAUAccept(t *testing.T) {
 	srv := newTAUTestServer()
 	const remoteAddr = "10.0.0.30:36412"
 	ch := setupSendCapture(srv, remoteAddr)
@@ -462,37 +547,151 @@ func TestHandleIdleTAUMessage_KnownGUTI_PlainReleasesS1Context(t *testing.T) {
 		t.Fatal("no PDU sent after TAU Accept")
 	}
 
-	releaseMsg, ok := <-ch
-	if !ok {
-		t.Fatal("send capture channel closed before UE Context Release Command")
+	var release []byte
+	select {
+	case release = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no UE Context Release Command after inactive InitialUE TAU")
 	}
-	p, err := pdu.Decode(releaseMsg)
+	msg, err := pdu.Decode(release)
 	if err != nil {
-		t.Fatalf("decode UE Context Release Command: %v", err)
+		t.Fatalf("decode release command: %v", err)
 	}
-	if p == nil {
-		t.Fatal("decoded PDU is nil")
-	}
-	if p.Type != pdu.PDUTypeInitiatingMessage {
-		t.Fatalf("PDU type got %d, want %d (initiatingMessage)", p.Type, pdu.PDUTypeInitiatingMessage)
-	}
-	if p.ProcedureCode != pdu.ProcUEContextRelease {
-		t.Fatalf("procedure code got %d, want %d (UE Context Release)", p.ProcedureCode, pdu.ProcUEContextRelease)
+	if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcUEContextRelease {
+		t.Fatalf("PDU got type=%s proc=%d, want UE Context Release Command", msg.Type, msg.ProcedureCode)
 	}
 
 	realUE.Lock()
 	defer realUE.Unlock()
 	if !realUE.S1ReleasePending {
-		t.Fatal("S1ReleasePending was not set for non-active idle TAU release")
-	}
-	if realUE.S1ReleaseENBAddr != remoteAddr {
-		t.Fatalf("S1ReleaseENBAddr got %q, want %q", realUE.S1ReleaseENBAddr, remoteAddr)
-	}
-	if realUE.S1ReleaseENBID != 2030 {
-		t.Fatalf("S1ReleaseENBID got %d, want %d", realUE.S1ReleaseENBID, 2030)
+		t.Fatal("inactive InitialUE TAU did not start preserved S1 release")
 	}
 	if realUE.S1BindingState != uecontext.S1BindingReleasePending {
 		t.Fatalf("S1BindingState got %s, want %s", realUE.S1BindingState, uecontext.S1BindingReleasePending)
+	}
+}
+
+func TestHandleIdleTAUMessage_GUTIReallocationDefersReleaseUntilTAUComplete(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.operCfg.TAU.ReallocateGUTI = true
+	const remoteAddr = "10.0.0.31:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.PDNs["internet"] = &uecontext.PDNContext{APN: "internet", DefaultEBI: 5, State: "active"}
+	realUE.Unlock()
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 2031
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	srv.handleIdleTAUMessage(tempUE, nil, buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti))
+	select {
+	case <-ch: // TAU Accept, carrying the new GUTI
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Accept sent")
+	}
+	select {
+	case unexpected := <-ch:
+		t.Fatalf("release sent before required TAU Complete: %x", unexpected)
+	case <-time.After(25 * time.Millisecond):
+	}
+	realUE.Lock()
+	deferred := realUE.IdleTAUReleaseAfterComplete
+	mmeID := realUE.MMEUES1APID
+	realUE.Unlock()
+	if !deferred {
+		t.Fatal("InitialUE inactive TAU release was not deferred for TAU Complete")
+	}
+	if err := srv.processTAUComplete(realUE, srv.log); err != nil {
+		t.Fatalf("process TAU Complete: %v", err)
+	}
+	select {
+	case release := <-ch:
+		msg, err := pdu.Decode(release)
+		if err != nil || msg.ProcedureCode != pdu.ProcUEContextRelease {
+			t.Fatalf("post-complete PDU is not UE Context Release Command: err=%v pdu=%x", err, release)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no release sent after TAU Complete")
+	}
+	srv.handleUEContextReleaseComplete(remoteAddr, nil, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(2031)},
+	})
+	realUE.Lock()
+	defer realUE.Unlock()
+	if realUE.ECMState != emm.ECMIdle {
+		t.Fatalf("ECM state got %s, want ECM-IDLE after Release Complete", realUE.ECMState)
+	}
+	if realUE.PDNs["internet"] == nil {
+		t.Fatal("S1 release removed retained PDN")
+	}
+}
+
+func TestHandleIdleTAUMessage_RepeatedInactiveInitialUEBindingsDoNotAccumulate(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.32:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.PDNs["internet"] = &uecontext.PDNContext{APN: "internet", DefaultEBI: 5, State: "active"}
+	mmeID := realUE.MMEUES1APID
+	realUE.Unlock()
+
+	for i := uint32(0); i < 5; i++ {
+		enbID := uint32(2040) + i
+		tempUE := srv.ueManager.Allocate()
+		tempUE.Lock()
+		tempUE.ENBS1APID = enbID
+		tempUE.ENBGlobalID = remoteAddr
+		tempUE.Unlock()
+		srv.handleIdleTAUMessage(tempUE, nil, buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti))
+		if i > 0 {
+			select {
+			case oldRelease := <-ch:
+				msg, err := pdu.Decode(oldRelease)
+				if err != nil || msg.ProcedureCode != pdu.ProcUEContextRelease {
+					t.Fatalf("iteration %d: expected targeted old-binding Release Command, err=%v pdu=%x", i, err, oldRelease)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatalf("iteration %d: no old-binding release", i)
+			}
+		}
+		select {
+		case <-ch: // TAU Accept
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("iteration %d: no TAU Accept", i)
+		}
+		select {
+		case release := <-ch:
+			msg, err := pdu.Decode(release)
+			if err != nil || msg.ProcedureCode != pdu.ProcUEContextRelease {
+				t.Fatalf("iteration %d: expected UE Context Release Command, err=%v pdu=%x", i, err, release)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("iteration %d: no S1 release", i)
+		}
+		if got, want := srv.ueManager.Count(), 1; got != want {
+			t.Fatalf("iteration %d: temporary UE contexts got %d, want %d", i, got, want)
+		}
+	}
+
+	// A Release Complete for the first obsolete S1 pair must not disturb the
+	// newest binding or retained EPS session.
+	srv.handleUEContextReleaseComplete(remoteAddr, nil, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(2040)},
+	})
+	realUE.Lock()
+	defer realUE.Unlock()
+	if realUE.ENBS1APID != 2044 || realUE.S1BindingGeneration != 5 {
+		t.Fatalf("stale release changed newest binding: enb_ue_id=%d generation=%d", realUE.ENBS1APID, realUE.S1BindingGeneration)
+	}
+	if realUE.PDNs["internet"] == nil {
+		t.Fatal("repeated TAU S1 releases removed retained PDN")
 	}
 }
 

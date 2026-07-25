@@ -226,16 +226,25 @@ func TestEncodeTAUAccept_NoGUTI(t *testing.T) {
 	if b[2] != 0x00 {
 		t.Errorf("byte[2] EPS update result: got %#x, want 0x00", b[2])
 	}
-	// T3412 is a TV IE: IEI 0x5A followed directly by the timer value.
-	// The following IE is the TAI list IEI 0x54.
-	if len(b) < 6 {
-		t.Fatalf("output too short for T3412 and TAI list: %x", b)
+	// T3412 IEI should be present
+	found := false
+	for i := 3; i < len(b)-1; i++ {
+		if b[i] == 0x5A {
+			found = true
+			if b[i+1] != 0x01 {
+				t.Errorf("T3412 length: got %d, want 1", b[i+1])
+			}
+			if i+2 < len(b) && b[i+2] != 0x21 {
+				t.Errorf("T3412 value: got %#x, want 0x21", b[i+2])
+			}
+			break
+		}
 	}
-	if got, want := b[3:6], []byte{0x5A, 0x21, 0x54}; !bytes.Equal(got, want) {
-		t.Fatalf("T3412 TV encoding got %x, want %x", got, want)
+	if !found {
+		t.Error("T3412 IEI 0x5A not found in TAU Accept")
 	}
 	// TAI list IEI should be present
-	found := false
+	found = false
 	for _, bb := range b[3:] {
 		if bb == 0x54 {
 			found = true
@@ -268,34 +277,6 @@ func TestEncodeTAUAccept_NoGUTI(t *testing.T) {
 	}
 	if decoded.GUTI != nil {
 		t.Fatalf("decoded unexpected GUTI: %+v", decoded.GUTI)
-	}
-}
-
-func TestEncodeTAUAccept_T3412UsesTVFormat(t *testing.T) {
-	tai := emm.TAI{
-		PLMN: [3]byte{0x13, 0x51, 0x34},
-		TAC:  0x0001,
-	}
-
-	b := emm.EncodeTAUAcceptWithParams(emm.TAUAcceptParams{
-		UpdateResult: emm.EPSUpdateResultTAUpdated,
-		T3412:        0x49,
-		TAIList:      []emm.TAI{tai},
-	})
-
-	if !bytes.Contains(b, []byte{0x5A, 0x49, 0x54}) {
-		t.Fatalf("TAU Accept missing TV-encoded T3412 followed by TAI list: %x", b)
-	}
-	if bytes.Contains(b, []byte{0x5A, 0x01, 0x49}) {
-		t.Fatalf("TAU Accept incorrectly encoded T3412 as TLV: %x", b)
-	}
-
-	decoded, err := emm.DecodeTAUAccept(b)
-	if err != nil {
-		t.Fatalf("DecodeTAUAccept error: %v; bytes=%x", err, b)
-	}
-	if decoded.T3412 == nil || *decoded.T3412 != 0x49 {
-		t.Fatalf("decoded T3412 got %v, want 0x49", decoded.T3412)
 	}
 }
 

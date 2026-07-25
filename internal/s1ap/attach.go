@@ -676,6 +676,29 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 }
 
 func (s *Server) processExtendedServiceRequest(ue *uecontext.Context, body []byte, log *zap.Logger) error {
+	req, err := emm.DecodeExtendedServiceRequest(body)
+	if err == nil && req.ServiceType == emm.ServiceTypeMobileOriginatingCSFallback {
+		// SGd/SMS-in-MME is not an operational SGs or CS service. Complete the
+		// unsupported CSFB request without touching any pending EPS procedure.
+		ue.Lock()
+		mmeUEID := ue.MMEUES1APID
+		enbUEID := ue.ENBS1APID
+		enbAddr := ue.ENBGlobalID
+		ue.Unlock()
+		if err := s.sendProtectedServiceRejectForUE(ue, mmeUEID, enbUEID, enbAddr, emm.CauseCSDomainNotAvailable, "MO-CSFB Extended Service Request"); err != nil {
+			// A missing S1 route cannot turn the unsupported CSFB request into an
+			// EPS failure. The production path logs the send error; pending IMS
+			// activation remains untouched either way.
+			log.Warn("s1ap: Extended Service Request Service Reject send failed", zap.Error(err))
+		}
+		metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "csfb_reject").Inc()
+		return nil
+	}
+	if err != nil {
+		log.Warn("s1ap: Extended Service Request decode error", zap.Error(err))
+		return nil
+	}
+
 	ue.Lock()
 	mmeUEID := ue.MMEUES1APID
 	imsi := ue.IMSI

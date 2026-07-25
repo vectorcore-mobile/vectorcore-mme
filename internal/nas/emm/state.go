@@ -73,8 +73,8 @@ const (
 	MsgTrackingAreaUpdateComplete  uint8 = 0x4A
 	MsgTrackingAreaUpdateReject    uint8 = 0x4B
 	MsgExtendedServiceRequest      uint8 = 0x4C
-	MsgServiceRequest              uint8 = 0x4E
-	MsgServiceReject               uint8 = 0x4F
+	MsgServiceRequest              uint8 = 0x4D
+	MsgServiceReject               uint8 = 0x4E
 	MsgGUTIReallocationCommand     uint8 = 0x50
 	MsgGUTIReallocationComplete    uint8 = 0x51
 	MsgAuthenticationRequest       uint8 = 0x52
@@ -166,7 +166,8 @@ const (
 	CauseNoSuitableCellsInTA              uint8 = 0x0F
 	CauseMSCNotReachable                  uint8 = 0x10
 	CauseNetworkFailure                   uint8 = 0x11
-	CauseCSFallbackCallEstNotAllowed      uint8 = 0x12
+	CauseCSDomainNotAvailable             uint8 = 0x12
+	CauseCSFallbackCallEstNotAllowed      uint8 = CauseCSDomainNotAvailable
 	CauseMACFailure                       uint8 = 0x14
 	CauseSynchFailure                     uint8 = 0x15
 	CauseCongestion                       uint8 = 0x16
@@ -215,7 +216,7 @@ func CauseName(cause uint8) string {
 	case CauseNetworkFailure:
 		return "Network failure"
 	case CauseCSFallbackCallEstNotAllowed:
-		return "CS fallback call establishment not allowed"
+		return "CS domain not available"
 	case CauseMACFailure:
 		return "MAC failure"
 	case CauseSynchFailure:

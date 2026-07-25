@@ -41,6 +41,33 @@ type TAI struct {
 	TAC  uint16
 }
 
+// LAI is the non-broadcast Location Area Identity assigned by the MME for a
+// successful combined TAU with SMS in MME.  It is encoded as the TS 24.008
+// five-octet PLMN/LAC value carried by the TS 24.301 TAU Accept IE.
+type LAI struct {
+	PLMN [3]byte
+	LAC  uint16
+}
+
+// Encode returns the five-octet Location Area Identity value.
+func (l *LAI) Encode() []byte {
+	b := make([]byte, 5)
+	copy(b[:3], l.PLMN[:])
+	binary.BigEndian.PutUint16(b[3:], l.LAC)
+	return b
+}
+
+// DecodeLAI decodes a five-octet Location Area Identity value.
+func DecodeLAI(data []byte) (LAI, error) {
+	if len(data) != 5 {
+		return LAI{}, fmt.Errorf("emm: LAI length %d, want 5", len(data))
+	}
+	var l LAI
+	copy(l.PLMN[:], data[:3])
+	l.LAC = binary.BigEndian.Uint16(data[3:5])
+	return l, nil
+}
+
 // EPSNetworkFeatureSupport represents TS 24.301 §9.9.3.12A.
 type EPSNetworkFeatureSupport struct {
 	IMSVoiceOverPSSessionInS1Mode bool

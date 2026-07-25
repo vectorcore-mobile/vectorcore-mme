@@ -5,6 +5,12 @@ import (
 	"fmt"
 )
 
+const (
+	// ServiceTypeMobileOriginatingCSFallback is the Extended Service Request
+	// service type for an MO CS fallback request.
+	ServiceTypeMobileOriginatingCSFallback uint8 = 0
+)
+
 // ExtendedServiceRequest holds the decoded fields of a plain NAS Extended
 // Service Request message body (after the 2-byte NAS header).
 type ExtendedServiceRequest struct {

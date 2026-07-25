@@ -171,6 +171,21 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.Uint32("enb_ue_id", enbUEID))
 	log.Info("s1ap: UE Context Release Complete")
+	// A replacement TAU can leave one obsolete logical S1 connection pending
+	// release. Retire only that record; do not enter normal ECM/RABR release.
+	if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
+		ue.Lock()
+		obsolete := ue.ObsoleteS1Release
+		if obsolete != nil && obsolete.ENBAddr == remoteAddr && obsolete.ENBS1APID == enbUEID {
+			oldGeneration := obsolete.BindingGeneration
+			ue.ObsoleteS1Release = nil
+			ue.Unlock()
+			log.Info("s1ap: obsolete replacement binding Release Complete",
+				zap.Uint64("old_binding_generation", oldGeneration), zap.String("action", "old-binding-release-complete"))
+			return
+		}
+		ue.Unlock()
+	}
 
 	ue, ok := s.findUEForReleaseComplete(remoteAddr, p, mmeUEID, enbUEID)
 	if !ok {
@@ -291,6 +306,29 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 	}
 
 	_ = mmeUEID
+}
+
+// scheduleObsoleteS1BindingCleanup bounds replacement cleanup without
+// mutating the authoritative binding if the eNB never returns Release Complete.
+func (s *Server) scheduleObsoleteS1BindingCleanup(ue *uecontext.Context, generation uint64) {
+	mmeUEID := ue.MMEUES1APID
+	time.AfterFunc(30*time.Second, func() {
+		current, ok := s.ueManager.GetByMMEID(mmeUEID)
+		if !ok {
+			return
+		}
+		current.Lock()
+		if current.ObsoleteS1Release == nil || current.ObsoleteS1Release.BindingGeneration != generation {
+			current.Unlock()
+			return
+		}
+		old := current.ObsoleteS1Release
+		current.ObsoleteS1Release = nil
+		current.Unlock()
+		s.log.Info("s1ap: obsolete replacement binding release timeout",
+			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("enb_ue_id", old.ENBS1APID),
+			zap.Uint64("binding_generation", generation), zap.String("action", "old-binding-release-timeout"))
+	})
 }
 
 func (s *Server) findUEForReleaseComplete(remoteAddr string, p *pdu.PDU, mmeUEID, enbUEID uint32) (*uecontext.Context, bool) {

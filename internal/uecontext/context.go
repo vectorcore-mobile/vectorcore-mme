@@ -114,6 +114,18 @@ type S1ReleaseRABRTransaction struct {
 	Sessions      map[string]*S1ReleaseRABRSession
 }
 
+// ObsoleteS1BindingRelease records the replaced logical S1 connection while a
+// newer binding is authoritative. It is bounded to one outstanding record and
+// must never drive ECM/RABR state for the replacement binding.
+type ObsoleteS1BindingRelease struct {
+	MMEUES1APID       uint32
+	ENBS1APID         uint32
+	ENBAddr           string
+	BindingGeneration uint64
+	CleanupGeneration uint64
+	Deadline          time.Time
+}
+
 // Context holds all runtime state for a single attached UE.
 // It is protected by mu; all fields must be accessed under mu.
 type Context struct {
@@ -125,6 +137,7 @@ type Context struct {
 	ENBGlobalID         string // serialised GlobalENBID
 	S1BindingGeneration uint64
 	S1BindingState      S1BindingState
+	ObsoleteS1Release   *ObsoleteS1BindingRelease
 
 	// S1 release in progress for the previous access context. Kept separate
 	// from the current ENBS1APID so a fast Service Request can rebind the UE
@@ -135,6 +148,9 @@ type Context struct {
 	S1ReleaseGeneration uint64
 	S1ReleaseCauseGroup uint8
 	S1ReleaseCauseValue uint8
+	// IdleTAUReleaseAfterComplete defers release of an InitialUE-originated,
+	// inactive TAU connection while a GUTI reallocation waits for TAU Complete.
+	IdleTAUReleaseAfterComplete bool
 
 	// Identity
 	IMSI   string

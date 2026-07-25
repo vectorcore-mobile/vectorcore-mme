@@ -13,6 +13,7 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
+	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
@@ -118,7 +119,6 @@ func (s *Server) handleServiceRequest(
 		reject(emm.CauseImplicitlyDetached)
 		return
 	}
-
 	// Snapshot fields under the real UE lock.
 	realUE.Lock()
 	intAlg := realUE.IntAlg
@@ -427,6 +427,16 @@ func (s *Server) handleInitialUEExtendedServiceRequest(
 			zap.String("lookup_result", "miss"),
 			zap.String("lookup_guti", gutiStr))
 		reject(emm.CauseImplicitlyDetached)
+		return
+	}
+	if req.ServiceType == emm.ServiceTypeMobileOriginatingCSFallback {
+		if err := s.sendProtectedServiceRejectForUE(realUE, tempMmeUEID, enbUEID, enbAddr, emm.CauseCSDomainNotAvailable, "idle MO-CSFB Extended Service Request"); err != nil {
+			log.Warn("s1ap: Extended Service Request CSFB reject send failed", zap.Error(err))
+		}
+		// The temporary InitialUE context has served only as the current S1
+		// route. The authoritative EPS context and all PDNs remain untouched.
+		s.ueManager.Remove(tempUE)
+		metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "csfb_reject").Inc()
 		return
 	}
 
@@ -1233,5 +1243,40 @@ func (s *Server) handleActiveTAUReestablished(ue *uecontext.Context, log *zap.Lo
 // sendServiceReject sends a plain NAS Service Reject via Downlink NAS Transport.
 func (s *Server) sendServiceReject(mmeUEID, enbUEID uint32, enbAddr string, cause uint8) {
 	reject := emm.EncodeServiceReject(cause)
+	s.log.Info("s1ap: Service Reject sent",
+		zap.Uint32("route_mme_ue_id", mmeUEID),
+		zap.Uint32("route_enb_ue_id", enbUEID),
+		zap.Uint8("emm_message_type", reject[1]),
+		zap.Uint8("emm_cause", cause))
 	s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, reject)
+}
+
+// sendProtectedServiceRejectForUE completes an ESR using the authoritative
+// UE NAS security context while allowing InitialUE ESR to route over its
+// temporary S1 context. Reserving the DL COUNT under the UE lock prevents a
+// concurrent ESM activation from reusing the Service Reject sequence number.
+func (s *Server) sendProtectedServiceRejectForUE(ue *uecontext.Context, routeMMEID, routeENBID uint32, routeENBAddr string, cause uint8, name string) error {
+	plain := emm.EncodeServiceReject(cause)
+	ue.Lock()
+	dlCount := uint32(ue.DLNASCount)
+	protected, err := nas.EncodeIntegrityAndCiphered(plain, ue.IntAlg, ue.EncAlg, ue.KNASint, ue.KNASenc, dlCount)
+	if err == nil {
+		ue.DLNASCount.Increment()
+		ue.LastDownlinkNASMessage = name
+	}
+	ue.Unlock()
+	if err != nil {
+		return fmt.Errorf("protect Service Reject: %w", err)
+	}
+	if err := s.sendDownlinkNASTransport(routeENBAddr, routeMMEID, routeENBID, protected); err != nil {
+		return fmt.Errorf("send Service Reject: %w", err)
+	}
+	s.log.Info("s1ap: protected Service Reject sent",
+		zap.Uint32("route_mme_ue_id", routeMMEID),
+		zap.Uint32("route_enb_ue_id", routeENBID),
+		zap.Uint8("emm_message_type", plain[1]),
+		zap.Uint8("emm_cause", cause),
+		zap.Uint32("dl_nas_count", dlCount),
+		zap.String("message", name))
+	return nil
 }

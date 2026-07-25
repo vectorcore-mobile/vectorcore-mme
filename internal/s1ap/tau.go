@@ -227,18 +227,49 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	// so the UE is physically connected even before TAU Accept is sent. Without this,
 	// handleDisconnect silently skips the UE (ECMIdle guard) and the S11 session leaks.
 	ue.Lock()
+	oldENBUEID := ue.ENBS1APID
+	oldENBAddr := ue.ENBGlobalID
+	oldBindingGeneration := ue.S1BindingGeneration
+	oldMMEUEID := ue.MMEUES1APID
+	obsoleteRelease := oldENBUEID != 0 && oldENBAddr != "" &&
+		(oldENBUEID != enbUEID || oldENBAddr != remoteAddr)
+	if obsoleteRelease {
+		// One bounded record is sufficient: a prior replacement command has
+		// already been sent and any late completion is safely stale.
+		ue.ObsoleteS1Release = &uecontext.ObsoleteS1BindingRelease{
+			MMEUES1APID:       oldMMEUEID,
+			ENBS1APID:         oldENBUEID,
+			ENBAddr:           oldENBAddr,
+			BindingGeneration: oldBindingGeneration,
+			CleanupGeneration: oldBindingGeneration + 1,
+			Deadline:          time.Now().Add(30 * time.Second),
+		}
+	}
 	ue.ENBS1APID = enbUEID
 	ue.ENBGlobalID = remoteAddr
 	ue.S1BindingGeneration++
 	ue.S1BindingState = uecontext.S1BindingActive
 	ue.S1ReleasePending = false
+	// This is a new InitialUE-originated binding.  A deferred release from an
+	// older TAU Complete must never be applied to this replacement binding.
+	ue.IdleTAUReleaseAfterComplete = false
 	if emmTAI := taiFromIE(tai); emmTAI != nil {
 		ue.TAI = emmTAI
 	}
 	ue.SetEMMState(emm.StateTrackingAreaUpdating)
 	ue.SetECMState(emm.ECMConnected)
 	mmeUEID := ue.MMEUES1APID
+	newBindingGeneration := ue.S1BindingGeneration
 	ue.Unlock()
+	if obsoleteRelease {
+		log.Info("nas: idle TAU replacement binding old release sent",
+			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("old_enb_ue_id", oldENBUEID), zap.String("old_enb_addr", oldENBAddr),
+			zap.Uint64("old_binding_generation", oldBindingGeneration), zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.String("new_enb_addr", remoteAddr), zap.Uint64("new_binding_generation", newBindingGeneration),
+			zap.String("action", "old-binding-release-sent"))
+		s.sendUEContextReleaseCommand(oldENBAddr, oldMMEUEID, oldENBUEID)
+		s.scheduleObsoleteS1BindingCleanup(ue, oldBindingGeneration)
+	}
 
 	log.Info("nas: idle TAU: UE found, sending TAU Accept",
 		zap.Uint32("mme_ue_id", mmeUEID))
@@ -266,12 +297,17 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 		s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU {
 		go s.sendEMMInformation(mmeUEID, "tau", log)
 	}
-	if !tauReq.ActiveFlag && step == uecontext.AttachStepNone {
-		log.Info("nas: idle TAU: scheduling post-accept S1 release",
-			zap.Uint32("mme_ue_id", mmeUEID),
-			zap.Uint32("enb_ue_id", enbUEID),
-			zap.String("remote", remoteAddr))
-		s.scheduleIdleTAURelease(remoteAddr, mmeUEID, enbUEID, log)
+	// InitialUE created this S1 signalling connection even if the retained
+	// context says ECM-CONNECTED. An inactive TAU without a pending TAU Complete
+	// or downlink follow-up must release that new access binding explicitly.
+	if !tauReq.ActiveFlag && !(s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU) {
+		if step == uecontext.AttachStepNone {
+			s.beginIdleTAUPostAcceptRelease(ue, log)
+		} else if step == uecontext.AttachStepWaitingTAUComplete {
+			ue.Lock()
+			ue.IdleTAUReleaseAfterComplete = true
+			ue.Unlock()
+		}
 	}
 }
 
@@ -414,50 +450,6 @@ func (s *Server) resumeIdleTAUUserPlane(ue *uecontext.Context, requestStatus *em
 	return nil
 }
 
-func (s *Server) scheduleIdleTAURelease(remoteAddr string, mmeUEID, enbUEID uint32, log *zap.Logger) {
-	const releaseDelay = 25 * time.Millisecond
-
-	go func() {
-		time.Sleep(releaseDelay)
-
-		ue, ok := s.ueManager.GetByMMEID(mmeUEID)
-		if !ok {
-			return
-		}
-
-		ue.Lock()
-		boundRemote := ue.ENBGlobalID
-		boundENBUEID := ue.ENBS1APID
-		ecmState := ue.ECMState
-		releasePending := ue.S1ReleasePending
-		ue.Unlock()
-
-		if boundRemote != remoteAddr || boundENBUEID != enbUEID {
-			log.Info("nas: idle TAU release skipped because S1 binding changed before release",
-				zap.Uint32("mme_ue_id", mmeUEID),
-				zap.Uint32("enb_ue_id", enbUEID),
-				zap.String("expected_remote", remoteAddr),
-				zap.String("current_remote", boundRemote),
-				zap.Uint32("current_enb_ue_id", boundENBUEID))
-			return
-		}
-		if ecmState != emm.ECMConnected || releasePending {
-			log.Info("nas: idle TAU release skipped because UE state changed before release",
-				zap.Uint32("mme_ue_id", mmeUEID),
-				zap.Uint32("enb_ue_id", enbUEID),
-				zap.String("ecm_state", ecmState.String()),
-				zap.Bool("release_pending", releasePending))
-			return
-		}
-
-		log.Info("nas: idle TAU release starting after TAU Accept ordering delay",
-			zap.Uint32("mme_ue_id", mmeUEID),
-			zap.Uint32("enb_ue_id", enbUEID),
-			zap.Duration("delay", releaseDelay))
-		s.beginPreservedS1Release(ue, remoteAddr, enbUEID, ies.CauseGroupNAS, ies.CauseNASNormalRelease)
-	}()
-}
-
 func tauResumeBearersLocked(ue *uecontext.Context, requestStatus *emm.EPSBearerContextStatus) ([]BearerInfo, error) {
 	resumeBearers, err := retainedResumeBearersLocked(ue, true)
 	if err != nil || requestStatus == nil {
@@ -517,8 +509,26 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 	if s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU {
 		go s.sendEMMInformation(mmeUEID, "tau", log)
 	}
+	ue.Lock()
+	releaseAfterComplete := ue.IdleTAUReleaseAfterComplete
+	ue.IdleTAUReleaseAfterComplete = false
+	ue.Unlock()
+	if releaseAfterComplete {
+		s.beginIdleTAUPostAcceptRelease(ue, log)
+	}
 
 	return nil
+}
+
+func (s *Server) beginIdleTAUPostAcceptRelease(ue *uecontext.Context, log *zap.Logger) {
+	ue.Lock()
+	remote, enbID, pending := ue.ENBGlobalID, ue.ENBS1APID, ue.S1ReleasePending
+	ue.Unlock()
+	if remote == "" || enbID == 0 || pending {
+		return
+	}
+	log.Info("nas: idle TAU: releasing inactive InitialUE signalling connection", zap.Uint32("enb_ue_id", enbID))
+	s.beginPreservedS1Release(ue, remote, enbID, ies.CauseGroupNAS, ies.CauseNASNormalRelease)
 }
 
 type tauAcceptOptions struct {
@@ -526,6 +536,9 @@ type tauAcceptOptions struct {
 	ReallocationReason string
 	UpdateResult       uint8
 	EPSBearerStatus    *emm.EPSBearerContextStatus
+	LAI                *emm.LAI
+	AdditionalResult   *uint8
+	EMMCause           *uint8
 }
 
 // sendTAUAccept builds and sends a security-protected TAU Accept to the UE.
@@ -556,10 +569,13 @@ func (s *Server) sendTAUAcceptForRequest(ue *uecontext.Context, log *zap.Logger,
 
 func (s *Server) tauAcceptOptionsForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) tauAcceptOptions {
 	updateResult := emm.EPSUpdateResultTAUpdated
+	var nonEPSCause *uint8
+	var lai *emm.LAI
+	var additionalResult *uint8
 	var requestStatus *emm.EPSBearerContextStatus
 	reconcileRequestStatus := true
 	if req != nil {
-		updateResult = tauAcceptResultForRequest(req.EPSUpdateType)
+		updateResult, nonEPSCause, lai, additionalResult = s.tauAcceptResultForRequest(ue, req.EPSUpdateType)
 		requestStatus = req.EPSBearerStatus
 		// Reconcile the bearer-status view for active-flag TAU, where the UE is
 		// explicitly requesting resume for its currently active bearers, and for
@@ -644,6 +660,9 @@ func (s *Server) tauAcceptOptionsForRequest(ue *uecontext.Context, log *zap.Logg
 		ReallocationReason: "same_mme_policy",
 		UpdateResult:       updateResult,
 		EPSBearerStatus:    responseStatus,
+		LAI:                lai,
+		AdditionalResult:   additionalResult,
+		EMMCause:           nonEPSCause,
 	}
 }
 
@@ -683,6 +702,9 @@ func (s *Server) buildTAUAcceptNAS(ue *uecontext.Context, log *zap.Logger, opts 
 		IncludeGUTI:              false,
 		EPSBearerStatus:          opts.EPSBearerStatus,
 		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
+		LAI:                      opts.LAI,
+		AdditionalUpdateResult:   opts.AdditionalResult,
+		EMMCause:                 opts.EMMCause,
 	})
 
 	toSend := tauAcceptPDU
@@ -844,6 +866,9 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 		GUTI:                     newGUTI,
 		EPSBearerStatus:          opts.EPSBearerStatus,
 		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
+		LAI:                      opts.LAI,
+		AdditionalUpdateResult:   opts.AdditionalResult,
+		EMMCause:                 opts.EMMCause,
 	})
 
 	var toSend []byte
@@ -932,13 +957,26 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	return nil
 }
 
-func tauAcceptResultForRequest(updateType uint8) uint8 {
-	switch updateType {
-	case emm.EPSUpdateTypeCombined, emm.EPSUpdateTypeCombinedIMSIAttach:
-		return emm.EPSUpdateResultCombinedTALAUpdated
-	default:
-		return emm.EPSUpdateResultTAUpdated
+func (s *Server) tauAcceptResultForRequest(ue *uecontext.Context, updateType uint8) (uint8, *uint8, *emm.LAI, *uint8) {
+	// TS 24.301 v16.9.0 §5.5.3.3.4.2 permits combined TAU success for EPS and
+	// SMS only.  SGd is not SGs/VLR registration, so this is available only
+	// after the actual SMS-in-MME registration outcome is authoritative.
+	if updateType == emm.EPSUpdateTypeCombined || updateType == emm.EPSUpdateTypeCombinedIMSIAttach {
+		ue.Lock()
+		smsRegistered := ue.SMSRegistrationState == uecontext.SMSRegistrationRegistered
+		ue.Unlock()
+		if s.sgdCfg.Enabled && smsRegistered {
+			// Cisco's captured successful SGd flow uses periodic TAU. If a UE
+			// does send a combined TAU, keep the result consistent with its
+			// successful combined Attach without synthesising LAI/F2/CS state.
+			return emm.EPSUpdateResultCombinedTALAUpdated, nil, nil, nil
+		}
+		// No operational SMS-in-MME outcome exists for this UE.  This remains
+		// EPS-only rather than falsely reporting an SGs/VLR registration.
+		cause := uint8(emm.CauseCSDomainNotAvailable)
+		return emm.EPSUpdateResultTAUpdated, &cause, nil, nil
 	}
+	return emm.EPSUpdateResultTAUpdated, nil, nil, nil
 }
 
 func tauMMEBearerContextStatusLocked(ue *uecontext.Context) *emm.EPSBearerContextStatus {

@@ -312,6 +312,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		tai := ue.TAI
 		guti := ue.GUTI
 		attachType := ue.AttachType
+		smsRegistrationState := ue.SMSRegistrationState
 		intAlg := ue.IntAlg
 		encAlg := ue.EncAlg
 		knasInt := make([]byte, len(ue.KNASint))
@@ -333,7 +334,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		if tai != nil {
 			taiList = []emm.TAI{*tai}
 		}
-		attachResult := attachAcceptResultForRequest(attachType)
+		attachResult, additionalResult := s.attachAcceptRegistration(attachType, smsRegistrationState)
 		featureSupport := s.epsNetworkFeatureSupport()
 		t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 		if timerErr != nil {
@@ -350,6 +351,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			GUTI:                     guti,
 			ESMContainer:             esmReject,
 			EPSNetworkFeatureSupport: featureSupport,
+			AdditionalUpdateResult:   additionalResult,
 		})
 
 		// TS 24.301 §4.4.5 and TS 33.401 §8.2 regard EEA0 as ciphering.
@@ -563,6 +565,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	tai := ue.TAI
 	guti := ue.GUTI
 	attachType := ue.AttachType
+	smsRegistrationState := ue.SMSRegistrationState
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
 	knasInt := make([]byte, len(ue.KNASint))
@@ -626,7 +629,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	if tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
-	attachResult := attachAcceptResultForRequest(attachType)
+	attachResult, additionalResult := s.attachAcceptRegistration(attachType, smsRegistrationState)
 	featureSupport := s.epsNetworkFeatureSupport()
 	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 	if timerErr != nil {
@@ -643,6 +646,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		GUTI:                     guti,
 		ESMContainer:             esmAccept,
 		EPSNetworkFeatureSupport: featureSupport,
+		AdditionalUpdateResult:   additionalResult,
 	})
 
 	// EEA0 is a null cipher, not an integrity-only procedure. It uses header type 2.
@@ -1209,11 +1213,16 @@ func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, g
 		zap.String("full_guti_lookup_key", uecontext.SerialiseGUTI(guti)))
 }
 
-func attachAcceptResultForRequest(attachType uint8) uint8 {
-	if attachType == emm.AttachTypeCombinedEPSAndIMSI {
-		return emm.AttachTypeCombinedEPSAndIMSI
+// attachAcceptRegistration uses the completed, per-UE SMS-in-MME registration
+// outcome rather than temporary Diameter peer state. The Cisco SGd-only
+// reference responds to successful combined Attach with result 2 and explicit
+// Additional Update Result F0, without SGs, CS service, LAI, or CS TMSI.
+func (s *Server) attachAcceptRegistration(attachType uint8, smsState uecontext.SMSRegistrationState) (uint8, *uint8) {
+	if attachType != emm.AttachTypeCombinedEPSAndIMSI || !s.sgdCfg.Enabled || smsState != uecontext.SMSRegistrationRegistered {
+		return emm.AttachTypeEPSOnly, nil
 	}
-	return emm.AttachTypeEPSOnly
+	noAdditionalInfo := uint8(0)
+	return emm.AttachTypeCombinedEPSAndIMSI, &noAdditionalInfo
 }
 
 func (s *Server) epsNetworkFeatureSupport() *emm.EPSNetworkFeatureSupport {

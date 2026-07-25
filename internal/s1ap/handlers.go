@@ -137,6 +137,7 @@ type Server struct {
 	emmTimersCfg       config.EMMTimersConfig
 	pagingCfg          config.PagingConfig
 	operCfg            config.OperatorConfig
+	sgdCfg             config.SGdConfig
 	store              repository.Repository
 	ueManager          *uecontext.Manager
 	enbTracker         *peertracker.Tracker
@@ -226,6 +227,7 @@ func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 }
 
 func (s *Server) SetSMSService(service *smsservice.Service) { s.sms = service }
+func (s *Server) SetSGdConfig(cfg config.SGdConfig)         { s.sgdCfg = cfg }
 func (s *Server) SetSMSTransactionTimeout(timeout time.Duration) {
 	if timeout > 0 {
 		s.smsTimeout = timeout

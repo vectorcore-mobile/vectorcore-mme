@@ -36,6 +36,27 @@ func TestEncodeAttachAcceptIncludesEPSNetworkFeatureSupport(t *testing.T) {
 	}
 }
 
+func TestEncodeAttachAcceptCiscoSGdCombinedPolicy(t *testing.T) {
+	tai := emm.TAI{PLMN: [3]byte{0x13, 0x51, 0x34}, TAC: 1}
+	noAdditionalInfo := uint8(0)
+	got := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
+		AttachResult:             emm.AttachTypeCombinedEPSAndIMSI,
+		T3412:                    0x49,
+		TAIList:                  []emm.TAI{tai},
+		ESMContainer:             []byte{0x52, 0x01, 0xd1, 0x21},
+		EPSNetworkFeatureSupport: &emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true},
+		AdditionalUpdateResult:   &noAdditionalInfo,
+	})
+	// External Cisco field model: result 2, EPS network feature support, F0;
+	// no LAI (13/05) and no SMS-only F2.
+	if got[2]&0x07 != emm.AttachTypeCombinedEPSAndIMSI || !bytes.HasSuffix(got, []byte{0x64, 0x01, 0x01, 0xf0}) {
+		t.Fatalf("Cisco-compatible combined Attach fields got %x", got)
+	}
+	if bytes.Contains(got, []byte{0x13, 0x05}) || bytes.Contains(got, []byte{0xf2}) {
+		t.Fatalf("combined Attach unexpectedly included LAI or F2: %x", got)
+	}
+}
+
 func TestEncodeEPSNetworkFeatureSupportIMSVoiceOverPS(t *testing.T) {
 	got := emm.EncodeEPSNetworkFeatureSupport(emm.EPSNetworkFeatureSupport{
 		IMSVoiceOverPSSessionInS1Mode: true,

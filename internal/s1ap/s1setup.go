@@ -263,7 +263,7 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 	var resetTypePresent bool
 	var causeGroup ies.CauseGroup
 	var causeValue uint8
-	resetType := "unknown"
+	var decodedReset resetType
 	resetTypeRawHex := ""
 	for _, ie := range ieList {
 		switch ie.ID {
@@ -278,12 +278,13 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 			causeValue = cause
 			causePresent = true
 		case pdu.IEResetType:
-			if err := validateResetType(ie.Value); err != nil {
+			decoded, err := decodeResetType(ie.Value)
+			if err != nil {
 				log.Warn("s1ap: Reset ResetType decode error", zap.Error(err))
 				s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
 				return
 			}
-			resetType = decodeResetTypeName(ie.Value)
+			decodedReset = decoded
 			resetTypeRawHex = hex.EncodeToString(ie.Value)
 			resetTypePresent = true
 		}
@@ -303,16 +304,103 @@ func (s *Server) handleReset(remoteAddr string, p *pdu.PDU, ieList []pdu.Protoco
 		return
 	}
 	log.Info("s1ap: Reset received",
-		zap.String("reset_type", resetType),
+		zap.String("reset_type", decodedReset.Kind.String()),
 		zap.String("reset_type_raw_hex", resetTypeRawHex),
 		zap.String("cause_group_name", ies.CauseGroupName(causeGroup)),
 		zap.Uint8("cause_group", uint8(causeGroup)),
 		zap.Uint8("cause", causeValue),
 		zap.String("cause_name", ies.CauseName(causeGroup, causeValue)))
-	s.handleENBReset(remoteAddr)
-	// Send Reset Acknowledge
-	resp := pdu.BuildSuccessfulOutcome(pdu.ProcReset, aper.CriticalityReject, nil)
+	var ackItems []resetConnectionItem
+	if decodedReset.Kind == resetTypeS1Interface {
+		s.handleENBReset(remoteAddr)
+	} else {
+		ackItems = s.handlePartialENBReset(remoteAddr, decodedReset.Items)
+	}
+	ackIEs := []pdu.ProtocolIE(nil)
+	if decodedReset.Kind == resetTypePartOfS1Interface && len(ackItems) != 0 {
+		value, err := encodeResetAcknowledgeList(ackItems)
+		if err != nil {
+			log.Error("s1ap: Reset Acknowledge list encode error", zap.Error(err))
+			s.sendErrorIndication(remoteAddr, p, 0, 0, ies.CauseGroupProtocol, ies.CauseProtocolFalselyConstructedMessage)
+			return
+		}
+		ackIEs = append(ackIEs, pdu.ProtocolIE{ID: pdu.IEUEAssociatedLogicalS1ConnectionListResAck, Criticality: aper.CriticalityIgnore, Value: value})
+	}
+	resp := pdu.BuildSuccessfulOutcome(pdu.ProcReset, aper.CriticalityReject, ackIEs)
 	s.sendToAddr(remoteAddr, resp)
+}
+
+// handlePartialENBReset is deliberately independent of handleENBReset: a
+// malformed, unknown, contradictory, or stale item can never widen into an
+// association-wide cleanup.
+func (s *Server) handlePartialENBReset(remoteAddr string, items []resetConnectionItem) []resetConnectionItem {
+	ack := make([]resetConnectionItem, 0, len(items))
+	for i, item := range items {
+		// TS 36.413 Reset Acknowledge mirrors every syntactically valid,
+		// non-empty requested logical connection in request order. Whether an
+		// item is current only controls local mutation, never acknowledgement.
+		acknowledged := item.HasMMEUEID || item.HasENBUEID
+		if acknowledged {
+			ack = append(ack, item)
+		}
+		var candidate *uecontext.Context
+		if item.HasMMEUEID {
+			candidate, _ = s.ueManager.GetByMMEID(item.MMEUEID)
+		}
+		if candidate == nil && item.HasENBUEID {
+			for _, ue := range s.ueManager.List() {
+				ue.Lock()
+				match := ue.ENBGlobalID == remoteAddr && ue.ENBS1APID == item.ENBUEID
+				if !match && ue.ObsoleteS1Release != nil {
+					match = ue.ObsoleteS1Release.ENBAddr == remoteAddr && ue.ObsoleteS1Release.ENBS1APID == item.ENBUEID
+				}
+				ue.Unlock()
+				if match {
+					candidate = ue
+					break
+				}
+			}
+		}
+		outcome, action := "not_found", "none"
+		var resolvedMME, resolvedENB uint32
+		var generation uint64
+		if candidate != nil {
+			candidate.Lock()
+			resolvedMME, resolvedENB, generation = candidate.MMEUES1APID, candidate.ENBS1APID, candidate.S1BindingGeneration
+			valid := candidate.ENBGlobalID == remoteAddr &&
+				(!item.HasMMEUEID || candidate.MMEUES1APID == item.MMEUEID) &&
+				(!item.HasENBUEID || candidate.ENBS1APID == item.ENBUEID)
+			if valid {
+				outcome, action = "current_match", "clear_s1_binding"
+				if isResumeICSAttachStep(candidate.AttachStep) {
+					candidate.AttachStep = uecontext.AttachStepNone
+					candidate.SetEMMState(emm.StateRegistered)
+				}
+				candidate.SetECMState(emm.ECMIdle)
+				candidate.ENBS1APID, candidate.ENBGlobalID = 0, ""
+				candidate.S1ReleasePending, candidate.S1ReleaseENBID, candidate.S1ReleaseENBAddr = false, 0, ""
+				candidate.S1ReleaseGeneration, candidate.S1ReleaseCauseGroup, candidate.S1ReleaseCauseValue = 0, 0, 0
+				candidate.S1BindingGeneration++
+				candidate.S1BindingState = uecontext.S1BindingReleased
+				candidate.ENBU_TEID, candidate.ENBU_IP = 0, nil
+				s.invalidateASSecuritySnapshotLocked(candidate)
+			} else {
+				obsolete := candidate.ObsoleteS1Release
+				obsoleteMatch := obsolete != nil && obsolete.ENBAddr == remoteAddr &&
+					(!item.HasMMEUEID || obsolete.MMEUES1APID == item.MMEUEID) &&
+					(!item.HasENBUEID || obsolete.ENBS1APID == item.ENBUEID)
+				if obsoleteMatch {
+					candidate.ObsoleteS1Release = nil
+					outcome, action = "obsolete_match", "retire_obsolete_binding"
+				} else {
+					outcome = "stale_or_contradictory"
+				}
+			}
+			candidate.Unlock()
+		}
+		s.log.Info("s1ap: partial Reset item", zap.Int("item_index", i), zap.Uint32("requested_mme_ue_id", item.MMEUEID), zap.Bool("requested_mme_present", item.HasMMEUEID), zap.Uint32("requested_enb_ue_id", item.ENBUEID), zap.Bool("requested_enb_present", item.HasENBUEID), zap.Uint32("resolved_mme_ue_id", resolvedMME), zap.Uint32("resolved_enb_ue_id", resolvedENB), zap.Uint64("binding_generation", generation), zap.String("match_outcome", outcome), zap.String("mutation_action", action), zap.Bool("acknowledgement_included", acknowledged))
+	}
+	return ack
 }
 
 func (s *Server) handleENBReset(remoteAddr string) {

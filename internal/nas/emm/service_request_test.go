@@ -107,7 +107,7 @@ func TestVerifyShortMAC_EIA2UsesFirstTwoOctetsAndLastTwoMACBytes(t *testing.T) {
 }
 
 func TestEncodeServiceReject(t *testing.T) {
-	const cause = emm.CauseImplicitlyDetached
+	const cause = emm.CauseCSDomainNotAvailable
 	b := emm.EncodeServiceReject(cause)
 	if len(b) != 3 {
 		t.Fatalf("length: got %d, want 3", len(b))
@@ -115,10 +115,13 @@ func TestEncodeServiceReject(t *testing.T) {
 	if b[0] != emm.PDEPSMobilityMgmt {
 		t.Errorf("byte[0] PD: got %#x, want %#x", b[0], emm.PDEPSMobilityMgmt)
 	}
-	if b[1] != emm.MsgServiceReject {
-		t.Errorf("byte[1] msg type: got %#x, want %#x", b[1], emm.MsgServiceReject)
+	if b[1] != 0x4e {
+		t.Errorf("byte[1] msg type: got %#x, want Cisco golden 0x4e", b[1])
 	}
 	if b[2] != cause {
 		t.Errorf("byte[2] cause: got %#x, want %#x", b[2], cause)
+	}
+	if got, want := hex.EncodeToString(b), "074e12"; got != want {
+		t.Errorf("Service Reject got %s, want Cisco golden %s", got, want)
 	}
 }

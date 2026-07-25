@@ -1316,7 +1316,7 @@ func TestInitialUEMessageExtendedServiceRequestUsesNASMobileIdentity(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x00, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
+	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x01, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(108)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
@@ -1383,7 +1383,7 @@ func TestInitialUEMessageExtendedServiceRequestRefreshesStaleASSnapshot(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x00, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
+	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x01, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(109)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
@@ -1435,7 +1435,7 @@ func TestInitialUEMessageExtendedServiceRequestDuplicatePendingResumeRetransmits
 	if err != nil {
 		t.Fatal(err)
 	}
-	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x00, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
+	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x01, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
 	firstIEs := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(118)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
@@ -1518,7 +1518,7 @@ func TestInitialUEExtendedServiceRequestIncompleteRetainedPolicySendsServiceReje
 	if err != nil {
 		t.Fatal(err)
 	}
-	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x00, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
+	nasPDU := []byte{emm.PDEPSMobilityMgmt, emm.MsgExtendedServiceRequest, 0x01, 0x05, 0xF4, 0x00, 0x00, 0x00, 0x02, 0x57, 0x02, 0x20, 0x00}
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(119)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
