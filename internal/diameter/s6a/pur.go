@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/roaming"
 )
 
 // SendPUR sends a Purge-UE-Request to the HSS (on UE detach).
@@ -34,6 +35,29 @@ func (h *Handlers) SendPUR(imsi string) error {
 
 	metrics.S6aRequestsTotal.WithLabelValues("PUR", "sent").Inc()
 	h.log.Info("s6a: PUR sent", zap.String("imsi", imsi))
+	return nil
+}
+
+// SendPURToHSS preserves the HSS decision made at identity verification.
+func (h *Handlers) SendPURToHSS(req roaming.S6aRequest) error {
+	if !h.cfg.SendPUROnDetach {
+		return nil
+	}
+	selected, err := h.selectPeer(req.DestinationRealm)
+	if err != nil {
+		return fmt.Errorf("s6a: route PUR for %s: %w", req.DestinationRealm, err)
+	}
+	destHost := req.DestinationHost
+	if destHost == "" && req.DestinationRealm == h.diameterCfg.OriginRealm {
+		destHost = selected.DestinationHost
+	}
+	m := h.buildPUR(req.SubscriberIMSI, destHost, req.DestinationRealm)
+	if _, err := m.WriteTo(selected.Connection); err != nil {
+		h.reportTransactionFailure(selected)
+		return fmt.Errorf("s6a: PUR write: %w", err)
+	}
+	metrics.S6aRequestsTotal.WithLabelValues("PUR", "sent").Inc()
+	h.log.Info("s6a: PUR sent", zap.String("destination_realm", req.DestinationRealm))
 	return nil
 }
 

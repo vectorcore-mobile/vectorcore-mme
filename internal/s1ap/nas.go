@@ -55,14 +55,8 @@ func (s *Server) HandleS13Result(mmeUEID uint32, result s13.Result) {
 		s.ueManager.Remove(ue)
 		return
 	}
-	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
-	if err != nil {
-		s.ueManager.Remove(ue)
-		return
-	}
-	var plmn3 [3]byte
-	copy(plmn3[:], plmn)
-	if err := s.s6a.SendULR(imsi, plmn3, mmeUEID); err != nil {
+	_ = imsi
+	if err := s.sendULRForUE(ue); err != nil {
 		s.sendDownlinkNASTransport(remote, mmeUEID, enbID, emm.EncodeAttachReject(emm.CauseNetworkFailure))
 		s.ueManager.Remove(ue)
 	}
@@ -382,6 +376,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	enbUEID := ue.ENBS1APID
 	ecgieci := ue.ECGIECI
 	pco := append([]byte(nil), ue.PCO...)
+	roamingState := ue.Roaming
 	var ulitac uint16
 	if ue.TAI != nil {
 		ulitac = ue.TAI.TAC
@@ -389,13 +384,22 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	ue.Unlock()
 
 	plmn := s.buildPLMN()
+	if roamingState.IsRoaming {
+		encoded, err := security.EncodePLMN(roamingState.ServingPLMN.MCC, roamingState.ServingPLMN.MNC)
+		if err != nil {
+			s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, emm.EncodeAttachReject(emm.CauseNetworkFailure))
+			s.ueManager.Remove(ue)
+			return
+		}
+		copy(plmn[:], encoded)
+	}
 	localIP := net.IP(s.s11LocalIP)
 	sgwAddr := ""
 	pgwIP := net.IP(s.pgwIP)
 	if s.gatewaySel != nil {
 		selCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		sgwSel, err := s.gatewaySel.SelectSGW(selCtx, ulitac)
+		sgwSel, err := s.gatewaySel.SelectSGWFor(selCtx, ulitac, roamingState.ServingPLMN)
 		if err != nil {
 			log.Error("s1ap: SGW selection failed", zap.Error(err))
 			rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
@@ -403,7 +407,17 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			s.ueManager.Remove(ue)
 			return
 		}
-		pgwSel, err := s.gatewaySel.SelectPGW(selCtx, apn, apnConfig)
+		iface := gateway.LogicalInterfaceS5
+		if roamingState.IsRoaming {
+			if !roamingState.RoamingAllowed || roamingState.HPLMN.MCC == "" || roamingState.ServingPLMN.MCC == "" {
+				log.Warn("s1ap: invalid roaming state prevents S5 fallback")
+				s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, emm.EncodeAttachReject(emm.CauseNetworkFailure))
+				s.ueManager.Remove(ue)
+				return
+			}
+			iface = gateway.LogicalInterfaceS8
+		}
+		pgwSel, err := s.gatewaySel.SelectPGWFor(selCtx, gateway.PGWRequest{APN: apn, HPLMN: roamingState.HPLMN, ServingPLMN: roamingState.ServingPLMN, ServingTAC: ulitac, Interface: iface, APNConfig: apnConfig, APNOIReplacement: apnConfig.APNOIReplacement})
 		if err != nil {
 			log.Error("s1ap: PGW selection failed", zap.Error(err))
 			rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
@@ -415,6 +429,17 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		pgwIP = pgwSel.Address
 		ue.Lock()
 		ue.SGWAddress = sgwAddr
+		if ue.PendingPDN != nil {
+			ue.PendingPDN.SelectedPGW = append(net.IP(nil), pgwSel.Address...)
+			ue.PendingPDN.PGWSelectionSource = pgwSel.Source
+			if iface == gateway.LogicalInterfaceS8 {
+				ue.PendingPDN.LogicalPGWInterface = uecontext.LogicalPGWInterfaceS8
+				ue.PendingPDN.PGWHPLMN = roamingState.HPLMN
+				ue.PendingPDN.APNOIReplacement = apnConfig.APNOIReplacement
+			} else {
+				ue.PendingPDN.LogicalPGWInterface = uecontext.LogicalPGWInterfaceS5
+			}
+		}
 		ue.Unlock()
 	}
 	// GTPv2-C ULI TAI/ECGI PLMN uses the TS 29.274 digit layout
@@ -618,6 +643,15 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		State:                      "activating",
 		SessionCreatedAt:           time.Now(),
 		LastSuccessfulS11Procedure: "create-session-response",
+	}
+	if ue.Roaming.IsRoaming {
+		ue.PDNs[apn].LogicalPGWInterface = uecontext.LogicalPGWInterfaceS8
+		ue.PDNs[apn].PGWHPLMN = ue.Roaming.HPLMN
+		ue.PDNs[apn].APNOIReplacement = apnPolicy.APNOIReplacement
+		ue.PDNs[apn].SelectedPGW = append(net.IP(nil), resp.PGWC_IP...)
+		ue.PDNs[apn].PGWSelectionSource = "s8"
+	} else {
+		ue.PDNs[apn].LogicalPGWInterface = uecontext.LogicalPGWInterfaceS5
 	}
 	ue.Unlock()
 
@@ -1306,6 +1340,7 @@ func cloneSubscriberAPNConfigs(profile *gateway.SubscriberProfile) map[string]ue
 			ServiceSelection:        cfg.ServiceSelection,
 			MIPHomeAgentAddress:     append(net.IP(nil), cfg.MIPHomeAgentAddress...),
 			MIPHomeAgentHost:        cfg.MIPHomeAgentHost,
+			APNOIReplacement:        cfg.APNOIReplacement,
 			PDNGWAllocationType:     cloneInt32Ptr(cfg.PDNGWAllocationType),
 			PDNType:                 cfg.PDNType,
 			PDNTypePolicy:           cfg.PDNTypePolicy,

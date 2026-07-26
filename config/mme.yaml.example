@@ -12,6 +12,15 @@ nf:
     - mcc: "001"
       mnc: "01"
       tac: 1
+    # Add one entry for every PLMN/TAC served by this MME. The eNB must
+    # advertise the same complete PLMN + TAC in S1 Setup SupportedTAs.
+    # - mcc: "001"
+    #   mnc: "01"
+    #   tac: 2
+    # A network-sharing/multi-PLMN example:
+    # - mcc: "311"
+    #   mnc: "435"
+    #   tac: 10
 
 s1ap:
   bind_address: "0.0.0.0"
@@ -81,6 +90,29 @@ s6a:
   ulr:
     # Default initial attach behavior: only S6a/S6d-Indicator (bit 2).
     flags: 2
+
+# Roaming foundation only: this configuration is validated and available to
+# later integration, but it does not yet route AIR/ULR or create S8 sessions.
+# Keep disabled until the subsequent roaming integration phases are complete.
+roaming:
+  enabled: false
+  policy:
+    default_action: deny
+    plmn_acl:
+      - plmn:
+          mcc: "310"
+          mnc: "260"
+        action: allow
+      - plmn:
+          mcc: "001"
+          mnc: "01"
+        action: deny
+  hss_routes:
+    - plmn:
+        mcc: "310"
+        mnc: "260"
+      realm: epc.mnc260.mcc310.3gppnetwork.org
+      host: hss01.epc.mnc260.mcc310.3gppnetwork.org
 
 # S13 Equipment Identity Register checks are disabled unless explicitly enabled.
 # When enabled, the MME advertises 3GPP S13 (Auth-Application-Id 16777252).

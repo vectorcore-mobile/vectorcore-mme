@@ -131,6 +131,7 @@ func main() {
 	s1apSrv.SetPersistentRecovery(databaseMode(cfg.Database) != "memory")
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	s1apSrv.SetSGdConfig(cfg.SGd)
+	s1apSrv.SetRoamingConfig(cfg.Roaming)
 	if cfg.SGd.Enabled {
 		s1apSrv.SetSMSService(smsservice.New(s6aHandlers))
 		s1apSrv.SetSMSTransactionTimeout(cfg.SGd.TransactionTimeout)

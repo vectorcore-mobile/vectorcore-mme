@@ -11,6 +11,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/roaming"
 )
 
 // SendAIR sends an Authentication-Information-Request to the HSS.
@@ -38,6 +40,40 @@ func (h *Handlers) SendAIR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("visited_plmn_id_hex", hex.EncodeToString(plmn[:])))
+	return nil
+}
+
+// SendAIRToHSS sends AIR using the verified subscriber HSS destination and
+// the separately captured serving PLMN. It must be used for roaming traffic.
+func (h *Handlers) SendAIRToHSS(req roaming.S6aRequest, mmeUEID uint32) error {
+	encoded, err := security.EncodePLMN(req.VisitedPLMN.MCC, req.VisitedPLMN.MNC)
+	if err != nil {
+		return fmt.Errorf("s6a: encode visited PLMN: %w", err)
+	}
+	var visited [3]byte
+	copy(visited[:], encoded)
+	selected, err := h.selectPeer(req.DestinationRealm)
+	if err != nil {
+		return fmt.Errorf("s6a: route AIR for %s: %w", req.DestinationRealm, err)
+	}
+	sid := h.newSessionID(req.SubscriberIMSI)
+	h.pendingAIR.Store(sid, mmeUEID)
+	destHost := req.DestinationHost
+	if destHost == "" && req.DestinationRealm == h.diameterCfg.OriginRealm {
+		// Preserve established home direct-HSS behavior. Foreign realms never
+		// borrow a selected peer host: a relay must remain routeable by realm.
+		destHost = selected.DestinationHost
+	}
+	// A configured host is an HSS routing constraint. For a relay route it is
+	// intentionally empty; do not substitute the relay's Origin-Host.
+	m := h.buildAIR(sid, req.SubscriberIMSI, visited, destHost, req.DestinationRealm)
+	if _, err := m.WriteTo(selected.Connection); err != nil {
+		h.pendingAIR.Delete(sid)
+		h.reportTransactionFailure(selected)
+		return fmt.Errorf("s6a: AIR write: %w", err)
+	}
+	metrics.S6aRequestsTotal.WithLabelValues("AIR", "sent").Inc()
+	h.log.Info("s6a: AIR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.String("destination_realm", req.DestinationRealm), zap.String("visited_plmn_id_hex", hex.EncodeToString(visited[:])))
 	return nil
 }
 

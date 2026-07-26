@@ -10,6 +10,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/plmn"
 )
 
 type S1BindingState uint8
@@ -17,6 +18,30 @@ type S1BindingState uint8
 // SMSRegistrationState is per UE: enabling SGd at node level does not
 // register every subscriber for SMS in MME.
 type SMSRegistrationState string
+
+// LogicalPGWInterface reserves the S5/S8 decision for the roaming integration
+// phase. Phase 1 does not use it to select a gateway or create a session.
+type LogicalPGWInterface string
+
+const (
+	LogicalPGWInterfaceS5 LogicalPGWInterface = "S5"
+	LogicalPGWInterfaceS8 LogicalPGWInterface = "S8"
+)
+
+// RoamingState is a future integration boundary. Its fields are intentionally
+// not populated by current attach, S6a, or S11 paths.
+type RoamingState struct {
+	HPLMN                 plmn.PLMN
+	ServingPLMN           plmn.PLMN
+	ServingTAI            *emm.TAI
+	IsRoaming             bool
+	RoamingAllowed        bool
+	RoamingDecisionSource string
+	SelectedHSSRealm      string
+	SelectedHSSHost       string
+	HSSRealmSource        string // "configured" or "generated"; home uses "local"
+	LogicalPGWInterface   LogicalPGWInterface
+}
 
 const (
 	SMSRegistrationNotRequested SMSRegistrationState = "not-requested"
@@ -159,6 +184,9 @@ type Context struct {
 	// PendingIdentityType records why an Identity Request was sent. It keeps
 	// an equipment response from ever being mistaken for an IMSI.
 	PendingIdentityType uint8
+
+	// Roaming is reserved state for the later atomic identity/S6a integration.
+	Roaming RoamingState
 
 	// Runtime-only SMS state. Transactions and timers are never restored after
 	// restart; normal S6a registration refresh establishes availability again.
@@ -324,6 +352,7 @@ type SubscriberAPNConfig struct {
 	ServiceSelection        string
 	MIPHomeAgentAddress     net.IP
 	MIPHomeAgentHost        string
+	APNOIReplacement        string
 	PDNGWAllocationType     *int32
 	PDNType                 uint8
 	PDNTypePolicy           uint8
@@ -337,6 +366,11 @@ type SubscriberAPNConfig struct {
 
 type PDNContext struct {
 	APN                     string
+	SelectedPGW             net.IP
+	PGWSelectionSource      string
+	LogicalPGWInterface     LogicalPGWInterface
+	PGWHPLMN                plmn.PLMN
+	APNOIReplacement        string
 	ProcedureTransactionID  uint8
 	DisconnectPTI           uint8
 	PDNType                 uint8

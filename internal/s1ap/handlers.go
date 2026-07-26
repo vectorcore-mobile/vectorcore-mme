@@ -138,6 +138,8 @@ type Server struct {
 	pagingCfg          config.PagingConfig
 	operCfg            config.OperatorConfig
 	sgdCfg             config.SGdConfig
+	roamingCfg         config.RoamingConfig
+	roamingConfigured  bool
 	store              repository.Repository
 	ueManager          *uecontext.Manager
 	enbTracker         *peertracker.Tracker
@@ -234,6 +236,9 @@ func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 
 func (s *Server) SetSMSService(service *smsservice.Service) { s.sms = service }
 func (s *Server) SetSGdConfig(cfg config.SGdConfig)         { s.sgdCfg = cfg }
+func (s *Server) SetRoamingConfig(cfg config.RoamingConfig) {
+	s.roamingCfg, s.roamingConfigured = cfg, true
+}
 func (s *Server) SetSMSTransactionTimeout(timeout time.Duration) {
 	if timeout > 0 {
 		s.smsTimeout = timeout

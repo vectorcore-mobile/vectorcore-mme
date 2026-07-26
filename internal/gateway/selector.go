@@ -15,6 +15,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/plmn"
 )
 
 const (
@@ -29,6 +30,7 @@ const (
 
 	ServiceSGWS11  = "x-3gpp-sgw:x-s11"
 	ServicePGWS5GT = "x-3gpp-pgw:x-s5-gtp"
+	ServicePGWS8GT = "x-3gpp-pgw:x-s8-gtp"
 
 	defaultGTPCPort = 2123
 )
@@ -49,6 +51,26 @@ type APNConfiguration struct {
 	PreemptionVulnerability bool
 	APNAMBRDown             uint32
 	APNAMBRUp               uint32
+	APNOIReplacement        string
+}
+
+type LogicalInterface string
+
+const (
+	LogicalInterfaceS5 LogicalInterface = "S5"
+	LogicalInterfaceS8 LogicalInterface = "S8"
+)
+
+// PGWRequest makes the S5/S8 decision explicit. HPLMN is used only for S8
+// discovery; serving PLMN/TAI remain available for callers' SGW selection.
+type PGWRequest struct {
+	APN              string
+	HPLMN            plmn.PLMN
+	ServingPLMN      plmn.PLMN
+	ServingTAC       uint16
+	Interface        LogicalInterface
+	APNOIReplacement string
+	APNConfig        *APNConfiguration
 }
 
 type SubscriberProfile struct {
@@ -166,9 +188,21 @@ func (s *Selector) FlushDNSCache() int {
 }
 
 func (s *Selector) SelectSGW(ctx context.Context, tac uint16) (*Selection, error) {
+	return s.SelectSGWFor(ctx, tac, plmn.PLMN{})
+}
+
+// SelectSGWFor roots TAC discovery in the visited serving PLMN when supplied.
+func (s *Selector) SelectSGWFor(ctx context.Context, tac uint16, serving plmn.PLMN) (*Selection, error) {
 	dnsCfg := s.cfg.GatewaySelection.DNS
 	if dnsCfg.Enabled && dnsCfg.SGWEnabled {
-		query := SGWQueryName(tac, RootDomain(s.cfg.NF, dnsCfg.RootDomain))
+		root := RootDomain(s.cfg.NF, dnsCfg.RootDomain)
+		if serving != (plmn.PLMN{}) {
+			if err := serving.Validate(); err != nil {
+				return nil, fmt.Errorf("SGW selection: %w", err)
+			}
+			root = APNOperatorIdentifier(serving, "")
+		}
+		query := SGWQueryName(tac, root)
 		if sel, err := s.resolveNAPTR(ctx, NodeSGW, query, ServiceSGWS11, "s11"); err == nil {
 			s.logSelection(sel)
 			return sel, nil
@@ -186,16 +220,25 @@ func (s *Selector) SelectSGW(ctx context.Context, tac uint16) (*Selection, error
 }
 
 func (s *Selector) SelectPGW(ctx context.Context, apn string, apnCfg *APNConfiguration) (*Selection, error) {
+	return s.SelectPGWFor(ctx, PGWRequest{APN: apn, Interface: LogicalInterfaceS5, APNConfig: apnCfg})
+}
+
+func (s *Selector) SelectPGWFor(ctx context.Context, req PGWRequest) (*Selection, error) {
+	apn, apnCfg := req.APN, req.APNConfig
+	iface, service := "s5-gtp", ServicePGWS5GT
+	if req.Interface == LogicalInterfaceS8 {
+		iface, service = "s8-gtp", ServicePGWS8GT
+	}
 	if s.cfg.GatewaySelection.PGW.PreferS6AStatic && apnCfg != nil {
 		if ip := normalizeIP(apnCfg.MIPHomeAgentAddress); ip != nil {
-			sel := &Selection{NodeType: NodePGW, Address: ip, Port: defaultGTPCPort, Interface: "s5-gtp", Source: SourceS6A, Field: "MIP-Home-Agent-Address"}
+			sel := &Selection{NodeType: NodePGW, Address: ip, Port: defaultGTPCPort, Interface: iface, Source: SourceS6A, Field: "MIP-Home-Agent-Address"}
 			s.logSelection(sel)
 			return sel, nil
 		}
 		if strings.TrimSpace(apnCfg.MIPHomeAgentHost) != "" {
 			ip, err := s.resolveHostOnly(ctx, apnCfg.MIPHomeAgentHost)
 			if err == nil {
-				sel := &Selection{NodeType: NodePGW, Address: ip, Port: defaultGTPCPort, Hostname: strings.TrimSuffix(apnCfg.MIPHomeAgentHost, "."), Interface: "s5-gtp", Source: SourceS6A, Field: "MIP-Home-Agent-Host"}
+				sel := &Selection{NodeType: NodePGW, Address: ip, Port: defaultGTPCPort, Hostname: strings.TrimSuffix(apnCfg.MIPHomeAgentHost, "."), Interface: iface, Source: SourceS6A, Field: "MIP-Home-Agent-Host"}
 				s.logSelection(sel)
 				return sel, nil
 			}
@@ -205,21 +248,64 @@ func (s *Selector) SelectPGW(ctx context.Context, apn string, apnCfg *APNConfigu
 
 	dnsCfg := s.cfg.GatewaySelection.DNS
 	if dnsCfg.Enabled && dnsCfg.PGWEnabled {
-		query := PGWQueryName(apn, RootDomain(s.cfg.NF, dnsCfg.RootDomain))
-		if sel, err := s.resolveNAPTR(ctx, NodePGW, query, ServicePGWS5GT, "s5-gtp"); err == nil {
+		root := RootDomain(s.cfg.NF, dnsCfg.RootDomain)
+		if req.Interface == LogicalInterfaceS8 {
+			if err := req.HPLMN.Validate(); err != nil {
+				return nil, fmt.Errorf("S8 PGW selection: %w", err)
+			}
+			if req.APNOIReplacement != "" && !validAPNOIReplacement(req.APNOIReplacement) {
+				return nil, fmt.Errorf("S8 PGW selection: invalid APN-OI-Replacement %q", req.APNOIReplacement)
+			}
+			root = APNOperatorIdentifier(req.HPLMN, req.APNOIReplacement)
+		}
+		query := PGWQueryName(apn, root)
+		if sel, err := s.resolveNAPTR(ctx, NodePGW, query, service, iface); err == nil {
 			s.logSelection(sel)
 			return sel, nil
 		} else {
 			s.log.Warn("gateway selection: PGW DNS failed", zap.String("query", query), zap.Error(err))
 		}
 	}
-	if sel, err := selectionFromAddress(NodePGW, s.cfg.GatewaySelection.PGW.PGWAddress, "s5-gtp", SourceStaticYAML); err == nil {
-		s.logSelection(sel)
-		return sel, nil
+	if req.Interface != LogicalInterfaceS8 {
+		if sel, err := selectionFromAddress(NodePGW, s.cfg.GatewaySelection.PGW.PGWAddress, iface, SourceStaticYAML); err == nil {
+			s.logSelection(sel)
+			return sel, nil
+		}
 	}
 	err := errors.New("PGW selection failed: no S6a PGW, DNS disabled/failed, and no configured PGW address available")
 	s.log.Warn("gateway selection failed", zap.String("node_type", "PGW"), zap.String("source", SourceFailure), zap.Error(err))
 	return nil, err
+}
+
+// APNOperatorIdentifier supplies the HPLMN operator identifier unless the HSS
+// explicitly provides a validated APN-OI replacement.
+func APNOperatorIdentifier(home plmn.PLMN, replacement string) string {
+	if strings.TrimSpace(replacement) != "" {
+		return strings.TrimSuffix(strings.TrimSpace(replacement), ".")
+	}
+	mnc := home.MNC
+	if len(mnc) == 2 {
+		mnc = "0" + mnc
+	}
+	return fmt.Sprintf("epc.mnc%s.mcc%s.3gppnetwork.org", mnc, home.MCC)
+}
+
+func validAPNOIReplacement(value string) bool {
+	value = strings.TrimSuffix(strings.TrimSpace(value), ".")
+	if value == "" || len(value) > 253 || !strings.Contains(value, ".") {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func RootDomain(nf config.NFConfig, explicit string) string {

@@ -16,6 +16,7 @@ import (
 	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
 	nas "github.com/vectorcore/mme/internal/nas"
 	"github.com/vectorcore/mme/internal/nas/esm"
+	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -290,6 +291,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	mmeID := ue.MMEUES1APID
 	imsi := ue.IMSI
 	msisdn := ue.MSISDN
+	roamingState := ue.Roaming
 	subscribedAPNs := append([]string(nil), ue.SubscriberAPNs...)
 	ecgieci := ue.ECGIECI
 	var ulitac uint16
@@ -353,13 +355,21 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 
 	localTEID := s11teid.AllocateTEID()
 	plmn := s.buildPLMN()
+	if roamingState.IsRoaming {
+		encoded, err := security.EncodePLMN(roamingState.ServingPLMN.MCC, roamingState.ServingPLMN.MNC)
+		if err != nil {
+			return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
+		}
+		copy(plmn[:], encoded)
+	}
 	localIP := net.IP(s.s11LocalIP)
 	sgwAddr := ""
 	pgwIP := net.IP(s.pgwIP)
+	pgwSource := "static"
 	if s.gatewaySel != nil {
 		selCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		sgwSel, err := s.gatewaySel.SelectSGW(selCtx, ulitac)
+		sgwSel, err := s.gatewaySel.SelectSGWFor(selCtx, ulitac, roamingState.ServingPLMN)
 		if err != nil {
 			log.Warn("s1ap: SGW selection failed for PDN request", zap.Error(err))
 			return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
@@ -370,18 +380,30 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 			MIPHomeAgentAddress: apnCfg.MIPHomeAgentAddress,
 			MIPHomeAgentHost:    apnCfg.MIPHomeAgentHost,
 			PDNGWAllocationType: apnCfg.PDNGWAllocationType,
+			APNOIReplacement:    apnCfg.APNOIReplacement,
 		}
-		pgwSel, err := s.gatewaySel.SelectPGW(selCtx, requestedAPN, &gtwCfg)
+		iface := gateway.LogicalInterfaceS5
+		if roamingState.IsRoaming {
+			if !roamingState.RoamingAllowed || roamingState.HPLMN.MCC == "" || roamingState.ServingPLMN.MCC == "" {
+				return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseRequestRejectedUnspecified, log)
+			}
+			iface = gateway.LogicalInterfaceS8
+		}
+		pgwSel, err := s.gatewaySel.SelectPGWFor(selCtx, gateway.PGWRequest{APN: requestedAPN, HPLMN: roamingState.HPLMN, ServingPLMN: roamingState.ServingPLMN, ServingTAC: ulitac, Interface: iface, APNConfig: &gtwCfg, APNOIReplacement: apnCfg.APNOIReplacement})
 		if err != nil {
 			log.Warn("s1ap: PGW selection failed for PDN request", zap.Error(err))
 			return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseMissingOrUnknownAPN, log)
 		}
 		sgwAddr = sgwSel.UDPAddr()
 		pgwIP = pgwSel.Address
+		pgwSource = pgwSel.Source
+		_ = iface
 	}
 
 	pdn := &uecontext.PDNContext{
 		APN:                     requestedAPN,
+		SelectedPGW:             append(net.IP(nil), pgwIP...),
+		PGWSelectionSource:      pgwSource,
 		ProcedureTransactionID:  req.ProcedureTransactionID,
 		PDNType:                 selectedPDNTypeForRequest(apnCfg.PDNTypePolicy, apnCfg.PDNType, req.PDNType),
 		RequestedPDNType:        req.PDNType,
@@ -398,6 +420,11 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		SGWAddress:              sgwAddr,
 		UEPCO:                   append([]byte(nil), req.PCO...),
 		State:                   "csr-sent",
+	}
+	if roamingState.IsRoaming {
+		pdn.LogicalPGWInterface, pdn.PGWHPLMN, pdn.APNOIReplacement = uecontext.LogicalPGWInterfaceS8, roamingState.HPLMN, apnCfg.APNOIReplacement
+	} else {
+		pdn.LogicalPGWInterface = uecontext.LogicalPGWInterfaceS5
 	}
 	ue.Lock()
 	ue.PendingPDN = pdn

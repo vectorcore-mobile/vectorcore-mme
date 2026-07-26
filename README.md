@@ -11,6 +11,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **S13 / EIR** - conditional Equipment-Check (ECR/ECA) for IMEI/IMEISV validation during attach
 - **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
+- **S8HR roaming** - verified HPLMN/VPLMN admission, home-HSS S6a routing, visited-SGW selection, and home-PGW selection over S8
 - **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
 - **PWS / SBc-AP** - MME-side LTE public-warning interface for CBC-initiated Write-Replace and Stop Warning, S1AP eNB routing, completed/cancelled-area indications, and typed PWS Restart/Failure forwarding
 - **EMM Information** - operator name and NITZ timezone push after attach/TAU
@@ -67,6 +68,7 @@ Key fields:
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 | `operator.name.encoding` | Network name encoding: `gsm7` (default) or `ucs2` |
 | `operator.nitz.timezone` | IANA timezone used for EMM Information NITZ fields, preferred over static offsets |
+| `roaming.*` | Home-routed roaming admission and HSS destination policy; S8 PGW selection uses HSS data or HPLMN DNS |
 
 ### Diameter peer routing
 
@@ -74,6 +76,55 @@ Diameter peers are shared by S6a today and S13, SGd, and future applications
 later. Configure peer endpoints once under `diameter.peers`; do not configure a
 peer or application list per Diameter application. The MME learns direct
 application and Relay support from CER/CEA.
+
+### Home-routed roaming (Phase 3)
+
+The `roaming` block is disabled by default. Phase 3 validates typed MCC/MNC
+PLMNs, resolves an HPLMN only after IMSI verification, evaluates its HPLMN ACL,
+and sends AIR/ULR to the selected HSS realm/optional host. The Visited-PLMN-Id
+is the accepted Initial UE Message TAI PLMN; it is not the MME realm, Global
+eNB ID, or configured local PLMN. MCC and MNC must be quoted strings; MNC
+length and leading zeroes are preserved.
+
+```yaml
+roaming:
+  enabled: false
+  policy:
+    default_action: deny
+    plmn_acl:
+      - plmn: {mcc: "310", mnc: "260"}
+        action: allow
+  hss_routes:
+    - plmn: {mcc: "310", mnc: "260"}
+      realm: epc.mnc260.mcc310.3gppnetwork.org
+      host: hss01.epc.mnc260.mcc310.3gppnetwork.org
+```
+
+An exact ACL match overrides `default_action`; an HSS route never authorizes a
+subscriber. A missing route realm is generated as
+`epc.mnc<MNC padded to 3>.mcc<MCC>.3gppnetwork.org`.
+
+For an allowed home-routed roamer, the MME selects a visited SGW using the
+serving VPLMN/TAC and sends S11 only to that SGW. It selects the home PGW from
+the HSS APN configuration first, then HPLMN-rooted NAPTR using
+`x-3gpp-pgw:x-s8-gtp`; static local S5 fallback is deliberately disabled for
+S8. The MME supplies the selected home PGW S5/S8-C address in its ordinary S11
+Create Session Request; it does not establish S8 or carry user plane traffic.
+The existing Create Session codec uses TS 29.274 combined S5/S8 PGW interface
+type 7, which is applicable to this home-routed request.
+
+The S8 DNS name is `<apn>.apn.epc.mnc<MNC padded to 3>.mcc<MCC>.3gppnetwork.org`
+using the subscriber HPLMN—not the visited PLMN or custom HSS realm. An HSS
+APN-OI-Replacement, when present and syntactically valid, replaces only that
+operator identifier. Local breakout, persistence across restart, and live
+roaming interoperability validation are not implemented.
+
+Attach-reject mapping follows TS 24.301: disabled roaming and ACL denial use
+cause 13, *roaming not allowed in this tracking area*; unresolved, ambiguous,
+or malformed IMSI identity uses cause 9, *UE identity cannot be derived by the
+network*. An S8 PGW-selection failure is rejected before S11 and never falls
+back to the local S5 PGW. Local breakout, persistence across restart, and live
+roaming interoperability validation remain future work.
 
 ### SBc-AP public warning interface
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	nastimer "github.com/vectorcore/mme/internal/nas/timer"
+	"github.com/vectorcore/mme/internal/plmn"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +30,40 @@ type Config struct {
 	NAS              NASConfig              `yaml:"nas"`
 	EMMTimers        EMMTimersConfig        `yaml:"emm_timers"`
 	Operator         OperatorConfig         `yaml:"operator"`
+	Roaming          RoamingConfig          `yaml:"roaming"`
+}
+
+// PLMN is the canonical MCC/MNC representation used by roaming configuration.
+// It preserves MNC length and leading zeroes rather than converting to numbers.
+type PLMN = plmn.PLMN
+
+type RoamingAction string
+
+const (
+	RoamingActionAllow RoamingAction = "allow"
+	RoamingActionDeny  RoamingAction = "deny"
+)
+
+type RoamingConfig struct {
+	Enabled   bool                `yaml:"enabled"`
+	Policy    RoamingPolicyConfig `yaml:"policy"`
+	HSSRoutes []HSSRouteConfig    `yaml:"hss_routes"`
+}
+
+type RoamingPolicyConfig struct {
+	DefaultAction RoamingAction        `yaml:"default_action"`
+	PLMNACL       []RoamingPLMNACLRule `yaml:"plmn_acl"`
+}
+
+type RoamingPLMNACLRule struct {
+	PLMN   plmn.PLMN     `yaml:"plmn"`
+	Action RoamingAction `yaml:"action"`
+}
+
+type HSSRouteConfig struct {
+	PLMN  plmn.PLMN `yaml:"plmn"`
+	Realm string    `yaml:"realm"`
+	Host  string    `yaml:"host"`
 }
 
 // EMMTimersConfig contains MME-side reachability supervision timers.  T3412
@@ -399,6 +434,9 @@ func Load(path string) (*Config, error) {
 			ImplicitDetachSeconds:               300,
 			ImplicitDetachCleanupTimeoutSeconds: 30,
 		},
+		Roaming: RoamingConfig{
+			Policy: RoamingPolicyConfig{DefaultAction: RoamingActionDeny},
+		},
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
@@ -410,6 +448,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.NF.MCC == "" || cfg.NF.MNC == "" {
 		return nil, fmt.Errorf("config: nf.mcc and nf.mnc are required")
+	}
+	if err := (plmn.PLMN{MCC: cfg.NF.MCC, MNC: cfg.NF.MNC}).Validate(); err != nil {
+		return nil, fmt.Errorf("config: nf PLMN: %w", err)
+	}
+	if err := validateRoaming(cfg.Roaming); err != nil {
+		return nil, err
 	}
 	if cfg.Diameter.OriginHost == "" || cfg.Diameter.OriginRealm == "" {
 		return nil, fmt.Errorf("config: diameter.origin_host and diameter.origin_realm are required")
@@ -557,4 +601,34 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateRoaming(cfg RoamingConfig) error {
+	if cfg.Policy.DefaultAction != RoamingActionAllow && cfg.Policy.DefaultAction != RoamingActionDeny {
+		return fmt.Errorf("config: roaming.policy.default_action must be allow or deny")
+	}
+	aclSeen := make(map[plmn.PLMN]struct{}, len(cfg.Policy.PLMNACL))
+	for i, rule := range cfg.Policy.PLMNACL {
+		if err := rule.PLMN.Validate(); err != nil {
+			return fmt.Errorf("config: roaming.policy.plmn_acl[%d].plmn: %w", i, err)
+		}
+		if rule.Action != RoamingActionAllow && rule.Action != RoamingActionDeny {
+			return fmt.Errorf("config: roaming.policy.plmn_acl[%d].action must be allow or deny", i)
+		}
+		if _, exists := aclSeen[rule.PLMN]; exists {
+			return fmt.Errorf("config: duplicate roaming.policy.plmn_acl PLMN %s", rule.PLMN)
+		}
+		aclSeen[rule.PLMN] = struct{}{}
+	}
+	routeSeen := make(map[plmn.PLMN]struct{}, len(cfg.HSSRoutes))
+	for i, route := range cfg.HSSRoutes {
+		if err := route.PLMN.Validate(); err != nil {
+			return fmt.Errorf("config: roaming.hss_routes[%d].plmn: %w", i, err)
+		}
+		if _, exists := routeSeen[route.PLMN]; exists {
+			return fmt.Errorf("config: duplicate roaming.hss_routes PLMN %s", route.PLMN)
+		}
+		routeSeen[route.PLMN] = struct{}{}
+	}
+	return nil
 }

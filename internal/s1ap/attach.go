@@ -15,6 +15,7 @@ import (
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/plmn"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -40,6 +41,12 @@ func shouldDeferAttachEMMInformation(ue *uecontext.Context) bool {
 func applyS1APLocationToUELocked(ue *uecontext.Context, tai *ies.TAI, ecgi *ies.ECGI) {
 	if tai != nil {
 		ue.TAI = emmTAIFromS1AP(tai)
+		// Preserve the selected S1AP TAI PLMN in its typed, explicit-MNC-length
+		// form. ue.TAI uses NAS wire ordering and is not re-decoded for roaming.
+		if serving, err := plmn.New(tai.MCC, tai.MNC); err == nil {
+			ue.Roaming.ServingPLMN = serving
+			ue.Roaming.ServingTAI = ue.TAI
+		}
 	}
 	if ecgi != nil {
 		if plmn, err := encodeNASPLMN(ecgi.MCC, ecgi.MNC); err == nil {
@@ -346,7 +353,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 			zap.String("presented_guti", gutiStr),
 			zap.String("candidate_lookup_result", map[bool]string{true: "hit", false: "miss"}[ok]),
 			zap.Uint32("candidate_mme_ue_id", candidateID),
-			zap.String("candidate_imsi", candidateIMSI),
+			zap.Bool("candidate_imsi_present", candidateIMSI != ""),
 			zap.String("candidate_emm_state", candidateEMM),
 			zap.String("candidate_ecm_state", candidateECM),
 			zap.Bool("destructive_action_deferred", true))
@@ -359,7 +366,6 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		return
 	}
 
-	log = log.With(zap.String("imsi", imsi))
 	log.Info("s1ap: Attach Request", zap.Uint8("attach_type", ar.AttachType))
 
 	ue.Lock()
@@ -367,9 +373,18 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.SetEMMState(emm.StateRegisteredInitiated)
 	ue.AttachStep = uecontext.AttachStepWaitingAIA
 	ue.Unlock()
+	if err := s.classifyRoaming(ue, imsi); err != nil {
+		cause := emm.CauseUEIdentityCannotBeDerived
+		if admission, ok := err.(*roamingAdmissionError); ok {
+			cause = admission.cause
+		}
+		log.Warn("s1ap: roaming admission rejected", zap.String("reason", err.Error()), zap.Uint8("emm_cause", cause))
+		s.sendDownlinkNASTransport(remoteAddr, mmeUEID, enbUEID, emm.EncodeAttachReject(cause))
+		s.ueManager.Remove(ue)
+		return
+	}
 	if existing, ok := s.ueManager.GetByIMSI(imsi); ok && existing.MMEUES1APID != ue.MMEUES1APID {
 		s.log.Info("s1ap: duplicate IMSI attach pending authentication",
-			zap.String("imsi", imsi),
 			zap.Uint32("new_mme_ue_id", mmeUEID),
 			zap.Bool("destructive_action_deferred", true),
 			zap.String("eviction_reason", "deferred-until-authentication"))
@@ -378,19 +393,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "request").Inc()
 	metrics.S1APMessagesTotal.WithLabelValues("InitialUEMessage", "inbound", "ok").Inc()
 
-	// Encode PLMN from config for S6a. Visited-PLMN-Id uses the
-	// serving-network format used by KASME derivation, not the S1AP PLMN
-	// octet order used inside S1AP IEs.
-	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
-	if err != nil {
-		log.Error("s1ap: failed to encode PLMN", zap.Error(err))
-		s.ueManager.Remove(ue)
-		return
-	}
-	var plmn3 [3]byte
-	copy(plmn3[:], plmn)
-
-	if err := s.s6a.SendAIR(imsi, plmn3, mmeUEID); err != nil {
+	if err := s.sendAIRForUE(ue); err != nil {
 		log.Error("s1ap: SendAIR failed", zap.Error(err))
 		rejectPDU := emm.EncodeAttachReject(emm.CauseNetworkFailure)
 		s.sendDownlinkNASTransport(remoteAddr, mmeUEID, enbUEID, rejectPDU)
@@ -973,14 +976,9 @@ func (s *Server) processSMCComplete(ue *uecontext.Context, body []byte, log *zap
 	log.Info("s1ap: Security Mode Complete received, sending ULR")
 	metrics.NASProceduresTotal.WithLabelValues("SecurityMode", "complete").Inc()
 
-	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
-	if err != nil {
-		return fmt.Errorf("processSMCComplete: EncodePLMN: %w", err)
-	}
-	var plmn3 [3]byte
-	copy(plmn3[:], plmn)
-
-	return s.s6a.SendULR(imsi, plmn3, mmeUEID)
+	_ = imsi
+	_ = mmeUEID
+	return s.sendULRForUE(ue)
 }
 
 // processAttachComplete handles a NAS Attach Complete from the UE.
@@ -1193,7 +1191,7 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 
 	// Purge UE at HSS
 	if imsi != "" && s.s6a != nil {
-		go s.s6a.SendPUR(imsi)
+		s.sendPURForUE(ue)
 	}
 
 	// Release all active PDN sessions. Detach can arrive with multiple active
@@ -1281,24 +1279,28 @@ func (s *Server) processIdentityResponse(ue *uecontext.Context, body []byte, log
 	ue.AttachStep = uecontext.AttachStepWaitingAIA
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
+	if err := s.classifyRoaming(ue, idResp.IMSI); err != nil {
+		cause := emm.CauseUEIdentityCannotBeDerived
+		if admission, ok := err.(*roamingAdmissionError); ok {
+			cause = admission.cause
+		}
+		ue.Lock()
+		enbAddr, enbUEID := ue.ENBGlobalID, ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: roaming admission rejected", zap.String("reason", err.Error()), zap.Uint8("emm_cause", cause))
+		s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, emm.EncodeAttachReject(cause))
+		s.ueManager.Remove(ue)
+		return nil
+	}
 	if existing, ok := s.ueManager.GetByIMSI(idResp.IMSI); ok && existing.MMEUES1APID != ue.MMEUES1APID {
 		s.log.Info("s1ap: duplicate IMSI identity pending authentication",
-			zap.String("imsi", idResp.IMSI),
 			zap.Uint32("new_mme_ue_id", mmeUEID),
 			zap.Bool("destructive_action_deferred", true),
 			zap.String("eviction_reason", "deferred-until-authentication"))
 	}
 
-	log.Info("s1ap: Identity Response: IMSI obtained", zap.String("imsi", idResp.IMSI))
-
-	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
-	if err != nil {
-		return fmt.Errorf("processIdentityResponse: EncodePLMN: %w", err)
-	}
-	var plmn3 [3]byte
-	copy(plmn3[:], plmn)
-
-	return s.s6a.SendAIR(idResp.IMSI, plmn3, mmeUEID)
+	log.Info("s1ap: Identity Response: IMSI obtained")
+	return s.sendAIRForUE(ue)
 }
 
 func (s *Server) handleEquipmentIdentityFailure(ue *uecontext.Context, log *zap.Logger, reason string) error {
@@ -1315,13 +1317,9 @@ func (s *Server) handleEquipmentIdentityFailure(ue *uecontext.Context, log *zap.
 		s.ueManager.Remove(ue)
 		return nil
 	}
-	plmn, err := security.EncodePLMN(s.nfCfg.MCC, s.nfCfg.MNC)
-	if err != nil {
-		return err
-	}
-	var plmn3 [3]byte
-	copy(plmn3[:], plmn)
-	return s.s6a.SendULR(imsi, plmn3, mmeUEID)
+	_ = imsi
+	_ = mmeUEID
+	return s.sendULRForUE(ue)
 }
 
 func eia2DetailsFull(d *security.EIA2CMACDetails) []byte {

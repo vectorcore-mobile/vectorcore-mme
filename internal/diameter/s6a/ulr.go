@@ -13,6 +13,8 @@ import (
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/nas/security"
+	"github.com/vectorcore/mme/internal/roaming"
 )
 
 // SendULR sends an Update-Location-Request to the HSS.
@@ -45,6 +47,41 @@ func (h *Handlers) SendULR(imsi string, plmn [3]byte, mmeUEID uint32) error {
 		zap.String("imsi", imsi),
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("visited_plmn_id_hex", hex.EncodeToString(plmn[:])))
+	return nil
+}
+
+// SendULRToHSS sends ULR with the verified HSS destination selected during
+// identity classification, rather than deriving either identity from MME config.
+func (h *Handlers) SendULRToHSS(req roaming.S6aRequest, mmeUEID uint32) error {
+	encoded, err := security.EncodePLMN(req.VisitedPLMN.MCC, req.VisitedPLMN.MNC)
+	if err != nil {
+		return fmt.Errorf("s6a: encode visited PLMN: %w", err)
+	}
+	var visited [3]byte
+	copy(visited[:], encoded)
+	selected, err := h.selectPeer(req.DestinationRealm)
+	if err != nil {
+		return fmt.Errorf("s6a: route ULR for %s: %w", req.DestinationRealm, err)
+	}
+	sid := h.newSessionID(req.SubscriberIMSI)
+	h.pendingULR.Store(sid, mmeUEID)
+	if h.sgdCfg.Enabled && h.sgdCfg.SubscribeEPSOnlyAttach {
+		if receiver, ok := h.nas.(interface{ HandleSMSRegistrationPending(uint32) }); ok {
+			receiver.HandleSMSRegistrationPending(mmeUEID)
+		}
+	}
+	destHost := req.DestinationHost
+	if destHost == "" && req.DestinationRealm == h.diameterCfg.OriginRealm {
+		destHost = selected.DestinationHost
+	}
+	m := h.buildULR(sid, req.SubscriberIMSI, visited, destHost, req.DestinationRealm)
+	if _, err := m.WriteTo(selected.Connection); err != nil {
+		h.pendingULR.Delete(sid)
+		h.reportTransactionFailure(selected)
+		return fmt.Errorf("s6a: ULR write: %w", err)
+	}
+	metrics.S6aRequestsTotal.WithLabelValues("ULR", "sent").Inc()
+	h.log.Info("s6a: ULR sent", zap.Uint32("mme_ue_id", mmeUEID), zap.String("destination_realm", req.DestinationRealm), zap.String("visited_plmn_id_hex", hex.EncodeToString(visited[:])))
 	return nil
 }
 
@@ -113,6 +150,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		PDNType                 int32                   `avp:"PDN-Type"`
 		EPSSubscribedQoSProfile EPSSubscribedQoSProfile `avp:"EPS-Subscribed-QoS-Profile"`
 		AMBR                    AMBR                    `avp:"AMBR"`
+		APNOIReplacement        string                  `avp:"APN-OI-Replacement"`
 	}
 	type APNProfile struct {
 		ContextIdentifier            uint32      `avp:"Context-Identifier"`
@@ -188,6 +226,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 			ContextIdentifier:       selected.ContextIdentifier,
 			ServiceSelection:        selected.ServiceSelection,
 			MIPHomeAgentHost:        string(selected.MIP6AgentInfo.MIPHomeAgentHost.DestinationHost),
+			APNOIReplacement:        selected.APNOIReplacement,
 			PDNGWAllocationType:     &selected.PDNGWAllocationType,
 			PDNType:                 pdnPolicyDefaultType(uint8(selected.PDNType)),
 			PDNTypePolicy:           uint8(selected.PDNType),
