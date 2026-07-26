@@ -18,6 +18,19 @@ s1ap:
   bind_port: 36412
   sctp_streams: 2
 
+sbcap:
+  enabled: false
+  bind_address: "0.0.0.0"
+  port: 29168
+  transaction_timeout: "30s"
+  # Standards-strict by default. Set true only for a configured legacy CBC
+  # known to send SBc-AP SCTP DATA with non-standard PPID 0.
+  accept_legacy_ppid_zero: false
+  peers:
+    # - name: "osmo-cbc"
+    #   addresses:
+    #     - "192.0.2.10"
+
 diameter:
   origin_host: "mme.epc.mnc001.mcc001.3gppnetwork.org"
   origin_realm: "epc.mnc001.mcc001.3gppnetwork.org"

@@ -1,7 +1,7 @@
 .PHONY: ui build stressor test clean dev-ui all install uninstall version
 
 BINARY     = mme
-VERSION   ?= 0.1.0d
+VERSION   ?= 0.1.1d
 PREFIX     = /opt/vectorcore
 BINDIR     = $(PREFIX)/bin
 ETCDIR     = $(PREFIX)/etc

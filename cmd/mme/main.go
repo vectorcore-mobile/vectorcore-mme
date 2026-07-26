@@ -25,11 +25,14 @@ import (
 	"github.com/vectorcore/mme/internal/gateway"
 	s10server "github.com/vectorcore/mme/internal/gtpv2/s10"
 	s11client "github.com/vectorcore/mme/internal/gtpv2/s11"
+	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/repository"
 	dbstore "github.com/vectorcore/mme/internal/repository/postgres"
 	"github.com/vectorcore/mme/internal/s1ap"
+	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/sbcap"
 	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -144,6 +147,84 @@ func main() {
 	}
 
 	go func() { errCh <- s1apSrv.Start() }()
+	var sbcapSrv *sbcap.Server
+	if cfg.SBcAP.Enabled {
+		sbcapSrv = sbcap.NewServer(cfg.SBcAP, log, func(peer string, data []byte) {
+			decision := sbcap.DecideInbound(data)
+			p, decodeErr := sbcap.Decode(data)
+			if decodeErr != nil {
+				metrics.SBcAPDecodeFailuresTotal.Inc()
+				log.Warn("sbcap: rejected malformed PDU", zap.String("peer", peer), zap.Error(decodeErr))
+				if response, buildErr := sbcap.BuildErrorIndication(13); buildErr == nil {
+					_ = sbcapSrv.Send(peer, response)
+				}
+				return
+			}
+			metrics.SBcAPMessagesTotal.WithLabelValues("rx", fmt.Sprintf("%d", p.ProcedureCode), "received").Inc()
+			if !decision.Continue {
+				metrics.SBcAPValidationFailuresTotal.WithLabelValues("warning-request").Inc()
+				if decision.Response == sbcap.ResponseClass1 {
+					if messageID, serial, ok := sbcap.WarningIdentity(p); ok {
+						if response, buildErr := sbcap.BuildWarningResponseWithDiagnostics(p.ProcedureCode, messageID, serial, decision.Cause, *decision.Diagnostics); buildErr == nil {
+							_ = sbcapSrv.Send(peer, response)
+						}
+					}
+				} else if decision.Response == sbcap.ResponseErrorIndication {
+					if response, buildErr := sbcap.BuildErrorIndicationWithDiagnostics(decision.Cause, decision.Diagnostics); buildErr == nil {
+						_ = sbcapSrv.Send(peer, response)
+					}
+				}
+				return
+			}
+			req := decision.Request
+			cause := uint8(0) // message-accepted
+			if _, err := s1apSrv.SendSBcAPWarningForPeer(peer, p.ProcedureCode, req, cfg.SBcAP.TransactionTimeout); err != nil {
+				cause = 4 // tracking-area-not-valid / no routable target
+				log.Warn("sbcap: warning request not routed", zap.String("peer", peer), zap.Error(err))
+			}
+			var response []byte
+			var buildErr error
+			if decision.Diagnostics != nil {
+				response, buildErr = sbcap.BuildWarningResponseWithDiagnostics(p.ProcedureCode, req.MessageIdentifier, req.SerialNumber, cause, *decision.Diagnostics)
+			} else {
+				response, buildErr = sbcap.BuildWarningResponse(p.ProcedureCode, req.MessageIdentifier, req.SerialNumber, cause, nil)
+			}
+			if buildErr != nil {
+				log.Error("sbcap: response encode failed", zap.Error(buildErr))
+				return
+			}
+			if err := sbcapSrv.Send(peer, response); err != nil {
+				log.Warn("sbcap: response send failed", zap.String("peer", peer), zap.Error(err))
+			}
+		})
+		s1apSrv.SetPWSIndicationSender(func(peer string, payload []byte) {
+			if err := sbcapSrv.Send(peer, payload); err != nil {
+				log.Warn("sbcap: indication send failed", zap.String("peer", peer), zap.Error(err))
+			}
+		})
+		s1apSrv.SetPWSForwarder(func(procedure uint8, ies []pdu.ProtocolIE) {
+			values := make(map[uint16][]byte, len(ies))
+			for _, ie := range ies {
+				values[ie.ID] = ie.Value
+			}
+			payload, err := sbcap.BuildPWSNetworkIndication(procedure, values)
+			if err != nil {
+				fields := []zap.Field{zap.Error(err), zap.Uint8("s1ap_procedure", procedure)}
+				// PWS Restart/Failure contain only network identity and cell/area
+				// state, not warning content. Preserve their raw IE encodings at
+				// debug level so future interoperability failures are reproducible.
+				if procedure == pdu.ProcPWSRestartIndication || procedure == pdu.ProcPWSFailureIndication {
+					for _, ie := range ies {
+						fields = append(fields, zap.String(fmt.Sprintf("ie_%d_hex", ie.ID), fmt.Sprintf("%x", ie.Value)))
+					}
+				}
+				log.Warn("sbcap: PWS indication translation failed", fields...)
+				return
+			}
+			sbcapSrv.Broadcast(payload)
+		})
+		go func() { errCh <- sbcapSrv.Listen() }()
+	}
 	go func() { errCh <- s6aHandlers.Start() }()
 
 	if cfg.API.Enabled {
@@ -165,6 +246,11 @@ func main() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		s1apSrv.Shutdown(shutCtx)
+		if sbcapSrv != nil {
+			if err := sbcapSrv.Close(); err != nil {
+				log.Warn("mme: SBc-AP close error", zap.Error(err))
+			}
+		}
 		if err := c.Close(); err != nil {
 			log.Warn("mme: s11 close error", zap.Error(err))
 		}

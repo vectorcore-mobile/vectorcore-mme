@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -16,6 +17,7 @@ type Config struct {
 	S6a              S6aConfig              `yaml:"s6a"`
 	S13              S13Config              `yaml:"s13"`
 	SGd              SGdConfig              `yaml:"sgd"`
+	SBcAP            SBcAPConfig            `yaml:"sbcap"`
 	S10              S10Config              `yaml:"s10"`
 	S11              S11Config              `yaml:"s11"`
 	Paging           PagingConfig           `yaml:"paging"`
@@ -218,6 +220,23 @@ type SGdConfig struct {
 	TransactionTimeout   time.Duration `yaml:"transaction_timeout"`
 }
 
+// SBcAPConfig controls the CBC-initiated LTE public-warning SCTP interface.
+// Warning persistence and expiry intentionally are not configuration of the
+// MME: those remain CBC responsibilities.
+type SBcAPConfig struct {
+	Enabled              bool              `yaml:"enabled"`
+	BindAddress          string            `yaml:"bind_address"`
+	Port                 int               `yaml:"port"`
+	TransactionTimeout   time.Duration     `yaml:"transaction_timeout"`
+	AcceptLegacyPPIDZero bool              `yaml:"accept_legacy_ppid_zero"`
+	Peers                []SBcAPPeerConfig `yaml:"peers"`
+}
+
+type SBcAPPeerConfig struct {
+	Name      string   `yaml:"name"`
+	Addresses []string `yaml:"addresses"`
+}
+
 type DiameterPeerConfig struct {
 	Name      string `yaml:"name"`
 	Address   string `yaml:"address"`
@@ -312,6 +331,11 @@ func Load(path string) (*Config, error) {
 			SubscribeEPSOnlyAttach: true,
 			SGdSCAddressEncoding:   "tbcd",
 			TransactionTimeout:     30 * time.Second,
+		},
+		SBcAP: SBcAPConfig{
+			BindAddress:        "0.0.0.0",
+			Port:               29168,
+			TransactionTimeout: 30 * time.Second,
 		},
 		S10: S10Config{
 			BindAddress: "0.0.0.0",
@@ -443,6 +467,32 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.SGd.TransactionTimeout <= 0 {
 			return nil, fmt.Errorf("config: sgd.transaction_timeout must be greater than 0")
+		}
+	}
+	if cfg.SBcAP.Enabled {
+		if cfg.SBcAP.BindAddress == "" || cfg.SBcAP.Port < 1 || cfg.SBcAP.Port > 65535 {
+			return nil, fmt.Errorf("config: sbcap.bind_address and sbcap.port must be valid when enabled")
+		}
+		if cfg.SBcAP.TransactionTimeout <= 0 {
+			return nil, fmt.Errorf("config: sbcap.transaction_timeout must be greater than 0")
+		}
+		if len(cfg.SBcAP.Peers) == 0 {
+			return nil, fmt.Errorf("config: sbcap.peers must contain at least one authorized CBC when enabled")
+		}
+		seenSBcAPNames := make(map[string]struct{}, len(cfg.SBcAP.Peers))
+		for i, peer := range cfg.SBcAP.Peers {
+			if peer.Name == "" || len(peer.Addresses) == 0 {
+				return nil, fmt.Errorf("config: sbcap.peers[%d] name and addresses are required", i)
+			}
+			if _, exists := seenSBcAPNames[peer.Name]; exists {
+				return nil, fmt.Errorf("config: duplicate sbcap peer name %q", peer.Name)
+			}
+			seenSBcAPNames[peer.Name] = struct{}{}
+			for _, address := range peer.Addresses {
+				if net.ParseIP(address) == nil {
+					return nil, fmt.Errorf("config: sbcap.peers[%d] address %q must be an IP address", i, address)
+				}
+			}
 		}
 	}
 	if cfg.S6a.AIR.RequestedVectors == 0 {

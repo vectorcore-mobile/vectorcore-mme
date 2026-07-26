@@ -257,7 +257,7 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 	// EPS update result (bits 2:0)
 	b = append(b, params.UpdateResult&0x07)
 
-	// T3412 value IE: IEI=0x5A, length=1, value
+	// T3412 value IE: TV format, IEI=0x5A followed directly by the value.
 	b = append(b, 0x5A, params.T3412)
 
 	// TAI list IE: IEI=0x54, length, value

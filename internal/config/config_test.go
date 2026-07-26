@@ -147,6 +147,58 @@ sgd:
 	}
 }
 
+func TestSBcAPLegacyPPIDZeroDefaultsStrictAndParses(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sbcap:
+  enabled: true
+  peers:
+    - name: cbc
+      addresses: ["127.0.0.2"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := load(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SBcAP.AcceptLegacyPPIDZero {
+		t.Fatal("legacy PPID zero must default to false")
+	}
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sbcap:
+  enabled: true
+  accept_legacy_ppid_zero: true
+  peers:
+    - name: cbc
+      addresses: ["127.0.0.2"]
+diameter:
+  origin_host: "mme.example"
+  origin_realm: "example"
+  peers:
+    - name: dra
+      address: "127.0.0.1:3868"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SBcAP.AcceptLegacyPPIDZero {
+		t.Fatal("legacy PPID zero was not parsed")
+	}
+}
+
 func TestLoadRejectsInvalidS13Policy(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mme.yaml")

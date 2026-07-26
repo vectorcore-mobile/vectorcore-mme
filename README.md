@@ -12,6 +12,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
+- **PWS / SBc-AP** - MME-side LTE public-warning interface for CBC-initiated Write-Replace and Stop Warning, S1AP eNB routing, completed/cancelled-area indications, and typed PWS Restart/Failure forwarding
 - **EMM Information** - operator name and NITZ timezone push after attach/TAU
 - **OAM REST API** - eNB, UE, operator, DNS cache, embedded React UI, Huma docs, and Prometheus metrics
 - **Gateway selection** - DNS NAPTR-based S-GW/P-GW selection with static fallback and in-memory cache controls
@@ -56,6 +57,7 @@ Key fields:
 |---|---|
 | `nf.mcc` / `nf.mnc` | Your PLMN |
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
+| `sbcap.*` | Optional CBC-initiated LTE public-warning SCTP listener (port 29168, PPID 24) |
 | `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
 | `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
@@ -72,6 +74,62 @@ Diameter peers are shared by S6a today and S13, SGd, and future applications
 later. Configure peer endpoints once under `diameter.peers`; do not configure a
 peer or application list per Diameter application. The MME learns direct
 application and Relay support from CER/CEA.
+
+### SBc-AP public warning interface
+
+SBc-AP is disabled by default. When enabled, the MME listens for SCTP
+associations initiated by configured CBC peers on port `29168` and validates
+SCTP PPID `24`. Configure each CBC with its source IP address; SBc-AP has no
+application setup exchange, so unlisted sources are rejected.
+
+```yaml
+sbcap:
+  enabled: true
+  bind_address: "192.0.2.20"
+  port: 29168
+  transaction_timeout: "30s"
+  # Temporary compatibility only; standards-strict default is false.
+  accept_legacy_ppid_zero: false
+  peers:
+    - name: "osmo-cbc"
+      addresses: ["192.0.2.10"]
+```
+
+SBc-AP YAML fields:
+
+| Field | Required | Description |
+|---|---:|---|
+| `sbcap.enabled` | No | Enables the MME-side SBc-AP SCTP server. Default: `false`. |
+| `sbcap.bind_address` | When enabled | Local SCTP listen address for CBC associations. |
+| `sbcap.port` | No | SBc-AP SCTP port. Default: `29168`. |
+| `sbcap.transaction_timeout` | No | Maximum time to collect selected eNB Write-Replace/Kill results before sending a partial indication. |
+| `sbcap.accept_legacy_ppid_zero` | No | Temporary OsmoCBC compatibility switch. Default: `false`; PPID 24 remains the normal requirement. |
+| `sbcap.peers[].name` | Yes | Operational name for the admitted CBC peer. |
+| `sbcap.peers[].addresses` | Yes | CBC source IP address or addresses admitted for that peer. |
+
+The MME routes a Global eNB ID only to that connected eNB, List-of-TAIs only
+to connected eNBs serving those TAs, and uses all connected eNBs only when no
+target selector is provided. Warning Area List is passed through for eNB cell
+selection. The CBC remains the sole owner of warning persistence, expiration,
+cancellation, and reload decisions; the MME does not replay cached warnings
+after a PWS restart.
+
+3GPP SBc-AP uses SCTP PPID `24`, and VectorCore always transmits responses
+and indications using PPID `24`. OsmoCBC 0.5.3 has been observed sending
+client-mode SBc-AP DATA with non-standard PPID `0`; Open5GS does not validate
+the inbound PPID, which can hide that defect. For a temporary migration only,
+`accept_legacy_ppid_zero: true` accepts PPID `0` from an already admitted CBC
+peer while retaining normal APER, procedure, and IE validation. It never
+accepts other PPIDs, does not identify SBc-AP by port alone, and never mirrors
+PPID `0` on outbound traffic. Disable the option after installing an upstream
+OsmoCBC fix or when using a standards-correct CBC. Upstream issue: **TBD**.
+
+PWS restart/failure forwarding and completed/cancelled-area indications are
+decoded into typed LTE identities before they are re-encoded for SBc-AP. The
+MME rejects malformed nested APER lists rather than forwarding their raw
+open-type payloads to a CBC. Completed/cancelled reports from selected eNBs
+are collected for the configured transaction timeout; partial valid cell
+results are reported when that timeout expires.
 
 ```yaml
 diameter:

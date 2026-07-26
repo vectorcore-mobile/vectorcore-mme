@@ -48,6 +48,16 @@ var (
 		Name:      "connected_enbs",
 		Help:      "Number of eNodeBs with an active S1 connection.",
 	})
+	SBcAPLegacyPPIDZeroTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "mme", Subsystem: "sbcap", Name: "legacy_ppid_zero_messages_total",
+		Help: "Non-standard SCTP PPID 0 SBc-AP messages accepted from admitted CBC peers by explicit compatibility configuration.",
+	})
+	SBcAPAssociations            = promauto.NewGauge(prometheus.GaugeOpts{Namespace: "mme", Subsystem: "sbcap", Name: "associations", Help: "Currently admitted CBC SCTP associations."})
+	SBcAPMessagesTotal           = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sbcap", Name: "messages_total", Help: "SBc-AP messages by direction, procedure, and result."}, []string{"direction", "procedure", "result"})
+	SBcAPPPIDRejectedTotal       = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sbcap", Name: "ppid_rejected_total", Help: "Rejected inbound SCTP payloads by PPID."}, []string{"ppid"})
+	SBcAPDecodeFailuresTotal     = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sbcap", Name: "decode_failures_total", Help: "SBc-AP APER PDU decode failures."})
+	SBcAPValidationFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sbcap", Name: "validation_failures_total", Help: "SBc-AP validation failures by bounded reason."}, []string{"reason"})
+	SBcAPTransactionsTotal       = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sbcap", Name: "transactions_total", Help: "SBc-AP response collection transactions by result."}, []string{"result"})
 
 	// NAS metrics
 	NASProceduresTotal = promauto.NewCounterVec(prometheus.CounterOpts{

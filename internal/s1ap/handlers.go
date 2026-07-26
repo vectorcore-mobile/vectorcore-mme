@@ -163,6 +163,11 @@ type Server struct {
 
 	completedCreateBearerResponses sync.Map // string bearerTxKey -> *cachedCreateBearerResponse
 	pendingERABModificationInds    sync.Map // string correlationID -> *pendingERABModificationIndication
+	pwsTransactions                sync.Map // string -> *pwsTransaction
+	pwsTransactionMu               sync.Mutex
+	pwsTransactionBases            map[string]struct{} // in-flight CBC/procedure/warning identities
+	pwsIndication                  func(peer string, payload []byte)
+	pwsForward                     func(procedure uint8, ies []pdu.ProtocolIE)
 }
 
 // NewServer creates a new S1AP Server.
@@ -190,26 +195,27 @@ func NewServer(
 		log.Warn("s1ap: GUTI allocator init failed, GUTI will not be assigned", zap.Error(err))
 	}
 	server := &Server{
-		cfg:          cfg,
-		nfCfg:        nfCfg,
-		secCfg:       secCfg,
-		s10Cfg:       s10Cfg,
-		nasCfg:       nasCfg,
-		emmTimersCfg: emmTimersCfg,
-		pagingCfg:    pagingCfg,
-		operCfg:      operCfg,
-		store:        store,
-		ueManager:    ueManager,
-		enbTracker:   enbTracker,
-		gutiAlloc:    gutiAlloc,
-		s6a:          s6a,
-		s10:          s10,
-		s11:          s11,
-		s11LocalIP:   s11LocalIP,
-		pgwIP:        pgwIP,
-		restartEpoch: fmt.Sprintf("%d", time.Now().UnixNano()),
-		log:          log,
-		nextMTSMSTI:  make(map[string]uint8),
+		cfg:                 cfg,
+		nfCfg:               nfCfg,
+		secCfg:              secCfg,
+		s10Cfg:              s10Cfg,
+		nasCfg:              nasCfg,
+		emmTimersCfg:        emmTimersCfg,
+		pagingCfg:           pagingCfg,
+		operCfg:             operCfg,
+		store:               store,
+		ueManager:           ueManager,
+		enbTracker:          enbTracker,
+		gutiAlloc:           gutiAlloc,
+		s6a:                 s6a,
+		s10:                 s10,
+		s11:                 s11,
+		s11LocalIP:          s11LocalIP,
+		pgwIP:               pgwIP,
+		restartEpoch:        fmt.Sprintf("%d", time.Now().UnixNano()),
+		log:                 log,
+		nextMTSMSTI:         make(map[string]uint8),
+		pwsTransactionBases: make(map[string]struct{}),
 	}
 	return server
 }
@@ -479,9 +485,9 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 	case pdu.ProcHandoverNotification:
 		s.handleHandoverNotify(remoteAddr, p, ies)
 	case pdu.ProcPWSRestartIndication:
-		s.log.Debug("s1ap: PWS Restart Indication received but PWS/SBc-AP is not implemented",
-			zap.String("remote", remoteAddr),
-			zap.Uint8("code", p.ProcedureCode))
+		s.handlePWSForward(p.ProcedureCode, ies)
+	case pdu.ProcPWSFailureIndication:
+		s.handlePWSForward(p.ProcedureCode, ies)
 	default:
 		s.log.Warn("s1ap: unhandled initiating procedure",
 			zap.Uint8("code", p.ProcedureCode),
@@ -513,6 +519,8 @@ func (s *Server) dispatchSuccessful(remoteAddr string, p *pdu.PDU, raw []byte) {
 		s.handleUEContextModificationResponse(remoteAddr, p, ies)
 	case pdu.ProcHandoverResourceAllocation:
 		s.handleHandoverRequestAck(remoteAddr, p, ies)
+	case pdu.ProcWriteReplaceWarning, pdu.ProcKill:
+		s.handlePWSResponse(remoteAddr, p.ProcedureCode, ies)
 	default:
 		s.log.Debug("s1ap: unhandled successful outcome",
 			zap.Uint8("code", p.ProcedureCode),

@@ -50,6 +50,7 @@ const (
 	ProcCellTrafficTrace             uint8 = 44
 	ProcPWSRestartIndication         uint8 = 49
 	ProcERABModificationIndication   uint8 = 50
+	ProcPWSFailureIndication         uint8 = 51
 )
 
 // S1AP IE identifiers (3GPP TS 36.413 Annex A).
