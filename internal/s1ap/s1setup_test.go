@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
@@ -35,6 +36,10 @@ func capturedSrsENBS1SetupRequest() []byte {
 
 func TestHandleCapturedSrsENBS1SetupRequestSendsResponse(t *testing.T) {
 	srv := newTAUTestServer()
+	// This historical capture advertises the legacy decoded 143/500 topology.
+	// It remains a decoder/regression fixture; served-TA admission is covered
+	// by the explicit 311/435 tests below.
+	srv.nfCfg.MCC, srv.nfCfg.MNC, srv.nfCfg.TAIList = "143", "500", nil
 	const remoteAddr = "192.168.105.34:36412"
 	ch := setupSendCapture(srv, remoteAddr)
 
@@ -78,6 +83,7 @@ func TestHandleCapturedSrsENBS1SetupRequestSendsResponse(t *testing.T) {
 
 func TestHandleCapturedSrsENBS1SetupRequestSendsConfiguredMMEName(t *testing.T) {
 	srv := newTAUTestServer()
+	srv.nfCfg.MCC, srv.nfCfg.MNC, srv.nfCfg.TAIList = "143", "500", nil
 	srv.nfCfg.MMEName = "vectorcore-mme"
 	const remoteAddr = "192.168.105.34:36412"
 	ch := setupSendCapture(srv, remoteAddr)
@@ -109,6 +115,8 @@ func TestHandleCapturedSrsENBS1SetupRequestSendsConfiguredMMEName(t *testing.T) 
 
 func TestHandleS1SetupRequestStoresPLMNAndSupportedTA(t *testing.T) {
 	srv := newTAUTestServer()
+	srv.nfCfg.MCC, srv.nfCfg.MNC = "311", "435"
+	srv.nfCfg.TAIList = []config.TAIItem{{MCC: "311", MNC: "435", TAC: 1}}
 	const remoteAddr = "192.168.105.34:36412"
 	setupSendCapture(srv, remoteAddr)
 

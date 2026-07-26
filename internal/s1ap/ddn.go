@@ -574,7 +574,7 @@ func (s *Server) findStrictENBsForTAILocked(ue *uecontext.Context) []string {
 		enb.mu.Lock()
 		defer enb.mu.Unlock()
 		connected++
-		for _, sta := range enb.SupportedTAs {
+		for _, sta := range effectiveRoutingTAs(enb) {
 			for _, bp := range sta.BroadcastPLMNs {
 				tacMatch := sta.TAC == ue.TAI.TAC
 				plmnMatch := bp.MCC == ueMCC && bp.MNC == ueMNC

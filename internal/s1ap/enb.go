@@ -8,10 +8,14 @@ import (
 
 // ENBContext holds per-eNB S1AP state.
 type ENBContext struct {
-	mu            sync.Mutex
-	GlobalENBID   ies.GlobalENBID
-	ENBName       string
+	mu          sync.Mutex
+	GlobalENBID ies.GlobalENBID
+	ENBName     string
+	// SupportedTAs is the complete topology advertised by the eNB. AcceptedTAs
+	// is the exact PLMN+TAC subset served by this MME and is used for local
+	// paging/PWS routing admission.
 	SupportedTAs  []SupportedTA
+	AcceptedTAs   []SupportedTA
 	RemoteAddr    string
 	SetupComplete bool
 }

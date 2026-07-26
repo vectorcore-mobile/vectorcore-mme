@@ -95,11 +95,24 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 		s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError, diagItems...)
 		return
 	}
+	acceptedTAs := s.acceptedSupportedTAs(supportedTAs)
+	if len(acceptedTAs) == 0 {
+		log.Warn("s1ap: S1 Setup rejected: no served Broadcast PLMN/TAI",
+			zap.String("global_enb_id", globalENBID.Serialise()),
+			zap.Any("advertised_tais", topologySummary(supportedTAs)),
+			zap.String("rejection_cause", "misc:unknown-PLMN"))
+		// TS 36.413 CauseMisc explicitly defines unknown-PLMN. It has no
+		// "unknown TAI" alternative, so a TAC-only mismatch is not fabricated.
+		s.sendS1SetupFailure(remoteAddr, p, ies.CauseGroupMisc, ies.CauseMiscUnknownPLMN)
+		return
+	}
 
 	log = log.With(
 		zap.String("global_enb_id", globalENBID.Serialise()),
 		zap.String("global_enb_plmn_raw", fmt.Sprintf("%02X%02X%02X", globalENBID.PLMNRaw[0], globalENBID.PLMNRaw[1], globalENBID.PLMNRaw[2])),
 		zap.String("enb_name", enbName),
+		zap.Any("advertised_tais", topologySummary(supportedTAs)),
+		zap.Any("accepted_tais", topologySummary(acceptedTAs)),
 	)
 	log.Info("s1ap: S1 Setup Request")
 
@@ -108,6 +121,7 @@ func (s *Server) handleS1SetupRequest(remoteAddr string, p *pdu.PDU, ieList []pd
 		GlobalENBID:   *globalENBID,
 		ENBName:       enbName,
 		SupportedTAs:  supportedTAs,
+		AcceptedTAs:   acceptedTAs,
 		RemoteAddr:    remoteAddr,
 		SetupComplete: true,
 	}

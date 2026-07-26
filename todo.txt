@@ -1,4 +1,3 @@
-SBc-AP testing.
 Roaming... DNS rules PLMN / realm MAP.  policy..
 Outer QoS tagging.
 E.212 DB 
@@ -8,4 +7,3 @@ API/Web-UI updates.
 Recovery... Finish startup logic and testing.
 S11 interop testing.
 test other Enb's
-validate an eNBs advertised PLMNs during S1 Setup with our configured PLMN's 

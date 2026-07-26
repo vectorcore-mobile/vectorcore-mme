@@ -162,6 +162,10 @@ func DecodePLMN(data []byte) (mcc, mnc string, err error) {
 	d4 := (data[1] >> 4) & 0x0F
 	d5 := data[2] & 0x0F
 	d6 := (data[2] >> 4) & 0x0F
+	valid := func(d byte) bool { return d <= 9 }
+	if !valid(d1) || !valid(d2) || !valid(d3) || !valid(d5) || !valid(d6) || (d4 != 0x0f && !valid(d4)) {
+		return "", "", fmt.Errorf("ies: invalid PLMN digit encoding %02x%02x%02x", data[0], data[1], data[2])
+	}
 	mcc = fmt.Sprintf("%d%d%d", d1, d2, d3)
 	if d4 == 0x0F {
 		mnc = fmt.Sprintf("%d%d", d5, d6)
@@ -374,7 +378,8 @@ const (
 	CauseProtocolSemanticError                      uint8 = 4
 	CauseProtocolFalselyConstructedMessage          uint8 = 5
 	CauseMiscControlProcessingOverload              uint8 = 0
-	CauseMiscUnspecified                            uint8 = 5
+	CauseMiscUnknownPLMN                            uint8 = 5
+	CauseMiscUnspecified                            uint8 = 4
 )
 
 // EncodeCause encodes a Cause IE value (CHOICE with 5 alternatives).

@@ -174,6 +174,22 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 		s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
 		return
 	}
+	if served, topologyOK := s.validateInitialUETopology(remoteAddr, tai, ecgi); !topologyOK {
+		if !served {
+			log.Warn("s1ap: InitialUE rejected: unserved TAI/ECGI PLMN",
+				zap.String("tai", fmt.Sprintf("%s-%s/%d", tai.MCC, tai.MNC, tai.TAC)),
+				zap.String("ecgi_plmn", ecgi.MCC+"-"+ecgi.MNC))
+			s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupMisc, ies.CauseMiscUnknownPLMN)
+			return
+		}
+		log.Warn("s1ap: InitialUE rejected: TAI/ECGI inconsistent with eNB topology",
+			zap.String("tai", fmt.Sprintf("%s-%s/%d", tai.MCC, tai.MNC, tai.TAC)),
+			zap.String("ecgi_plmn", ecgi.MCC+"-"+ecgi.MNC))
+		// TS 36.413 has no unknown-TAI cause. A served TAI that was not
+		// advertised by this association is a protocol semantic error.
+		s.sendErrorIndication(remoteAddr, p, 0, enbUEID, ies.CauseGroupProtocol, ies.CauseProtocolSemanticError)
+		return
+	}
 
 	_ = rrcCause
 

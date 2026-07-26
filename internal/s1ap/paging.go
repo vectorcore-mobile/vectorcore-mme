@@ -130,7 +130,7 @@ func (s *Server) findENBsForTAI(tai *emm.TAI) []string {
 		enb := val.(*ENBContext)
 		enb.mu.Lock()
 		defer enb.mu.Unlock()
-		for _, sta := range enb.SupportedTAs {
+		for _, sta := range effectiveRoutingTAs(enb) {
 			if sta.TAC != tai.TAC {
 				continue
 			}

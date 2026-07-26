@@ -131,6 +131,22 @@ open-type payloads to a CBC. Completed/cancelled reports from selected eNBs
 are collected for the configured transaction timeout; partial valid cell
 results are reported when that timeout expires.
 
+### eNB Supported TA topology
+
+During S1 Setup, an eNB supplies a Global eNB ID and one or more Supported TA
+entries. Each Supported TA is a TAC plus one or more Broadcast PLMNs; a TAI is
+the complete pair **PLMN + TAC**, never a TAC alone. VectorCore decodes and
+stores the full advertised topology, including network-sharing Broadcast PLMNs,
+then derives the accepted subset by intersecting it with `nf.tai_list`.
+
+The Global eNB ID PLMN is not required to equal every Broadcast PLMN. S1 Setup
+is accepted when at least one advertised Broadcast PLMN/TAC combination is
+served by this MME; an eNB with no intersection is rejected with the S1AP
+`misc: unknown-PLMN` cause. TS 36.413 defines no separate “unknown TAI” cause.
+The accepted topology is used for TAI-targeted paging and SBc-AP List-of-TAIs
+routing. PLMN values are compared as typed MCC/MNC values, preserving two- vs
+three-digit MNCs; for example S1AP PLMN `13 41 53` is MCC `311`, MNC `435`.
+
 ```yaml
 diameter:
   origin_host: mme2.epc.mnc435.mcc311.3gppnetwork.org

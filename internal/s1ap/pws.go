@@ -414,7 +414,7 @@ func (s *Server) resolveSBcAPTargets(req *sbcap.WarningRequest) ([]string, error
 			if !enb.SetupComplete {
 				return true
 			}
-			for _, served := range enb.SupportedTAs {
+			for _, served := range effectiveRoutingTAs(enb) {
 				if served.TAC != target.TAC {
 					continue
 				}

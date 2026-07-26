@@ -61,6 +61,7 @@ func (s *Server) handleENBConfigurationUpdate(remoteAddr string, p *pdu.PDU, ieL
 	}
 	if supportedTAsPresent {
 		enb.SupportedTAs = supportedTAs
+		enb.AcceptedTAs = s.acceptedSupportedTAs(supportedTAs)
 	}
 	globalID := enb.GlobalENBID
 	currentName := enb.ENBName

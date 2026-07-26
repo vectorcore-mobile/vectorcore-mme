@@ -2,6 +2,16 @@ package ies
 
 import "testing"
 
+func TestDecodeS1APPLMNThreeDigitMNC(t *testing.T) {
+	mcc, mnc, err := DecodePLMN([]byte{0x13, 0x41, 0x53})
+	if err != nil || mcc != "311" || mnc != "435" {
+		t.Fatalf("PLMN 134153 = %q/%q err=%v", mcc, mnc, err)
+	}
+	if _, _, err := DecodePLMN([]byte{0xfa, 0x41, 0x53}); err == nil {
+		t.Fatal("invalid S1AP PLMN digit accepted")
+	}
+}
+
 func TestCauseAPEREncodeDecodeRadioNetworkUserInactivity(t *testing.T) {
 	encoded := EncodeCause(CauseGroupRadioNetwork, CauseRadioNetworkUserInactivity)
 	group, value, err := DecodeCause(encoded)
