@@ -278,6 +278,7 @@ func (s *Server) Start() error {
 	srv := s1sctp.NewServer(
 		s.cfg.BindAddress,
 		s.cfg.BindPort,
+		s.cfg.QoS.DSCP,
 		s.log,
 		func(remoteAddr string, sendCh chan<- []byte) {
 			s.sends.Store(remoteAddr, sendCh)

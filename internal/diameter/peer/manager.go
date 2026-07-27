@@ -2,10 +2,12 @@
 package peer
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/fiorix/go-diameter/v4/diam"
@@ -14,9 +16,11 @@ import (
 	"github.com/fiorix/go-diameter/v4/diam/dict"
 	"github.com/fiorix/go-diameter/v4/diam/sm"
 	"github.com/fiorix/go-diameter/v4/diam/sm/smpeer"
+	"github.com/ishidawataru/sctp"
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/transportqos"
 )
 
 const RelayApplicationID uint32 = 0xffffffff
@@ -124,6 +128,9 @@ func (m *Manager) connectLoop(p *record) {
 			time.Sleep(m.retryDelay())
 			continue
 		}
+		if tos, configured, _ := transportqos.TOS(m.cfg.QoS.DSCP); configured {
+			m.log.Info("diameter: outbound QoS configured", zap.String("transport", p.config.Transport), zap.String("peer_name", p.config.Name), zap.String("peer_address", p.config.Address), zap.Int("dscp", *m.cfg.QoS.DSCP), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
+		}
 		m.learn(p, conn)
 		if notifier, ok := conn.(diam.CloseNotifier); ok {
 			<-notifier.CloseNotify()
@@ -179,9 +186,40 @@ func (m *Manager) dial(cli *sm.Client, p config.DiameterPeerConfig) (diam.Conn, 
 		if err != nil {
 			return nil, fmt.Errorf("resolve SCTP local address for %s: %w", p.Address, err)
 		}
-		return cli.DialNetworkBind("sctp", local, p.Address)
+		laddr, err := sctp.ResolveSCTPAddr("sctp", local)
+		if err != nil {
+			return nil, fmt.Errorf("resolve SCTP local address for %s: %w", p.Address, err)
+		}
+		raddr, err := sctp.ResolveSCTPAddr("sctp", p.Address)
+		if err != nil {
+			return nil, fmt.Errorf("resolve SCTP peer address for %s: %w", p.Address, err)
+		}
+		socketCfg := &sctp.SocketConfig{
+			InitMsg: sctp.InitMsg{NumOstreams: diam.MaxOutboundSCTPStreams, MaxInstreams: diam.MaxInboundSCTPStreams},
+			Control: func(network, address string, raw syscall.RawConn) error {
+				return transportqos.Control(m.cfg.QoS.DSCP)(network, address, raw)
+			},
+		}
+		raw, err := socketCfg.Dial("sctp", laddr, raddr)
+		if err != nil {
+			return nil, fmt.Errorf("dial SCTP peer %s: %w", p.Address, err)
+		}
+		if err := transportqos.Apply(m.cfg.QoS.DSCP, raw); err != nil {
+			_ = raw.Close()
+			return nil, fmt.Errorf("apply SCTP QoS for %s: %w", p.Address, err)
+		}
+		return cli.NewConn(diam.NewSCTPConn(raw), p.Address)
 	}
-	return cli.DialNetwork("tcp", p.Address)
+	dialer := net.Dialer{Control: transportqos.Control(m.cfg.QoS.DSCP)}
+	raw, err := dialer.DialContext(context.Background(), "tcp", p.Address)
+	if err != nil {
+		return nil, fmt.Errorf("dial TCP peer %s: %w", p.Address, err)
+	}
+	if err := transportqos.Apply(m.cfg.QoS.DSCP, raw); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("apply TCP QoS for %s: %w", p.Address, err)
+	}
+	return cli.NewConn(raw, p.Address)
 }
 
 func routeLocalAddress(remote string) (string, error) {
@@ -201,22 +239,47 @@ func (m *Manager) listen(transport string) {
 	mux := m.factory(m.observeInboundCER)
 	handler := capture{manager: m, next: mux}
 	if transport == "sctp" {
-		// Use go-diameter's listener wrapper so accepted SCTP associations
-		// retain stream metadata and Diameter's SCTP PPID.
-		ln, err := diam.MultistreamListen("sctp", m.cfg.BindAddress)
+		addr, err := sctp.ResolveSCTPAddr("sctp", m.cfg.BindAddress)
+		if err != nil {
+			m.log.Error("diameter: resolve SCTP listener", zap.Error(err))
+			return
+		}
+		socketCfg := &sctp.SocketConfig{
+			InitMsg: sctp.InitMsg{NumOstreams: diam.MaxOutboundSCTPStreams, MaxInstreams: diam.MaxInboundSCTPStreams},
+			Control: func(network, address string, raw syscall.RawConn) error {
+				return transportqos.Control(m.cfg.QoS.DSCP)(network, address, raw)
+			},
+		}
+		rawListener, err := socketCfg.Listen("sctp", addr)
 		if err != nil {
 			m.log.Error("diameter: SCTP listen failed", zap.Error(err))
 			return
 		}
+		ln := qosSCTPListener{SCTPListener: rawListener, dscp: m.cfg.QoS.DSCP}
 		m.log.Info("diameter: listening", zap.String("transport", transport), zap.String("address", m.cfg.BindAddress))
+		m.logQoS(transport)
 		if err := diam.Serve(ln, handler); err != nil {
 			m.log.Error("diameter: SCTP listener stopped", zap.Error(err))
 		}
 		return
 	}
+	lc := net.ListenConfig{Control: transportqos.Control(m.cfg.QoS.DSCP)}
+	rawListener, err := lc.Listen(context.Background(), "tcp", m.cfg.BindAddress)
+	if err != nil {
+		m.log.Error("diameter: TCP listen failed", zap.Error(err))
+		return
+	}
+	ln := qosListener{Listener: rawListener, dscp: m.cfg.QoS.DSCP}
 	m.log.Info("diameter: listening", zap.String("transport", transport), zap.String("address", m.cfg.BindAddress))
-	if err := diam.ListenAndServeNetwork("tcp", m.cfg.BindAddress, handler, dict.Default); err != nil {
+	m.logQoS(transport)
+	if err := diam.Serve(ln, handler); err != nil {
 		m.log.Error("diameter: TCP listener stopped", zap.Error(err))
+	}
+}
+
+func (m *Manager) logQoS(transport string) {
+	if tos, configured, _ := transportqos.TOS(m.cfg.QoS.DSCP); configured {
+		m.log.Info("diameter: outbound QoS configured", zap.String("transport", transport), zap.Int("dscp", *m.cfg.QoS.DSCP), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
 	}
 }
 

@@ -5,8 +5,10 @@ package sctp
 import (
 	"fmt"
 	"net"
+	"syscall"
 
 	"github.com/ishidawataru/sctp"
+	"github.com/vectorcore/mme/internal/transportqos"
 	"go.uber.org/zap"
 )
 
@@ -27,6 +29,7 @@ type DisconnectHandler func(remoteAddr string)
 type Server struct {
 	bindAddr     string
 	port         int
+	dscp         *int
 	log          *zap.Logger
 	onMessage    MessageHandler
 	onConnect    ConnectHandler
@@ -34,11 +37,12 @@ type Server struct {
 }
 
 // NewServer creates an SCTP server that will call onMessage for each S1AP PDU received.
-func NewServer(bindAddr string, port int, log *zap.Logger,
+func NewServer(bindAddr string, port int, dscp *int, log *zap.Logger,
 	onConnect ConnectHandler, onMessage MessageHandler, onDisconnect DisconnectHandler) *Server {
 	return &Server{
 		bindAddr:     bindAddr,
 		port:         port,
+		dscp:         dscp,
 		log:          log,
 		onMessage:    onMessage,
 		onConnect:    onConnect,
@@ -52,12 +56,18 @@ func (s *Server) Listen() error {
 		IPAddrs: []net.IPAddr{{IP: net.ParseIP(s.bindAddr)}},
 		Port:    s.port,
 	}
-	ln, err := sctp.ListenSCTP("sctp", addr)
+	socketCfg := &sctp.SocketConfig{Control: func(network, address string, raw syscall.RawConn) error {
+		return transportqos.Control(s.dscp)(network, address, raw)
+	}}
+	ln, err := socketCfg.Listen("sctp", addr)
 	if err != nil {
 		return fmt.Errorf("sctp: listen %s:%d: %w", s.bindAddr, s.port, err)
 	}
 	defer ln.Close()
 	s.log.Info("s1ap: SCTP listening", zap.String("addr", fmt.Sprintf("%s:%d", s.bindAddr, s.port)))
+	if tos, configured, _ := transportqos.TOS(s.dscp); configured {
+		s.log.Info("s1ap: outbound QoS configured", zap.Int("dscp", *s.dscp), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
+	}
 
 	for {
 		conn, err := ln.Accept()
@@ -65,6 +75,11 @@ func (s *Server) Listen() error {
 			return fmt.Errorf("sctp: accept: %w", err)
 		}
 		sctpConn := conn.(*sctp.SCTPConn)
+		if err := transportqos.Apply(s.dscp, sctpConn); err != nil {
+			_ = sctpConn.Close()
+			s.log.Warn("s1ap: SCTP accepted association QoS failed", zap.Error(err))
+			continue
+		}
 		go s.handleConn(sctpConn)
 	}
 }

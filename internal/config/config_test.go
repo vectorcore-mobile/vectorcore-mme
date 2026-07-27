@@ -64,6 +64,9 @@ gateway_selection:
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
 	}
+	if cfg.S1AP.QoS.DSCP != nil || cfg.SBcAP.QoS.DSCP != nil || cfg.Diameter.QoS.DSCP != nil || cfg.S10.QoS.DSCP != nil || cfg.S11.QoS.DSCP != nil {
+		t.Fatal("omitted QoS must preserve an unset DSCP on every interface")
+	}
 	if cfg.S11.BindAddress != "127.0.0.1" || cfg.S11.BindPort != 2123 {
 		t.Fatalf("S11 bind config not parsed: %+v", cfg.S11)
 	}
@@ -78,6 +81,75 @@ gateway_selection:
 	}
 	if got, want := gateway.RootDomain(cfg.NF, cfg.GatewaySelection.DNS.RootDomain), "epc.mnc001.mcc001.3gppnetwork.org"; got != want {
 		t.Fatalf("derived root domain = %q, want %q", got, want)
+	}
+}
+
+func TestLoadInterfaceQoSAndValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	base := `
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+diameter:
+  origin_host: mme.example
+  origin_realm: example
+  qos: {dscp: 63}
+  peers: [{name: dra, address: "127.0.0.1:3868"}]
+s1ap: {qos: {dscp: 0}}
+sbcap: {enabled: false, qos: {dscp: 24}}
+s10: {enabled: false, qos: {dscp: 40}}
+s11: {qos: {dscp: 46}}
+`
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, got := range map[string]struct {
+		got  *int
+		want int
+	}{
+		"s1ap": {cfg.S1AP.QoS.DSCP, 0}, "sbcap": {cfg.SBcAP.QoS.DSCP, 24}, "diameter": {cfg.Diameter.QoS.DSCP, 63}, "s10": {cfg.S10.QoS.DSCP, 40}, "s11": {cfg.S11.QoS.DSCP, 46},
+	} {
+		if got.got == nil || *got.got != got.want {
+			t.Fatalf("%s dscp = %v, want %d", name, got.got, got.want)
+		}
+	}
+	for _, invalid := range []string{"-1", "64"} {
+		if err := os.WriteFile(path, []byte(`
+nf: {origin_host: mme.example, mcc: "001", mnc: "01"}
+diameter:
+  origin_host: mme.example
+  origin_realm: example
+  peers: [{name: dra, address: "127.0.0.1:3868"}]
+sbcap: {enabled: false, qos: {dscp: `+invalid+`}}
+`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := config.Load(path); err == nil {
+			t.Fatalf("disabled interface accepted invalid DSCP %s", invalid)
+		}
+	}
+}
+
+func TestLoadRejectsDiameterPeerQoS(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf: {origin_host: mme.example, mcc: "001", mnc: "01"}
+diameter:
+  origin_host: mme.example
+  origin_realm: example
+  peers: [{name: dra, address: "127.0.0.1:3868", qos: {dscp: 24}}]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("peer-level Diameter QoS accepted")
 	}
 }
 

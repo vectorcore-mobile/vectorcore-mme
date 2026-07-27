@@ -3,9 +3,11 @@
 package s11
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/transportqos"
 )
 
 // ResultHandler receives decoded GTPv2-C responses asynchronously.
@@ -74,16 +77,22 @@ func (c *Client) SetHandler(h ResultHandler) { c.handler = h }
 // Start binds the UDP socket and starts the receive loop. Blocks until the
 // socket is closed; call in a goroutine.
 func (c *Client) Start() error {
-	bindAddr := &net.UDPAddr{
-		IP:   net.ParseIP(c.cfg.BindAddress),
-		Port: c.cfg.BindPort,
-	}
-	conn, err := net.ListenUDP("udp4", bindAddr)
+	address := net.JoinHostPort(c.cfg.BindAddress, strconv.Itoa(c.cfg.BindPort))
+	lc := net.ListenConfig{Control: transportqos.Control(c.cfg.QoS.DSCP)}
+	packetConn, err := lc.ListenPacket(context.Background(), "udp", address)
 	if err != nil {
-		return fmt.Errorf("s11: bind UDP %v: %w", bindAddr, err)
+		return fmt.Errorf("s11: bind UDP %s: %w", address, err)
+	}
+	conn, ok := packetConn.(*net.UDPConn)
+	if !ok {
+		_ = packetConn.Close()
+		return fmt.Errorf("s11: bind UDP %s: unexpected socket type %T", address, packetConn)
 	}
 	c.conn = conn
 	c.log.Info("s11: listening", zap.String("addr", conn.LocalAddr().String()))
+	if tos, configured, _ := transportqos.TOS(c.cfg.QoS.DSCP); configured {
+		c.log.Info("s11: outbound QoS configured", zap.Int("dscp", *c.cfg.QoS.DSCP), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
+	}
 	c.recvLoop()
 	return nil
 }

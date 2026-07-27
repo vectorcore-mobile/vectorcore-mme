@@ -5,11 +5,13 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ishidawataru/sctp"
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/transportqos"
 	"go.uber.org/zap"
 )
 
@@ -48,7 +50,10 @@ func NewServer(cfg config.SBcAPConfig, log *zap.Logger, onMessage MessageHandler
 
 func (s *Server) Listen() error {
 	addr := &sctp.SCTPAddr{IPAddrs: []net.IPAddr{{IP: net.ParseIP(s.cfg.BindAddress)}}, Port: s.cfg.Port}
-	ln, err := sctp.ListenSCTP("sctp", addr)
+	socketCfg := &sctp.SocketConfig{Control: func(network, address string, raw syscall.RawConn) error {
+		return transportqos.Control(s.cfg.QoS.DSCP)(network, address, raw)
+	}}
+	ln, err := socketCfg.Listen("sctp", addr)
 	if err != nil {
 		return fmt.Errorf("sbcap: listen %s:%d: %w", s.cfg.BindAddress, s.cfg.Port, err)
 	}
@@ -64,6 +69,9 @@ func (s *Server) Listen() error {
 		s.mu.Unlock()
 	}()
 	s.log.Info("sbcap: SCTP listening", zap.String("address", fmt.Sprintf("%s:%d", s.cfg.BindAddress, s.cfg.Port)), zap.Uint32("ppid", SCTPPPIdentifier), zap.Bool("accept_legacy_ppid_zero", s.cfg.AcceptLegacyPPIDZero))
+	if tos, configured, _ := transportqos.TOS(s.cfg.QoS.DSCP); configured {
+		s.log.Info("sbcap: outbound QoS configured", zap.Int("dscp", *s.cfg.QoS.DSCP), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
+	}
 	for {
 		accepted, err := ln.Accept()
 		if err != nil {
@@ -72,6 +80,11 @@ func (s *Server) Listen() error {
 		conn, ok := accepted.(*sctp.SCTPConn)
 		if !ok {
 			_ = accepted.Close()
+			continue
+		}
+		if err := transportqos.Apply(s.cfg.QoS.DSCP, conn); err != nil {
+			_ = conn.Close()
+			s.log.Warn("sbcap: accepted association QoS failed", zap.Error(err))
 			continue
 		}
 		go s.handleConnection(conn)

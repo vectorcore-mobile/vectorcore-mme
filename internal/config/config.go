@@ -126,6 +126,7 @@ type S10Config struct {
 	Enabled     bool            `yaml:"enabled"`
 	BindAddress string          `yaml:"bind_address"` // default "0.0.0.0"
 	BindPort    int             `yaml:"bind_port"`    // default 2124
+	QoS         QoSConfig       `yaml:"qos"`
 	Peers       []PeerMMEConfig `yaml:"peers"`
 }
 
@@ -141,9 +142,10 @@ type PeerMMEConfig struct {
 
 // S11Config holds the GTPv2-C S11 interface configuration (MME ↔ S-GW).
 type S11Config struct {
-	BindAddress            string `yaml:"bind_address"`             // local IP for MME S11 socket
-	BindPort               int    `yaml:"bind_port"`                // default 2123
-	RecoveryRestartCounter uint8  `yaml:"recovery_restart_counter"` // GTPv2 Recovery IE value used in Echo Response
+	BindAddress            string    `yaml:"bind_address"`             // local IP for MME S11 socket
+	BindPort               int       `yaml:"bind_port"`                // default 2123
+	RecoveryRestartCounter uint8     `yaml:"recovery_restart_counter"` // GTPv2 Recovery IE value used in Echo Response
+	QoS                    QoSConfig `yaml:"qos"`
 }
 
 type PagingConfig struct {
@@ -210,9 +212,16 @@ type TAIItem struct {
 }
 
 type S1APConfig struct {
-	BindAddress string `yaml:"bind_address"`
-	BindPort    int    `yaml:"bind_port"`
-	SCTPStreams int    `yaml:"sctp_streams"`
+	BindAddress string    `yaml:"bind_address"`
+	BindPort    int       `yaml:"bind_port"`
+	SCTPStreams int       `yaml:"sctp_streams"`
+	QoS         QoSConfig `yaml:"qos"`
+}
+
+// QoSConfig controls a fixed outbound DSCP mark for one MME interface. DSCP
+// is a pointer so an explicit CS0 (0) remains distinct from an omitted value.
+type QoSConfig struct {
+	DSCP *int `yaml:"dscp"`
 }
 
 // DiameterConfig contains shared Diameter transport and peer-routing settings.
@@ -224,6 +233,7 @@ type DiameterConfig struct {
 	BindAddress   string               `yaml:"bind_addr"`
 	BindTransport string               `yaml:"bind_transport"` // tcp (default) or sctp; applies only with bind_addr
 	RetryDelay    time.Duration        `yaml:"retry_delay"`
+	QoS           QoSConfig            `yaml:"qos"`
 	Peers         []DiameterPeerConfig `yaml:"peers"`
 }
 
@@ -264,6 +274,7 @@ type SBcAPConfig struct {
 	Port                 int               `yaml:"port"`
 	TransactionTimeout   time.Duration     `yaml:"transaction_timeout"`
 	AcceptLegacyPPIDZero bool              `yaml:"accept_legacy_ppid_zero"`
+	QoS                  QoSConfig         `yaml:"qos"`
 	Peers                []SBcAPPeerConfig `yaml:"peers"`
 }
 
@@ -277,6 +288,23 @@ type DiameterPeerConfig struct {
 	Address   string `yaml:"address"`
 	Transport string `yaml:"transport"` // tcp (default) or sctp
 	Priority  *int   `yaml:"priority"`  // lower wins; nil falls back to config order
+}
+
+// UnmarshalYAML keeps Diameter QoS deliberately process-wide. A peer-level
+// setting would undermine the single common Diameter traffic class policy.
+func (p *DiameterPeerConfig) UnmarshalYAML(value *yaml.Node) error {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == "qos" {
+			return fmt.Errorf("diameter peer qos is not supported; use diameter.qos")
+		}
+	}
+	type raw DiameterPeerConfig
+	var decoded raw
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*p = DiameterPeerConfig(decoded)
+	return nil
 }
 
 type S6aConfig struct {
@@ -455,6 +483,17 @@ func Load(path string) (*Config, error) {
 	if err := validateRoaming(cfg.Roaming); err != nil {
 		return nil, err
 	}
+	for name, qos := range map[string]QoSConfig{
+		"s1ap.qos":     cfg.S1AP.QoS,
+		"sbcap.qos":    cfg.SBcAP.QoS,
+		"diameter.qos": cfg.Diameter.QoS,
+		"s10.qos":      cfg.S10.QoS,
+		"s11.qos":      cfg.S11.QoS,
+	} {
+		if err := validateQoS(qos); err != nil {
+			return nil, fmt.Errorf("config: %s: %w", name, err)
+		}
+	}
 	if cfg.Diameter.OriginHost == "" || cfg.Diameter.OriginRealm == "" {
 		return nil, fmt.Errorf("config: diameter.origin_host and diameter.origin_realm are required")
 	}
@@ -601,6 +640,16 @@ func Load(path string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateQoS(cfg QoSConfig) error {
+	if cfg.DSCP == nil {
+		return nil
+	}
+	if *cfg.DSCP < 0 || *cfg.DSCP > 63 {
+		return fmt.Errorf("dscp must be between 0 and 63, got %d", *cfg.DSCP)
+	}
+	return nil
 }
 
 func validateRoaming(cfg RoamingConfig) error {

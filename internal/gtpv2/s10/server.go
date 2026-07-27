@@ -1,8 +1,10 @@
 package s10
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/vectorcore/mme/internal/config"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/transportqos"
 )
 
 // ContextRequestHandler is implemented by the s1ap.Server (both MME roles).
@@ -64,16 +67,22 @@ func (s *Server) SetHandler(h ContextRequestHandler) { s.handler = h }
 
 // Start binds the UDP socket and begins the receive loop. Blocks until the socket closes.
 func (s *Server) Start() error {
-	bindAddr := &net.UDPAddr{
-		IP:   net.ParseIP(s.cfg.BindAddress),
-		Port: s.cfg.BindPort,
-	}
-	conn, err := net.ListenUDP("udp4", bindAddr)
+	address := net.JoinHostPort(s.cfg.BindAddress, strconv.Itoa(s.cfg.BindPort))
+	lc := net.ListenConfig{Control: transportqos.Control(s.cfg.QoS.DSCP)}
+	packetConn, err := lc.ListenPacket(context.Background(), "udp", address)
 	if err != nil {
-		return fmt.Errorf("s10: bind UDP %v: %w", bindAddr, err)
+		return fmt.Errorf("s10: bind UDP %s: %w", address, err)
+	}
+	conn, ok := packetConn.(*net.UDPConn)
+	if !ok {
+		_ = packetConn.Close()
+		return fmt.Errorf("s10: bind UDP %s: unexpected socket type %T", address, packetConn)
 	}
 	s.conn = conn
 	s.log.Info("s10: listening", zap.String("addr", conn.LocalAddr().String()))
+	if tos, configured, _ := transportqos.TOS(s.cfg.QoS.DSCP); configured {
+		s.log.Info("s10: outbound QoS configured", zap.Int("dscp", *s.cfg.QoS.DSCP), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
+	}
 	s.recvLoop()
 	return nil
 }

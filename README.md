@@ -63,12 +63,36 @@ Key fields:
 | `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
+| `*.qos.dscp` | Optional fixed outbound control-plane DSCP (0–63); `24` is CS3 |
 | `database.db_type` | Database driver: `postgres` or `sqlite` |
 | `database.*` | Database connection settings. For SQLite, `database.database` is the DB file path. |
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 | `operator.name.encoding` | Network name encoding: `gsm7` (default) or `ucs2` |
 | `operator.nitz.timezone` | IANA timezone used for EMM Information NITZ fields, preferred over static offsets |
 | `roaming.*` | Home-routed roaming admission and HSS destination policy; S8 PGW selection uses HSS data or HPLMN DNS |
+
+### Outbound control-plane DSCP
+
+Each MME control-plane transport may set a fixed outbound DSCP value with an
+optional `qos.dscp` field. The value is the unshifted six-bit DSCP number from
+`0` through `63`; VectorCore writes `dscp << 2` to IPv4 `IP_TOS` or IPv6
+`IPV6_TCLASS`. For example, decimal `24` (CS3) produces traffic class `0x60`.
+
+```yaml
+s1ap: {qos: {dscp: 24}}
+sbcap: {qos: {dscp: 24}}
+diameter: {qos: {dscp: 24}}
+s10: {qos: {dscp: 24}}
+s11: {qos: {dscp: 24}}
+```
+
+Omit `qos` (or `qos.dscp`) to retain the operating-system socket default.
+`dscp: 0` is explicit CS0 and is different from omission. Marking applies only
+to packets transmitted by the MME; VectorCore neither reads nor copies DSCP
+from received packets. Diameter has exactly one common setting for all peers,
+TCP/SCTP transports, applications, requests, answers, watchdogs, and retries;
+peer-level or application-level Diameter QoS is not supported. DSCP 24 is an
+operator policy example, not a 3GPP requirement.
 
 ### Diameter peer routing
 

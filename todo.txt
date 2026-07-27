@@ -1,5 +1,3 @@
-Roaming... DNS rules PLMN / realm MAP.  policy..
-Outer QoS tagging.
 E.212 DB 
 Handover X1/X2 testing.
 S10 Testing.
