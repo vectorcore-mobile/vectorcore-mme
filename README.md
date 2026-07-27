@@ -119,8 +119,10 @@ APN-OI-Replacement, when present and syntactically valid, replaces only that
 operator identifier. Local breakout, persistence across restart, and live
 roaming interoperability validation are not implemented.
 
-Attach-reject mapping follows TS 24.301: disabled roaming and ACL denial use
-cause 13, *roaming not allowed in this tracking area*; unresolved, ambiguous,
+Attach-reject mapping follows TS 24.301: disabled roaming and HPLMN ACL denial
+use cause 14, *EPS services not allowed in this PLMN*, because the current
+policy is VPLMN-wide. Cause 13, *roaming not allowed in this tracking area*,
+is reserved for a future TAC-specific roaming policy. Unresolved, ambiguous,
 or malformed IMSI identity uses cause 9, *UE identity cannot be derived by the
 network*. An S8 PGW-selection failure is rejected before S11 and never falls
 back to the local S5 PGW. Local breakout, persistence across restart, and live

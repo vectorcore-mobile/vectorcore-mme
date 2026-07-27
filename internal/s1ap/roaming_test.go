@@ -54,7 +54,7 @@ func TestClassifyRoamingRejectsDisabledForeignAndAllowsHome(t *testing.T) {
 	foreign.Roaming.ServingPLMN = plmn.PLMN{MCC: "311", MNC: "435"}
 	err := s.classifyRoaming(foreign, "310260123456789")
 	var admission *roamingAdmissionError
-	if !errors.As(err, &admission) || admission.cause != emm.CauseRoamingNotAllowed {
+	if !errors.As(err, &admission) || admission.cause != emm.CauseEPSServicesNotAllowedInPLMN {
 		t.Fatalf("disabled foreign error = %v", err)
 	}
 	foreign.Lock()

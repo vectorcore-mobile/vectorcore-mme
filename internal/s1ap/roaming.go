@@ -47,7 +47,11 @@ func (s *Server) classifyRoaming(ue *uecontext.Context, imsi string) error {
 	}
 	decision := roaming.Evaluate(hplmn, serving, s.roamingCfg)
 	if !decision.Allowed {
-		return &roamingAdmissionError{emm.CauseRoamingNotAllowed, fmt.Errorf("roaming: denied by %s", decision.Source)}
+		// The current roaming configuration is PLMN-wide: neither enabled nor
+		// the HPLMN ACL expresses a TAC-specific restriction. TS 24.301 cause
+		// #14 is therefore the correct result. Cause #13 is reserved for a
+		// future policy that permits roaming in this VPLMN but denies this TAI.
+		return &roamingAdmissionError{emm.CauseEPSServicesNotAllowedInPLMN, fmt.Errorf("roaming: denied by %s", decision.Source)}
 	}
 	state := uecontext.RoamingState{HPLMN: hplmn, ServingPLMN: serving, ServingTAI: tai, IsRoaming: decision.IsRoaming, RoamingAllowed: true, RoamingDecisionSource: string(decision.Source), LogicalPGWInterface: uecontext.LogicalPGWInterfaceS5}
 	if decision.IsRoaming {
