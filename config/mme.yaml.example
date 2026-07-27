@@ -26,8 +26,9 @@ s1ap:
   bind_address: "0.0.0.0"
   bind_port: 36412
   sctp_streams: 2
-  # Optional fixed outbound DSCP (0..63). 24 is CS3; omit to use OS default.
-  # qos: {dscp: 24}
+  # Optional fixed outbound DSCP (0..63). Omit to use the OS default.
+  # qos:
+  #   dscp: 24 # CS3
 
 sbcap:
   enabled: false
@@ -37,7 +38,8 @@ sbcap:
   # Standards-strict by default. Set true only for a configured legacy CBC
   # known to send SBc-AP SCTP DATA with non-standard PPID 0.
   accept_legacy_ppid_zero: false
-  # qos: {dscp: 24}
+  # qos:
+  #   dscp: 24 # CS3
   peers:
     # - name: "osmo-cbc"
     #   addresses:
@@ -51,7 +53,8 @@ diameter:
   # bind_transport: "sctp" # tcp is the default
   retry_delay: "5s"
   # One outbound DSCP setting applies to every peer and Diameter application.
-  # qos: {dscp: 24}
+  # qos:
+  #   dscp: 24 # CS3
   # The deployed peer is a DRA relay. Relay capability is learned from CEA.
   peers:
     - name: "dra-1"
@@ -158,7 +161,8 @@ s10:
   enabled: false
   bind_address: "0.0.0.0"
   bind_port: 2124
-  # qos: {dscp: 24}
+  # qos:
+  #   dscp: 24 # CS3
   # peers:
   #   - name: "peer-mme"
   #     mmec: 2
@@ -168,7 +172,8 @@ s11:
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
   recovery_restart_counter: 0    # GTPv2 Recovery IE value used in Echo Response
-  # qos: {dscp: 24}
+  # qos:
+  #   dscp: 24 # CS3
 
 paging:
   # Enable S11 Downlink Data Notification driven S1AP paging for idle UEs.
