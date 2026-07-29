@@ -9,6 +9,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **NAS** - full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
 - **S6a** - AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
 - **S13 / EIR** - conditional Equipment-Check (ECR/ECA) for IMEI/IMEISV validation during attach
+- **SLg** - disabled-by-default TS 29.172 Diameter PLR/PLA and LRR/LRA wire support; positioning execution is explicitly unavailable until SLs/E-SMLC support is added
 - **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S8HR roaming** - verified HPLMN/VPLMN admission, home-HSS S6a routing, visited-SGW selection, and home-PGW selection over S8
@@ -61,6 +62,7 @@ Key fields:
 | `sbcap.*` | Optional CBC-initiated LTE public-warning SCTP listener (port 29168, PPID 24) |
 | `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
 | `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
+| `slg.*` | Optional SLg Diameter application enablement and bounded in-memory transaction lifetime |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
 | `*.qos.dscp` | Optional fixed outbound control-plane DSCP (0–63); `24` is CS3 |
@@ -151,6 +153,59 @@ or malformed IMSI identity uses cause 9, *UE identity cannot be derived by the
 network*. An S8 PGW-selection failure is rejected before S11 and never falls
 back to the local S5 PGW. Local breakout, persistence across restart, and live
 roaming interoperability validation remain future work.
+
+### SLs / E-SMLC positioning interface
+
+SLs is disabled by default. When enabled, the MME maintains one outbound SCTP
+association to the configured E-SMLC and uses TS 29.171 SCTP PPID 29. A valid
+SLg current-location PLR for a registered UE with a serving ECGI creates one
+bounded LCS-AP Location Request transaction. The E-SMLC Location Response is
+correlated by the four-octet LCS correlation identifier and only an actual
+returned Location Estimate is placed into the PLA. No coordinates are created
+from serving-cell data.
+
+The implementation is native Go: it extends `internal/asn1/aper`, with typed
+LCS-AP PDU and protocol-IE containers. Rust, Cargo, cgo, C libraries and an
+external ASN.1 encoder are not required for this feature.
+
+```yaml
+sls:
+  enabled: true
+  local_address: "192.0.2.20"
+  local_port: 0
+  remote_address: "192.0.2.30"
+  remote_port: 9082
+  reconnect_interval: "5s"
+  request_timeout: "10s"
+  max_transactions: 1024
+  max_pdu_size: 1048576
+```
+
+Supported MME-side LCS-AP procedures are Location Request/Response, inbound
+Location Abort, and inbound Reset with Reset Acknowledge. Error Indication,
+connectionless-information, assistance-data, and full LPP/LPPa/S1AP
+positioning relay procedures are unsupported and rejected safely by procedure
+criticality. UE-associated LPPa is supported as an opaque relay using S1AP
+Downlink/Uplink UE-Associated LPPa Transport (procedure codes 44/45, Routing-ID
+IE 148 and LPPa-PDU IE 147). The MME verifies the active UE S1 binding and
+Routing-ID before relaying upstream; it does not decode LPPa. Non-UE-associated
+LPPa (46/47) remains unsupported. LPP is relayed transparently through EPS
+Downlink/Uplink Generic NAS Transport using Generic Message Container Type
+`0x01` (LPP). Downlink LPP uses the normal protected NAS/S1AP path and uplink
+LPP is accepted only after normal NAS integrity verification; payloads are
+bounded to the 16-bit NAS container length and are never decoded by the MME.
+For an ECM-IDLE UE, LPP is retained as a bounded FIFO (four messages per UE)
+owned by the active SLs transaction, and the existing S1AP pager is triggered
+once. After a successful Service Request has restored the S1 binding and NAS
+security context, the protected Downlink Generic NAS Transport messages are
+sent in arrival order. The SLs transaction timeout bounds pending delivery;
+transaction completion, cancellation, association loss, eNB loss and shutdown
+discard the queue before a stale resume can send it. Live UE/eNB/E-SMLC
+interoperability remains unvalidated. Association loss, timeout, cancellation
+and shutdown fail the associated SLg request with positioning failure and
+remove its transaction.
+Unavailable E-SMLC service affects only location requests; normal EPS control
+plane operation continues and reconnect uses the configured bounded interval.
 
 ### SBc-AP public warning interface
 

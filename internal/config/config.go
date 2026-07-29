@@ -18,6 +18,8 @@ type Config struct {
 	S6a              S6aConfig              `yaml:"s6a"`
 	S13              S13Config              `yaml:"s13"`
 	SGd              SGdConfig              `yaml:"sgd"`
+	SLg              SLgConfig              `yaml:"slg"`
+	SLs              SLsConfig              `yaml:"sls"`
 	SBcAP            SBcAPConfig            `yaml:"sbcap"`
 	S10              S10Config              `yaml:"s10"`
 	S11              S11Config              `yaml:"s11"`
@@ -265,6 +267,29 @@ type SGdConfig struct {
 	TransactionTimeout   time.Duration `yaml:"transaction_timeout"`
 }
 
+// SLgConfig controls the MME-side TS 29.172 Diameter application.  Diameter
+// transport and routing remain under diameter; SLg is disabled by default.
+type SLgConfig struct {
+	Enabled             bool          `yaml:"enabled"`
+	TransactionTimeout  time.Duration `yaml:"transaction_timeout"`
+	ReportTimeout       time.Duration `yaml:"report_timeout"`
+	TransactionCapacity int           `yaml:"transaction_capacity"`
+}
+
+// SLsConfig controls the optional outbound E-SMLC SCTP association. PPID 29
+// is fixed by TS 29.171 and intentionally is not configurable.
+type SLsConfig struct {
+	Enabled           bool          `yaml:"enabled"`
+	LocalAddress      string        `yaml:"local_address"`
+	LocalPort         int           `yaml:"local_port"`
+	RemoteAddress     string        `yaml:"remote_address"`
+	RemotePort        int           `yaml:"remote_port"`
+	ReconnectInterval time.Duration `yaml:"reconnect_interval"`
+	RequestTimeout    time.Duration `yaml:"request_timeout"`
+	MaxTransactions   int           `yaml:"max_transactions"`
+	MaxPDUSize        int           `yaml:"max_pdu_size"`
+}
+
 // SBcAPConfig controls the CBC-initiated LTE public-warning SCTP interface.
 // Warning persistence and expiry intentionally are not configuration of the
 // MME: those remain CBC responsibilities.
@@ -395,6 +420,8 @@ func Load(path string) (*Config, error) {
 			SGdSCAddressEncoding:   "tbcd",
 			TransactionTimeout:     30 * time.Second,
 		},
+		SLg: SLgConfig{TransactionTimeout: 30 * time.Second, ReportTimeout: 30 * time.Second, TransactionCapacity: 1024},
+		SLs: SLsConfig{LocalAddress: "0.0.0.0", RemotePort: 9082, ReconnectInterval: 5 * time.Second, RequestTimeout: 10 * time.Second, MaxTransactions: 1024, MaxPDUSize: 1 << 20},
 		SBcAP: SBcAPConfig{
 			BindAddress:        "0.0.0.0",
 			Port:               29168,
@@ -550,6 +577,14 @@ func Load(path string) (*Config, error) {
 		}
 		if cfg.SGd.TransactionTimeout <= 0 {
 			return nil, fmt.Errorf("config: sgd.transaction_timeout must be greater than 0")
+		}
+	}
+	if cfg.SLg.TransactionTimeout <= 0 || cfg.SLg.ReportTimeout <= 0 || cfg.SLg.TransactionCapacity < 1 {
+		return nil, fmt.Errorf("config: slg transaction_timeout/report_timeout must be greater than 0 and transaction_capacity must be at least 1")
+	}
+	if cfg.SLs.Enabled {
+		if net.ParseIP(cfg.SLs.LocalAddress) == nil || net.ParseIP(cfg.SLs.RemoteAddress) == nil || cfg.SLs.RemotePort < 1 || cfg.SLs.RemotePort > 65535 || cfg.SLs.LocalPort < 0 || cfg.SLs.LocalPort > 65535 || cfg.SLs.ReconnectInterval <= 0 || cfg.SLs.RequestTimeout <= 0 || cfg.SLs.MaxTransactions < 1 || cfg.SLs.MaxPDUSize < 1024 {
+			return nil, fmt.Errorf("config: sls requires valid addresses, ports, positive timeouts and bounded limits when enabled")
 		}
 	}
 	if cfg.SBcAP.Enabled {

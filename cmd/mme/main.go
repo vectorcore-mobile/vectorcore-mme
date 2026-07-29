@@ -33,6 +33,7 @@ import (
 	"github.com/vectorcore/mme/internal/s1ap"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/sbcap"
+	"github.com/vectorcore/mme/internal/sls"
 	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -93,6 +94,24 @@ func main() {
 	s6aHandlers.SetS13Config(cfg.S13)
 	s6aHandlers.SetSGdEnabled(cfg.SGd.Enabled)
 	s6aHandlers.SetSGdConfig(cfg.SGd)
+	s6aHandlers.SetSLgEnabled(cfg.SLg.Enabled)
+	s6aHandlers.SetSLgConfig(cfg.SLg)
+	var slsTransport *sls.SCTPTransport
+	var slsProvider *sls.Provider
+	var slsCancel context.CancelFunc
+	if cfg.SLs.Enabled {
+		slsCtx, cancelSLs := context.WithCancel(context.Background())
+		slsCancel = cancelSLs
+		slsTransport = sls.NewSCTPTransport(cfg.SLs, log)
+		slsProvider = sls.NewProvider(cfg.SLs.RequestTimeout, cfg.SLs.MaxTransactions, slsTransport)
+		slsTransport.SetHandlers(func(b []byte) {
+			if err := slsProvider.HandleInbound(b); err != nil {
+				log.Warn("sls: inbound PDU rejected", zap.Error(err))
+			}
+		}, slsProvider.AssociationLost)
+		s6aHandlers.SetSLsProvider(slsProvider)
+		slsTransport.Start(slsCtx)
+	}
 	var s6aClient s1ap.S6aClient = s6aHandlers
 
 	// S11 GTPv2-C client (connects to S-GW)
@@ -132,6 +151,11 @@ func main() {
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	s1apSrv.SetSGdConfig(cfg.SGd)
 	s1apSrv.SetRoamingConfig(cfg.Roaming)
+	if slsProvider != nil {
+		slsProvider.SetLPPaRelay(s1apSrv)
+		s1apSrv.SetLPPaSink(slsProvider)
+		s1apSrv.SetLPPSink(slsProvider)
+	}
 	if cfg.SGd.Enabled {
 		s1apSrv.SetSMSService(smsservice.New(s6aHandlers))
 		s1apSrv.SetSMSTransactionTimeout(cfg.SGd.TransactionTimeout)
@@ -246,6 +270,16 @@ func main() {
 		log.Info("mme: shutting down", zap.String("signal", sig.String()))
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if slsCancel != nil {
+			slsCancel()
+		}
+		if slsProvider != nil {
+			slsProvider.Close()
+		}
+		if slsTransport != nil {
+			_ = slsTransport.Close()
+		}
+		s6aHandlers.ShutdownSLg()
 		s1apSrv.Shutdown(shutCtx)
 		if sbcapSrv != nil {
 			if err := sbcapSrv.Close(); err != nil {

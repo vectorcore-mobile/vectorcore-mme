@@ -121,6 +121,16 @@ var (
 		Name:      "paging_total",
 		Help:      "S1AP Paging events by result.",
 	}, []string{"result"})
+
+	PositioningRequestsTotal      = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "requests_total", Help: "Positioning transactions created."})
+	PositioningSuccessTotal       = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "success_total", Help: "Positioning transactions completed with an estimate."})
+	PositioningFailureTotal       = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "failure_total", Help: "Positioning transaction failures by bounded reason."}, []string{"reason"})
+	PositioningActiveTransactions = promauto.NewGauge(prometheus.GaugeOpts{Namespace: "mme", Subsystem: "positioning", Name: "active_transactions", Help: "Active SLs positioning transactions."})
+	PositioningPendingLPPMessages = promauto.NewGauge(prometheus.GaugeOpts{Namespace: "mme", Subsystem: "positioning", Name: "pending_lpp_messages", Help: "Queued ECM-idle LPP NAS messages."})
+	PositioningLPPDownlinkTotal   = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "lpp_downlink_total", Help: "LPP downlink relay events by delivery mode."}, []string{"mode"})
+	PositioningLPPUplinkTotal     = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "lpp_uplink_total", Help: "LPP uplink relay events."})
+	PositioningPagingTotal        = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "paging_total", Help: "Positioning paging results."}, []string{"result"})
+	PositioningQueueRejectTotal   = promauto.NewCounter(prometheus.CounterOpts{Namespace: "mme", Subsystem: "positioning", Name: "queue_reject_total", Help: "Rejected pending LPP messages due to queue bounds."})
 	// Labels: "sent", "retry", "timeout", "success",
 	//         "unknown_imsi", "not_idle", "not_registered", "no_enb"
 

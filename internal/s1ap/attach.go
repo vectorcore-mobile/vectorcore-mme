@@ -639,6 +639,19 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 	case emm.MsgUplinkNASTransport:
 		return s.processUplinkSMS(ue, result.Inner)
 
+	case emm.MsgUplinkGenericNASTransport:
+		if result.SecHeaderType == emm.SecurityHeaderPlain {
+			return fmt.Errorf("s1ap: unprotected uplink generic NAS transport")
+		}
+		_, payload, err := emm.DecodeUplinkGenericNASTransport(result.Inner)
+		if err != nil {
+			return err
+		}
+		if s.lppSink == nil {
+			return fmt.Errorf("s1ap: LPP relay unavailable")
+		}
+		return s.lppSink.HandleUplinkLPP(mmeUEID, payload)
+
 	case emm.MsgAuthenticationResponse:
 		return s.processAuthResponse(ue, result.Inner, log)
 

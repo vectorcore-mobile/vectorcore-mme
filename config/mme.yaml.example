@@ -99,6 +99,16 @@ s6a:
     # Default initial attach behavior: only S6a/S6d-Indicator (bit 2).
     flags: 2
 
+# MME-side Diameter SLg (TS 29.172). Disabled by default. Diameter peers and
+# routing are shared with the other applications under diameter.peers.
+# This pure-Go recovery validates PLRs and identities but fails positioning
+# explicitly until an SLs/E-SMLC implementation exists.
+slg:
+  enabled: false
+  transaction_timeout: "30s"
+  report_timeout: "30s"
+  transaction_capacity: 1024
+
 # Roaming foundation only: this configuration is validated and available to
 # later integration, but it does not yet route AIR/ULR or create S8 sessions.
 # Keep disabled until the subsequent roaming integration phases are complete.
@@ -147,6 +157,18 @@ sgd:
   sgd_sc_address_encoding: "tbcd"
   transaction_timeout: "30s"
   mme_number_for_mt_sms: "+15551230001"
+
+# Optional MME-to-E-SMLC SLs association (TS 29.171; fixed SCTP PPID 29).
+sls:
+  enabled: false
+  local_address: "0.0.0.0"
+  local_port: 0
+  remote_address: "192.0.2.30"
+  remote_port: 9082
+  reconnect_interval: "5s"
+  request_timeout: "10s"
+  max_transactions: 1024
+  max_pdu_size: 1048576
 
 # Network-side EMM reachability supervision. T3412 remains the UE-facing
 # nas.timers.t3412 value; the MME mobile-reachable interval is its effective

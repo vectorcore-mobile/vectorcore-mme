@@ -1,0 +1,136 @@
+// Package sls implements the MME side of TS 29.171.  It deliberately uses
+// the shared Go APER primitives; no generated or native ASN.1 runtime is used.
+package sls
+
+import (
+	"fmt"
+
+	"github.com/vectorcore/mme/internal/asn1/aper"
+)
+
+const (
+	ProcedureLocationRequest uint8  = 0
+	ProcedureReset           uint8  = 4
+	ProcedureLocationAbort   uint8  = 3
+	PPID                     uint32 = 29
+	IECorrelationID          uint16 = 2
+	IEECGI                   uint16 = 4
+	IELCSCause               uint16 = 11
+	IELocationEstimate       uint16 = 12
+	IELocationType           uint16 = 13
+)
+
+type Category uint8
+
+const (
+	Initiating Category = iota
+	Successful
+	Unsuccessful
+)
+
+type IE struct {
+	ID          uint16
+	Criticality aper.Criticality
+	Value       []byte
+	Known       bool
+}
+type PDU struct {
+	Category    Category
+	Procedure   uint8
+	Criticality aper.Criticality
+	IEs         []IE
+}
+
+// Decode is intentionally generic for the outer PDU and IE container. Typed
+// procedure validation belongs to ValidateResponse so unknown ignore/notify
+// extensions remain forward compatible.
+func Decode(b []byte) (PDU, error) {
+	r := aper.NewBitReader(b)
+	v, err := r.ReadBits(2)
+	if err != nil || v > 2 {
+		return PDU{}, fmt.Errorf("lcs-ap: invalid PDU choice")
+	}
+	proc, err := r.ReadOctet()
+	if err != nil {
+		return PDU{}, fmt.Errorf("lcs-ap: procedure: %w", err)
+	}
+	crit, err := aper.DecodeCriticality(r)
+	if err != nil {
+		return PDU{}, err
+	}
+	body, err := aper.ReadOpenType(r)
+	if err != nil {
+		return PDU{}, err
+	}
+	if r.Remaining() != 0 {
+		return PDU{}, fmt.Errorf("lcs-ap: trailing PDU data")
+	}
+	br := aper.NewBitReader(body)
+	n, err := aper.DecodeConstrainedWholeNumber(br, 0, 65535)
+	if err != nil {
+		return PDU{}, err
+	}
+	if n > 1024 {
+		return PDU{}, fmt.Errorf("lcs-ap: too many IEs")
+	}
+	p := PDU{Category: Category(v), Procedure: proc, Criticality: crit, IEs: make([]IE, 0, n)}
+	for i := int64(0); i < n; i++ {
+		id, e := aper.DecodeConstrainedWholeNumber(br, 0, 65535)
+		if e != nil {
+			return PDU{}, e
+		}
+		c, e := aper.DecodeCriticality(br)
+		if e != nil {
+			return PDU{}, e
+		}
+		value, e := aper.ReadOpenType(br)
+		if e != nil {
+			return PDU{}, e
+		}
+		p.IEs = append(p.IEs, IE{ID: uint16(id), Criticality: c, Value: value, Known: knownIE(uint16(id))})
+	}
+	if br.Remaining() > 7 {
+		return PDU{}, fmt.Errorf("lcs-ap: trailing procedure data")
+	}
+	return p, nil
+}
+func Encode(p PDU) ([]byte, error) {
+	if p.Category > Unsuccessful {
+		return nil, fmt.Errorf("lcs-ap: invalid PDU category")
+	}
+	bw := aper.NewBitWriter()
+	if err := aper.EncodeConstrainedWholeNumber(bw, int64(len(p.IEs)), 0, 65535); err != nil {
+		return nil, err
+	}
+	for _, ie := range p.IEs {
+		if err := aper.EncodeConstrainedWholeNumber(bw, int64(ie.ID), 0, 65535); err != nil {
+			return nil, err
+		}
+		aper.EncodeCriticality(bw, ie.Criticality)
+		aper.WriteOpenType(bw, ie.Value)
+	}
+	w := aper.NewBitWriter()
+	w.WriteBits(uint64(p.Category), 2)
+	w.WriteOctet(p.Procedure)
+	aper.EncodeCriticality(w, p.Criticality)
+	aper.WriteOpenType(w, bw.Bytes())
+	return w.Bytes(), nil
+}
+func knownIE(id uint16) bool {
+	switch id {
+	case IECorrelationID, IEECGI, IELCSCause, IELocationEstimate, IELocationType:
+		return true
+	}
+	return false
+}
+func correlation(p PDU) ([]byte, error) {
+	for _, ie := range p.IEs {
+		if ie.ID == IECorrelationID {
+			if len(ie.Value) != 4 {
+				return nil, fmt.Errorf("lcs-ap: invalid correlation ID")
+			}
+			return append([]byte(nil), ie.Value...), nil
+		}
+	}
+	return nil, fmt.Errorf("lcs-ap: missing correlation ID")
+}

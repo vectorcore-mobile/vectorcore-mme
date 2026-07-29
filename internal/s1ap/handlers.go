@@ -33,6 +33,11 @@ type NASTransport interface {
 	SendInitialContextSetup(mmeUEID uint32, nasPDU []byte, bearer *BearerInfo) error
 }
 
+type LPPaSink interface {
+	HandleUplinkLPPa(uint32, uint8, []byte) error
+}
+type LPPSink interface{ HandleUplinkLPP(uint32, []byte) error }
+
 // S11Client is the interface the S1AP layer uses to drive GTPv2-C S11 sessions.
 // Implemented by internal/gtpv2/s11.Client. NoopS11Client is retained for unit tests.
 type S11Client interface {
@@ -170,6 +175,10 @@ type Server struct {
 	pwsTransactionBases            map[string]struct{} // in-flight CBC/procedure/warning identities
 	pwsIndication                  func(peer string, payload []byte)
 	pwsForward                     func(procedure uint8, ies []pdu.ProtocolIE)
+	lppaSink                       LPPaSink
+	lppSink                        LPPSink
+	lppPendingMu                   sync.Mutex
+	lppPending                     map[uint32][][]byte
 }
 
 // NewServer creates a new S1AP Server.
@@ -205,6 +214,7 @@ func NewServer(
 		emmTimersCfg:        emmTimersCfg,
 		pagingCfg:           pagingCfg,
 		operCfg:             operCfg,
+		lppPending:          make(map[uint32][][]byte),
 		store:               store,
 		ueManager:           ueManager,
 		enbTracker:          enbTracker,
@@ -474,6 +484,8 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleInitialUEMessage(remoteAddr, p, ies)
 	case pdu.ProcUplinkNASTransport:
 		s.handleUplinkNASTransport(remoteAddr, p, ies)
+	case pdu.ProcUplinkUEAssociatedLPPaTransport:
+		s.handleUplinkLPPa(remoteAddr, ies)
 	case pdu.ProcUEContextReleaseRequest:
 		s.handleUEContextReleaseRequest(remoteAddr, p, ies)
 	case pdu.ProcUECapabilityInfoIndication:
@@ -613,6 +625,9 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 			ue.ENBU_TEID = 0
 			ue.ENBU_IP = nil
 			ue.Unlock()
+			// The old S1 binding is gone. A pending LPP NAS PDU must not be
+			// delivered through a later, unrelated service resumption.
+			s.ClearPendingLPP(mmeID)
 			s.log.Info("s1ap: preserving UE EPS context on eNB disconnect",
 				zap.String("imsi", imsi),
 				zap.Uint32("mme_ue_id", mmeID),
@@ -641,6 +656,7 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 			zap.String("remote", remoteAddr))
 
 		s.sendDeleteSession(ue) // idempotent: no-op if SGWC_TEID == 0
+		s.ClearPendingLPP(mmeID)
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
 		s.ueManager.Remove(ue)
 		evicted++
@@ -671,10 +687,12 @@ func (s *Server) Shutdown(ctx context.Context) {
 		default:
 		}
 		ue.Lock()
+		mmeUEID := ue.MMEUES1APID
 		wasAttached := ue.EMMState == emm.StateRegistered ||
 			(ue.EMMState == emm.StateTrackingAreaUpdating && ue.SGWC_TEID != 0)
 		ue.StopAllTimers()
 		ue.Unlock()
+		s.ClearPendingLPP(mmeUEID)
 
 		s.sendDeleteSession(ue)
 		s.ueManager.Remove(ue)

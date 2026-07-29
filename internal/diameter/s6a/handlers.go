@@ -20,6 +20,7 @@ import (
 	"github.com/vectorcore/mme/internal/diameter/peer"
 	"github.com/vectorcore/mme/internal/diameter/s13"
 	"github.com/vectorcore/mme/internal/diameter/sgd"
+	"github.com/vectorcore/mme/internal/diameter/slg"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
 	smsservice "github.com/vectorcore/mme/internal/sms"
@@ -54,14 +55,20 @@ type Handlers struct {
 
 	peers *peer.Manager
 
-	pendingAIR sync.Map // sessionID string → uint32 (mmeUEID)
-	pendingULR sync.Map // sessionID string → uint32 (mmeUEID)
-	pendingS13 sync.Map // sessionID string → pendingS13
-	pendingOFR sync.Map // sessionID string → chan sgd.MOAnswer
-	pendingALR sync.Map // sessionID string → chan uint32
-	mtResults  sync.Map // exact inbound TFR identity -> cachedMTResult
-	s13Cfg     config.S13Config
-	sgdCfg     config.SGdConfig
+	pendingAIR  sync.Map // sessionID string → uint32 (mmeUEID)
+	pendingULR  sync.Map // sessionID string → uint32 (mmeUEID)
+	pendingS13  sync.Map // sessionID string → pendingS13
+	pendingOFR  sync.Map // sessionID string → chan sgd.MOAnswer
+	pendingALR  sync.Map // sessionID string → chan uint32
+	mtResults   sync.Map // exact inbound TFR identity -> cachedMTResult
+	s13Cfg      config.S13Config
+	sgdCfg      config.SGdConfig
+	slgCfg      config.SLgConfig
+	slgTx       *slgTransactions
+	pendingLRA  sync.Map // Session-Id -> chan error
+	slsProvider interface {
+		RequestPosition(context.Context, string, uint32, []byte) ([]byte, error)
+	}
 
 	sessionSeq atomic.Uint64
 }
@@ -105,6 +112,7 @@ func NewHandlers(
 		nas:         nas,
 		log:         log,
 		settings:    settings,
+		slgTx:       newSLgTransactions(1024),
 	}
 	h.peers = peer.New(diameterCfg, log, h.buildMux)
 	return h
@@ -130,11 +138,31 @@ func (h *Handlers) SetS13Enabled(enabled bool) { h.peers.SetS13Enabled(enabled) 
 // connections. Request handlers are installed by the SMS service when enabled.
 func (h *Handlers) SetSGdEnabled(enabled bool) { h.peers.SetSGdEnabled(enabled) }
 
+// SetSLgEnabled controls SLg capability advertisement and request handling.
+func (h *Handlers) SetSLgEnabled(enabled bool) { h.peers.SetSLgEnabled(enabled) }
+
 // SetS13Config installs the top-level S13 policy before Start.
 func (h *Handlers) SetS13Config(cfg config.S13Config) { h.s13Cfg = cfg }
 
 // SetSGdConfig installs SMS-in-MME settings before Start.
 func (h *Handlers) SetSGdConfig(cfg config.SGdConfig) { h.sgdCfg = cfg }
+
+// SetSLgConfig installs bounded SLg procedure policy before Start.
+func (h *Handlers) SetSLgConfig(cfg config.SLgConfig) {
+	h.slgCfg = cfg
+	h.slgTx = newSLgTransactions(cfg.TransactionCapacity)
+}
+
+// SetSLsProvider installs the optional E-SMLC transaction boundary before
+// Diameter starts. Nil restores explicit positioning-unavailable behaviour.
+func (h *Handlers) SetSLsProvider(provider interface {
+	RequestPosition(context.Context, string, uint32, []byte) ([]byte, error)
+}) {
+	h.slsProvider = provider
+}
+
+// ShutdownSLg deterministically cancels outstanding no-state transactions.
+func (h *Handlers) ShutdownSLg() { h.slgTx.Close() }
 
 // S13Enabled reports whether the equipment-check client is enabled for attach.
 func (h *Handlers) S13Enabled() bool { return h.s13Cfg.Enabled && h.s13Cfg.CheckOnAttach }
@@ -189,6 +217,10 @@ func (h *Handlers) buildMux(onCER diam.HandlerFunc) *sm.StateMachine {
 	}
 	if h.s13Cfg.Enabled {
 		mux.HandleIdx(diam.CommandIndex{AppID: s13.ApplicationID, Code: s13.CommandCode, Request: false}, diam.HandlerFunc(h.handleECA))
+	}
+	if h.slgCfg.Enabled {
+		mux.HandleIdx(diam.CommandIndex{AppID: slg.ApplicationID, Code: slg.CommandProvideLocation, Request: true}, diam.HandlerFunc(h.handlePLR))
+		mux.HandleIdx(diam.CommandIndex{AppID: slg.ApplicationID, Code: slg.CommandLocationReport, Request: false}, diam.HandlerFunc(h.handleLRA))
 	}
 	mux.HandleFunc("DPR", diam.HandlerFunc(h.handleDPR))
 	mux.HandleFunc("ALL", diam.HandlerFunc(func(c diam.Conn, m *diam.Message) {

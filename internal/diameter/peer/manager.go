@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -75,6 +76,7 @@ type Manager struct {
 	peers      []*record
 	s13Enabled bool
 	sgdEnabled bool
+	slgEnabled bool
 }
 
 func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
@@ -92,6 +94,10 @@ func (m *Manager) SetS13Enabled(enabled bool) { m.s13Enabled = enabled }
 // SetSGdEnabled selects whether newly negotiated CER/CEA capabilities include
 // the SGd application. It must be called before Start.
 func (m *Manager) SetSGdEnabled(enabled bool) { m.sgdEnabled = enabled }
+
+// SetSLgEnabled selects whether CER/CEA advertises the 3GPP SLg application.
+// It must be called before Start.
+func (m *Manager) SetSLgEnabled(enabled bool) { m.slgEnabled = enabled }
 
 // Start maintains every configured outbound peer and optional listeners.
 // It blocks for the process lifetime, like the previous S6a transport loop.
@@ -155,12 +161,16 @@ func (m *Manager) client(mux *sm.StateMachine) *sm.Client {
 	const appS6a = 16777251
 	const appS13 = 16777252
 	const appSGd = 16777313
+	const appSLg = 16777255
 	apps := []*diam.AVP{vendorSpecificAuthApplication(vendor3GPP, appS6a)}
 	if m.s13Enabled {
 		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appS13))
 	}
 	if m.sgdEnabled {
 		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appSGd))
+	}
+	if m.slgEnabled {
+		apps = append(apps, vendorSpecificAuthApplication(vendor3GPP, appSLg))
 	}
 	return &sm.Client{Dict: dict.Default, Handler: mux, MaxRetransmits: 3, RetransmitInterval: time.Second, EnableWatchdog: true, WatchdogInterval: 5 * time.Second,
 		SupportedVendorID:           []*diam.AVP{diam.NewAVP(avp.SupportedVendorID, avp.Mbit, 0, datatype.Unsigned32(vendor3GPP))},
@@ -413,6 +423,39 @@ func (m *Manager) SelectPeer(app uint32, realm string) (*Peer, error) {
 	}
 	m.log.Info("diameter: selected peer", zap.Uint32("requested_app", app), zap.String("destination_realm", realm), zap.String("selected_peer", result.Name), zap.String("selection_type", kind), zap.Int("priority", priority), zap.Int("config_order", result.ConfigOrder), zap.String("reason", "direct application route preferred over relay; priority/config order breaks ties"))
 	return result, nil
+}
+
+// SelectPeerForDestination honours an explicit Destination-Host. It selects a
+// direct peer only when that peer is the addressed host and advertises app;
+// otherwise a relay is permitted to carry the request.
+func (m *Manager) SelectPeerForDestination(app uint32, realm, destinationHost string) (*Peer, error) {
+	if destinationHost == "" {
+		return m.SelectPeer(app, realm)
+	}
+	m.mu.RLock()
+	var direct, relay []*record
+	for _, p := range m.peers {
+		if p.state != Ready || p.conn == nil {
+			continue
+		}
+		if p.apps[app] && strings.EqualFold(p.originHost, destinationHost) {
+			direct = append(direct, p)
+		} else if p.apps[RelayApplicationID] {
+			relay = append(relay, p)
+		}
+	}
+	m.mu.RUnlock()
+	candidates := direct
+	kind := "direct-exact-host"
+	if len(candidates) == 0 {
+		candidates, kind = relay, "relay"
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no Diameter peer available for app=%d realm=%s destination_host=%s", app, realm, destinationHost)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool { return before(candidates[i], candidates[j]) })
+	p := candidates[0]
+	return &Peer{Name: p.config.Name, Address: p.config.Address, Transport: p.config.Transport, OriginHost: p.originHost, OriginRealm: p.originRealm, Priority: p.config.Priority, ConfigOrder: p.order, SelectionType: kind, DestinationHost: destinationHost, Connection: p.conn}, nil
 }
 
 func before(a, b *record) bool {

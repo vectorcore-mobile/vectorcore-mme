@@ -361,6 +361,7 @@ func (s *Server) HandleCreateBearerRequest(peer string, req *gtpv2.CreateBearerR
 }
 
 func (s *Server) ResumePendingNetworkBearerProcedures(ue *uecontext.Context) {
+	s.ResumePendingLPP(ue)
 	ue.Lock()
 	var keys []string
 	var imsi string
