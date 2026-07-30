@@ -131,6 +131,9 @@ func (s *Server) handleServiceRequest(
 	ecmState := realUE.ECMState
 	releasePending := realUE.S1ReleasePending
 	releaseENBID := realUE.S1ReleaseENBID
+	boundENBUEID := realUE.ENBS1APID
+	boundENBAddr := realUE.ENBGlobalID
+	bindingGeneration := realUE.S1BindingGeneration
 	realMmeUEID := realUE.MMEUES1APID
 	imsi := realUE.IMSI
 	attachStep := realUE.AttachStep
@@ -153,6 +156,7 @@ func (s *Server) handleServiceRequest(
 		zap.Uint32("s1_release_enb_ue_id", releaseENBID))
 
 	resumePending := attachStep == uecontext.AttachStepWaitingICSRespSR
+	incomingDifferentBinding := boundENBUEID != enbUEID || boundENBAddr != enbAddr
 
 	// Validate UE state.
 	if emmState != emm.StateRegistered && !resumePending {
@@ -160,10 +164,20 @@ func (s *Server) handleServiceRequest(
 		reject(emm.CauseImplicitlyDetached)
 		return
 	}
-	if ecmState != emm.ECMIdle && !resumePending {
-		log.Warn("s1ap: ServiceRequest: UE already ECM-Connected")
-		reject(emm.CauseUEIdentityCannotBeDerived)
+	if ecmState != emm.ECMIdle && !resumePending && !incomingDifferentBinding {
+		log.Warn("s1ap: ServiceRequest: UE already ECM-Connected on current S1 binding")
+		// The S-TMSI was resolved above, so cause 9 (identity cannot be
+		// derived) is not valid for a same-binding duplicate.
+		reject(emm.CauseNetworkFailure)
 		return
+	}
+	if ecmState == emm.ECMConnected && incomingDifferentBinding {
+		log.Info("s1ap: ServiceRequest arrived on different S1 binding",
+			zap.Uint32("old_enb_ue_id", boundENBUEID),
+			zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.String("old_remote", boundENBAddr),
+			zap.String("new_remote", enbAddr),
+			zap.Uint64("old_binding_generation", bindingGeneration))
 	}
 	if defaultEBI == 0 || sgwUTEID == 0 {
 		log.Warn("s1ap: ServiceRequest: no active bearer")
@@ -208,82 +222,57 @@ func (s *Server) handleServiceRequest(
 
 	if resumePending {
 		realUE.Lock()
-		realUE.StopTimer(uecontext.TimerT3413)
-		oldENBUEID := realUE.ENBS1APID
-		oldENBAddr := realUE.ENBGlobalID
-		oldBindingGeneration := realUE.S1BindingGeneration
-		realUE.ENBS1APID = enbUEID
-		realUE.ENBGlobalID = enbAddr
-		realUE.S1BindingGeneration++
-		realUE.S1BindingState = uecontext.S1BindingActive
-		if tai != nil {
-			realUE.TAI = emmTAIFromS1AP(tai)
-		}
-		realUE.ULNASCount = security.NASCount(reconstructedCount)
-		realUE.SetEMMState(emm.StateServiceRequestInitiated)
-		realUE.AttachStep = uecontext.AttachStepWaitingICSRespSR
-		resumeBearers, resumeErr := s.serviceRequestResumeBearersLocked(realUE)
-		if resumeErr == nil && len(resumeBearers) > 0 {
-			if err := s.createASSecuritySnapshotLocked(realUE, "service_request"); err != nil {
-				realUE.AttachStep = uecontext.AttachStepNone
-				realUE.Unlock()
-				s.ueManager.Remove(tempUE)
-				log.Warn("s1ap: duplicate Service Request AS security snapshot failed", zap.Error(err))
-				s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
-				metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
-				return
-			}
-		}
-		if resumeErr == nil {
-			s.logServiceRequestResumeSelectionLocked(realUE, "duplicate_retransmit", resumeBearers)
-		}
-		newBindingGeneration := realUE.S1BindingGeneration
+		currentENBUEID := realUE.ENBS1APID
+		currentENBAddr := realUE.ENBGlobalID
+		currentGeneration := realUE.S1BindingGeneration
 		realUE.Unlock()
-		s.noteDDNServiceRequest(realUE, enbUEID, newBindingGeneration)
-
 		s.ueManager.Remove(tempUE)
-		if resumeErr != nil {
-			log.Warn("s1ap: duplicate ServiceRequest resume rejected due to incomplete retained bearer policy", zap.Error(resumeErr))
-			realUE.Lock()
-			realUE.SetEMMState(emm.StateRegistered)
-			realUE.SetECMState(emm.ECMIdle)
-			realUE.AttachStep = uecontext.AttachStepNone
-			realUE.Unlock()
+		if currentENBUEID != enbUEID || currentENBAddr != enbAddr {
+			log.Warn("s1ap: ServiceRequest ignored; another binding resume is already in progress",
+				zap.Uint32("winning_enb_ue_id", currentENBUEID),
+				zap.String("winning_remote", currentENBAddr),
+				zap.Uint64("winning_binding_generation", currentGeneration))
 			s.sendServiceReject(realMmeUEID, enbUEID, enbAddr, emm.CauseNetworkFailure)
 			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
 			return
 		}
-
-		log.Info("s1ap: duplicate ServiceRequest resume rebound; retransmitting ICS",
-			zap.String("imsi", imsi),
-			zap.Uint32("old_enb_ue_id", oldENBUEID),
-			zap.Uint32("new_enb_ue_id", enbUEID),
-			zap.String("old_remote", oldENBAddr),
-			zap.String("new_remote", enbAddr),
-			zap.Uint64("old_binding_generation", oldBindingGeneration),
-			zap.Uint64("new_binding_generation", newBindingGeneration),
-			zap.Int("resume_bearer_count", len(resumeBearers)))
-		if err := s.SendInitialContextSetupWithBearers(realMmeUEID, nil, resumeBearers); err != nil {
-			log.Error("s1ap: duplicate ServiceRequest retransmit failed", zap.Error(err))
-			realUE.Lock()
-			realUE.SetEMMState(emm.StateRegistered)
-			realUE.SetECMState(emm.ECMIdle)
-			realUE.AttachStep = uecontext.AttachStepNone
-			realUE.Unlock()
-			metrics.NASProceduresTotal.WithLabelValues("ServiceRequest", "reject").Inc()
-		}
+		log.Info("s1ap: duplicate ServiceRequest ignored; ICS resume already pending",
+			zap.Uint64("binding_generation", currentGeneration))
 		return
 	}
 
 	// Transfer S1AP context from tempUE to the real UE.
 	realUE.Lock()
 	realUE.StopTimer(uecontext.TimerT3413)
+	oldENBUEID := realUE.ENBS1APID
+	oldENBAddr := realUE.ENBGlobalID
+	oldBindingGeneration := realUE.S1BindingGeneration
+	obsoleteRelease := oldENBUEID != 0 && oldENBAddr != "" &&
+		(oldENBUEID != enbUEID || oldENBAddr != enbAddr)
+	if obsoleteRelease {
+		realUE.ObsoleteS1Release = &uecontext.ObsoleteS1BindingRelease{
+			MMEUES1APID:       realUE.MMEUES1APID,
+			ENBS1APID:         oldENBUEID,
+			ENBAddr:           oldENBAddr,
+			BindingGeneration: oldBindingGeneration,
+			CleanupGeneration: oldBindingGeneration + 1,
+			Deadline:          time.Now().Add(30 * time.Second),
+		}
+	}
 	// PagingAttempts is NOT cleared here — handleServiceRequestReestablished reads it
 	// to increment the paging-success metric, then clears it.
 	realUE.ENBS1APID = enbUEID
 	realUE.ENBGlobalID = enbAddr
 	realUE.S1BindingGeneration++
 	realUE.S1BindingState = uecontext.S1BindingActive
+	if obsoleteRelease {
+		// A release that belongs to the superseded access context must not
+		// delay or mutate this authenticated replacement binding.
+		realUE.S1ReleasePending = false
+		realUE.S1ReleaseENBID = 0
+		realUE.S1ReleaseENBAddr = ""
+		realUE.S1ReleaseGeneration = 0
+	}
 	if tai != nil {
 		realUE.TAI = emmTAIFromS1AP(tai)
 	}
@@ -307,6 +296,16 @@ func (s *Server) handleServiceRequest(
 	newBindingGeneration := realUE.S1BindingGeneration
 	realUE.Unlock()
 	s.noteDDNServiceRequest(realUE, enbUEID, newBindingGeneration)
+	if obsoleteRelease {
+		log.Info("s1ap: authenticated S1 binding replacement reserved",
+			zap.Uint32("old_enb_ue_id", oldENBUEID), zap.Uint32("new_enb_ue_id", enbUEID),
+			zap.String("old_remote", oldENBAddr), zap.String("new_remote", enbAddr),
+			zap.Uint64("old_binding_generation", oldBindingGeneration),
+			zap.Uint64("new_binding_generation", newBindingGeneration))
+		s.sendUEContextReleaseCommand(oldENBAddr, realMmeUEID, oldENBUEID)
+		s.scheduleObsoleteS1BindingCleanup(realUE, oldBindingGeneration)
+		releasePending = false
+	}
 
 	// Remove the temporary UE — its only purpose was to carry the S1AP IDs.
 	s.ueManager.Remove(tempUE)

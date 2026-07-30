@@ -153,6 +153,8 @@ func TestHandleServiceRequest_AlreadyConnected(t *testing.T) {
 	// Override: UE already ECM-CONNECTED
 	realUE.Lock()
 	realUE.ECMState = emm.ECMConnected
+	realUE.ENBS1APID = 102
+	realUE.S1BindingState = uecontext.S1BindingActive
 	realUE.Unlock()
 
 	tempUE := srv.ueManager.Allocate()
@@ -174,7 +176,7 @@ func TestHandleServiceRequest_AlreadyConnected(t *testing.T) {
 	}
 }
 
-func TestHandleServiceRequest_DuplicatePendingResumeRebindsAndRetransmitsICS(t *testing.T) {
+func TestHandleServiceRequest_DuplicatePendingResumeDoesNotReplaceWinningBinding(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.0.0.12b:36412"
 	ch := setupSendCapture(srv, addr)
@@ -218,22 +220,15 @@ func TestHandleServiceRequest_DuplicatePendingResumeRebindsAndRetransmitsICS(t *
 	srv.handleServiceRequest(tempUE2, mmec, mtmsi, nil, true, nil, buildSRPDU(2))
 
 	select {
-	case second := <-ch:
-		msg, err := pdu.Decode(second)
-		if err != nil {
-			t.Fatalf("decode retransmitted ICS PDU: %v", err)
-		}
-		if msg.Type != pdu.PDUTypeInitiatingMessage || msg.ProcedureCode != pdu.ProcInitialContextSetup {
-			t.Fatalf("retransmit PDU got type=%s proc=%d, want InitialContextSetup", msg.Type, msg.ProcedureCode)
-		}
+	case <-ch: // Service Reject for the losing binding is expected.
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("no retransmitted Initial Context Setup sent for duplicate Service Request")
+		t.Fatal("no response sent for Service Request while another resume is pending")
 	}
 
 	realUE.Lock()
 	defer realUE.Unlock()
-	if realUE.ENBS1APID != 203 {
-		t.Fatalf("ENBS1APID got %d, want 203", realUE.ENBS1APID)
+	if realUE.ENBS1APID != 202 {
+		t.Fatalf("ENBS1APID got %d, want 202", realUE.ENBS1APID)
 	}
 	if realUE.AttachStep != uecontext.AttachStepWaitingICSRespSR {
 		t.Fatalf("AttachStep got %d, want WaitingICSRespSR", realUE.AttachStep)
@@ -241,20 +236,63 @@ func TestHandleServiceRequest_DuplicatePendingResumeRebindsAndRetransmitsICS(t *
 	if realUE.EMMState != emm.StateServiceRequestInitiated {
 		t.Fatalf("EMMState got %v, want ServiceRequestInitiated", realUE.EMMState)
 	}
-	if realUE.S1BindingGeneration != firstBindingGeneration+1 {
-		t.Fatalf("S1BindingGeneration got %d, want %d", realUE.S1BindingGeneration, firstBindingGeneration+1)
+	if realUE.S1BindingGeneration != firstBindingGeneration {
+		t.Fatalf("S1BindingGeneration got %d, want %d", realUE.S1BindingGeneration, firstBindingGeneration)
 	}
-	if realUE.KeNBSnapshotGeneration != realUE.S1BindingGeneration {
-		t.Fatalf("KeNBSnapshotGeneration got %d, want %d", realUE.KeNBSnapshotGeneration, realUE.S1BindingGeneration)
+	if realUE.KeNBSnapshotGeneration != firstSnapshotGeneration || realUE.KeNBULCount != firstSnapshotULCount || !bytes.Equal(realUE.KeNB, firstSnapshotKey) {
+		t.Fatal("losing Service Request altered the winning AS security snapshot")
 	}
-	if realUE.KeNBULCount != uint32(realUE.ULNASCount) {
-		t.Fatalf("KeNBULCount got %d, want current ULNASCount %d", realUE.KeNBULCount, uint32(realUE.ULNASCount))
+}
+
+func TestHandleServiceRequest_AuthenticatedReplacementFromECMConnectedBinding(t *testing.T) {
+	srv := newTAUTestServer()
+	const oldAddr = "10.0.0.120:36412"
+	const newAddr = "10.0.0.121:36412"
+	oldCh := setupSendCapture(srv, oldAddr)
+	newCh := setupSendCapture(srv, newAddr)
+
+	realUE, mmec, mtmsi := makeRegisteredIdleUE(srv, oldAddr)
+	realUE.Lock()
+	realUE.ECMState = emm.ECMConnected
+	realUE.ENBS1APID = 120
+	realUE.S1BindingGeneration = 4
+	realUE.S1BindingState = uecontext.S1BindingActive
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 121
+	tempUE.ENBGlobalID = newAddr
+	tempUE.Unlock()
+
+	srv.handleServiceRequest(tempUE, mmec, mtmsi, nil, true, nil, buildSRPDU(1))
+
+	select {
+	case raw := <-newCh:
+		msg, err := pdu.Decode(raw)
+		if err != nil || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("new binding response got msg=%+v err=%v, want InitialContextSetup", msg, err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no ICS resume sent on authenticated replacement binding")
 	}
-	if realUE.KeNBSnapshotGeneration == firstSnapshotGeneration && realUE.KeNBULCount == firstSnapshotULCount {
-		t.Fatal("duplicate Service Request reused stale AS security snapshot")
+	select {
+	case raw := <-oldCh:
+		msg, err := pdu.Decode(raw)
+		if err != nil || msg.ProcedureCode != pdu.ProcUEContextRelease {
+			t.Fatalf("old binding response got msg=%+v err=%v, want UEContextRelease", msg, err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no release sent for superseded binding")
 	}
-	if bytes.Equal(realUE.KeNB, firstSnapshotKey) {
-		t.Fatal("duplicate Service Request kept previous KeNB snapshot")
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if realUE.ENBS1APID != 121 || realUE.ENBGlobalID != newAddr || realUE.S1BindingGeneration != 5 {
+		t.Fatalf("replacement binding not installed: enb=%d remote=%q generation=%d", realUE.ENBS1APID, realUE.ENBGlobalID, realUE.S1BindingGeneration)
+	}
+	if obsolete := realUE.ObsoleteS1Release; obsolete == nil || obsolete.ENBS1APID != 120 || obsolete.BindingGeneration != 4 {
+		t.Fatalf("obsolete binding record got %+v", obsolete)
 	}
 }
 
