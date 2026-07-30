@@ -443,6 +443,14 @@ func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU
 
 	ue.Lock()
 	attachStep := ue.AttachStep
+	if !isResumeICSAttachStep(attachStep) &&
+		(ue.S1BindingState != uecontext.S1BindingActive || ue.ENBGlobalID != remoteAddr || ue.ENBS1APID != enbUEID) {
+		bindingGeneration := ue.S1BindingGeneration
+		ue.Unlock()
+		log.Debug("s1ap: Initial Context Setup Response ignored for stale S1 binding",
+			zap.Uint64("s1_binding_generation", bindingGeneration))
+		return
+	}
 	ue.SetECMState(emm.ECMConnected)
 	for _, setup := range erabSetups {
 		if setup.ENBUTEID == 0 {
@@ -508,8 +516,12 @@ func (s *Server) handleInitialContextSetupResponse(remoteAddr string, p *pdu.PDU
 		s.handleServiceRequestReestablished(ue, log)
 	} else if isTAUActiveResumeStep(attachStep) {
 		s.handleActiveTAUReestablished(ue, log)
+	} else {
+		// Attach Complete and this response are independent events. If NAS
+		// activation arrived first, this successful E-RAB result is the final
+		// prerequisite for the initial access Modify Bearer procedure.
+		s.tryStartInitialAccessModifyBearer(ue, "initial-context-setup-response")
 	}
-	// For the attach path, MBR is sent after Attach Complete (TS 23.401 step 19).
 }
 
 type icsResponseERABSetup struct {

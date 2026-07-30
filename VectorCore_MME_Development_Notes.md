@@ -19,6 +19,9 @@
 | **Sm**            | MBMS-GW              | MBMS session-control signaling                                             | Not implemented                      | MBMS session-start, stop, and service-area support                               | Very Low     |
 | **S102**          | 3GPP2 1xCS IWS       | CDMA2000 circuit-switched fallback interworking                            | Out of scope                         | CDMA2000 interworking                                                            | Out of Scope |
 
+
+### planned feature:  NB-Iot/LTE-M, N26 interface, full 5G-NSA support. 
+
 ### 1.1 S3 — SGSN Interworking
 
 The MME-facing SGSN interface is specifically **S3**.

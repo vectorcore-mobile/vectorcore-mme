@@ -9,7 +9,8 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **NAS** - full EMM/ESM encode/decode with EIA0/1/2 integrity and EEA0/1/2 ciphering (null, SNOW 3G, AES)
 - **S6a** - AIR, ULR, CLR, IDR to VectorCore HSS over Diameter
 - **S13 / EIR** - conditional Equipment-Check (ECR/ECA) for IMEI/IMEISV validation during attach
-- **SLg** - disabled-by-default TS 29.172 Diameter PLR/PLA and LRR/LRA wire support; positioning execution is explicitly unavailable until SLs/E-SMLC support is added
+- **SLg** - disabled-by-default TS 29.172 Diameter PLR/PLA and LRR/LRA wire support
+- **SLs / E-SMLC** - optional TS 29.171 SCTP/LCS-AP positioning interface, including bounded SLg location transactions and transparent UE-associated LPP/LPPa relay
 - **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S8HR roaming** - verified HPLMN/VPLMN admission, home-HSS S6a routing, visited-SGW selection, and home-PGW selection over S8
@@ -63,6 +64,7 @@ Key fields:
 | `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
 | `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
 | `slg.*` | Optional SLg Diameter application enablement and bounded in-memory transaction lifetime |
+| `sls.*` | Optional outbound E-SMLC SCTP association, positioning transaction limits, and LCS-AP PDU size limit |
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
 | `*.qos.dscp` | Optional fixed outbound control-plane DSCP (0–63); `24` is CS3 |

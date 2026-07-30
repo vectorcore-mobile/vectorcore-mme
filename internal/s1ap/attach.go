@@ -1017,13 +1017,6 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	mmeUEID := ue.MMEUES1APID
 	imsi := ue.IMSI
 
-	// Snapshot for MBR (sent after Attach Complete per TS 23.401 step 19)
-	mbrENBUTEID := ue.ENBU_TEID
-	mbrENBUIP := append(net.IP(nil), ue.ENBU_IP...)
-	mbrSGWAddr := ue.SGWAddress
-	mbrSGWCTEID := ue.SGWC_TEID
-	mbrDefaultEBI := ue.DefaultEBI
-
 	ue.Unlock()
 
 	if attachComplete, err := emm.DecodeAttachComplete(body); err != nil {
@@ -1050,51 +1043,10 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateActiveSnapshot, "ESTABLISHED")
 
-	// Send Modify Bearer Request now that UE is registered (TS 23.401 Figure 5.6.1.3-1 step 19).
-	if mbrENBUTEID != 0 && mbrSGWCTEID != 0 && mbrDefaultEBI != 0 {
-		ue.Lock()
-		for _, pdn := range ue.PDNs {
-			if pdn == nil || pdn.DefaultEBI != mbrDefaultEBI {
-				continue
-			}
-			pdn.ModifyBearerSent = true
-			pdn.ModifyBearerAccepted = false
-			pdn.ModifyBearerFailed = false
-			if pdn.NASAccepted && pdn.ERABEstablished {
-				pdn.State = "modify-bearer-pending"
-			}
-		}
-		ue.Unlock()
-		mbr := &gtpv2.ModifyBearerRequest{
-			SGWAddress:            mbrSGWAddr,
-			SGWC_TEID:             mbrSGWCTEID,
-			EBI:                   mbrDefaultEBI,
-			ENBU_TEID:             mbrENBUTEID,
-			ENBU_IP:               mbrENBUIP,
-			RATType:               gtpv2.RATTypeEUTRAN,
-			IncludeIndicationCRSI: true,
-			OmitRATType:           true,
-		}
-		s.log.Info("s1ap: sending S11 Modify Bearer Request",
-			zap.Uint32("mme_ue_id", mmeUEID),
-			zap.Uint8("ebi", mbrDefaultEBI),
-			zap.String("sgw_s11_addr", mbrSGWAddr),
-			zap.Uint32("sgwc_teid", mbrSGWCTEID),
-			zap.Uint32("enb_s1u_teid", mbrENBUTEID),
-			zap.String("enb_s1u_ipv4", mbrENBUIP.String()))
-		go func() {
-			if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
-				s.log.Warn("s1ap: SendMBR failed on Attach Complete", zap.Error(err))
-			}
-		}()
-	} else {
-		s.log.Warn("s1ap: skipping S11 Modify Bearer Request after Attach Complete",
-			zap.Uint32("mme_ue_id", mmeUEID),
-			zap.Uint32("enb_s1u_teid", mbrENBUTEID),
-			zap.String("enb_s1u_ipv4", mbrENBUIP.String()),
-			zap.Uint32("sgwc_teid", mbrSGWCTEID),
-			zap.Uint8("ebi", mbrDefaultEBI))
-	}
+	// TS 23.401 Figure 5.6.1.3-1 step 19. The ICS response and Attach
+	// Complete can arrive in either order, so this only starts the procedure
+	// once both independently-recorded prerequisites are present.
+	s.tryStartInitialAccessModifyBearer(ue, "attach-complete")
 
 	if s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterAttach {
 		if shouldDeferAttachEMMInformation(ue) {
@@ -1107,6 +1059,86 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 	}
 
 	return nil
+}
+
+// tryStartInitialAccessModifyBearer atomically starts the initial default-bearer
+// S11 Modify Bearer procedure once NAS activation and the ICS E-RAB result are
+// both available. Call it after either event; the PDN transaction flags make it
+// safe for duplicate or concurrent notifications.
+func (s *Server) tryStartInitialAccessModifyBearer(ue *uecontext.Context, trigger string) {
+	ue.Lock()
+	mmeUEID := ue.MMEUES1APID
+	bindingGeneration := ue.S1BindingGeneration
+	defaultEBI := ue.DefaultEBI
+	var pdn *uecontext.PDNContext
+	for _, candidate := range ue.PDNs {
+		if candidate != nil && candidate.DefaultEBI == defaultEBI {
+			pdn = candidate
+			break
+		}
+	}
+
+	if pdn == nil || !pdn.NASAccepted || !pdn.ERABEstablished ||
+		pdn.SGWAddress == "" || pdn.SGWC_TEID == 0 || pdn.SGWU_TEID == 0 || len(pdn.SGWU_IP) == 0 ||
+		pdn.ENBU_TEID == 0 || len(pdn.ENBU_IP) == 0 ||
+		!hasActiveS1BindingLocked(ue) {
+		fields := []zap.Field{
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("trigger", trigger),
+			zap.Uint8("ebi", defaultEBI),
+			zap.Uint64("s1_binding_generation", bindingGeneration),
+		}
+		if pdn != nil {
+			fields = append(fields,
+				zap.Bool("nas_accepted", pdn.NASAccepted),
+				zap.Bool("erab_established", pdn.ERABEstablished),
+				zap.Uint32("enb_s1u_teid", pdn.ENBU_TEID),
+				zap.String("enb_s1u_address", pdn.ENBU_IP.String()))
+		}
+		ue.Unlock()
+		s.log.Debug("s1ap: initial access Modify Bearer deferred; waiting for prerequisites", fields...)
+		return
+	}
+	if pdn.ModifyBearerSent || pdn.ModifyBearerAccepted || pdn.ModifyBearerFailed {
+		ue.Unlock()
+		return
+	}
+
+	pdn.ModifyBearerSent = true
+	pdn.ModifyBearerAccepted = false
+	pdn.ModifyBearerFailed = false
+	pdn.State = "modify-bearer-pending"
+	mbr := &gtpv2.ModifyBearerRequest{
+		SGWAddress:            pdn.SGWAddress,
+		SGWC_TEID:             pdn.SGWC_TEID,
+		EBI:                   pdn.DefaultEBI,
+		ENBU_TEID:             pdn.ENBU_TEID,
+		ENBU_IP:               append([]byte(nil), pdn.ENBU_IP...),
+		RATType:               gtpv2.RATTypeEUTRAN,
+		IncludeIndicationCRSI: true,
+		OmitRATType:           true,
+	}
+	sgwS1UIP := append([]byte(nil), pdn.SGWU_IP...)
+	sgwS1UTEID := pdn.SGWU_TEID
+	ue.Unlock()
+
+	s.log.Info("s1ap: sending initial access S11 Modify Bearer Request",
+		zap.String("trigger", trigger),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint8("ebi", mbr.EBI),
+		zap.String("sgw_s11_addr", mbr.SGWAddress),
+		zap.Uint32("sgwc_teid", mbr.SGWC_TEID),
+		zap.String("sgw_s1u_address", net.IP(sgwS1UIP).String()),
+		zap.Uint32("sgw_s1u_teid", sgwS1UTEID),
+		zap.String("enb_s1u_address", mbr.ENBU_IP.String()),
+		zap.Uint32("enb_s1u_teid", mbr.ENBU_TEID),
+		zap.String("transaction_state", "modify-bearer-pending"),
+		zap.Uint64("s1_binding_generation", bindingGeneration))
+	go func() {
+		if err := s.s11.SendMBR(mmeUEID, mbr); err != nil {
+			s.log.Warn("s1ap: SendMBR failed for initial access", zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
+		}
+	}()
 }
 
 func (s *Server) confirmAuthenticatedIdentityOwnership(ue *uecontext.Context, log *zap.Logger) {
