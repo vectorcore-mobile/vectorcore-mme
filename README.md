@@ -21,6 +21,11 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **Gateway selection** - DNS NAPTR-based S-GW/P-GW selection with static fallback and in-memory cache controls
 - **APER codec** - hand-written, reflection-driven; no external ASN.1 library
 
+## Planed Features:
+- SGs-AP - MME to MSC SMSoSGS/CSFB 
+- N26 interface - MME to AMF GTP-C
+- Full EN-DC 5G NSA
+- NB-IoT/LTE-M - Starting with Standard LTE data path, HSS needs some rework for this.
 ## Requirements
 
 - Go 1.22+
