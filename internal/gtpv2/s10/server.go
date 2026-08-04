@@ -87,6 +87,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// Close closes the underlying UDP socket, unblocking the receive loop in
+// Start. Safe to call even if Start hasn't run yet.
+func (s *Server) Close() error {
+	if s.conn == nil {
+		return nil
+	}
+	return s.conn.Close()
+}
+
 // LocalAddr returns "ip:port" for use in Sender F-TEID IEs. Valid after Start.
 func (s *Server) LocalAddr() string {
 	if s.conn == nil {

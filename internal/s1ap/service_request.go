@@ -250,14 +250,17 @@ func (s *Server) handleServiceRequest(
 	obsoleteRelease := oldENBUEID != 0 && oldENBAddr != "" &&
 		(oldENBUEID != enbUEID || oldENBAddr != enbAddr)
 	if obsoleteRelease {
-		realUE.ObsoleteS1Release = &uecontext.ObsoleteS1BindingRelease{
+		// A UE that reconnects faster than the eNB acknowledges a release can
+		// leave more than one superseded binding outstanding at once; each is
+		// tracked and retired independently as its own Release Complete arrives.
+		realUE.AddObsoleteS1Release(&uecontext.ObsoleteS1BindingRelease{
 			MMEUES1APID:       realUE.MMEUES1APID,
 			ENBS1APID:         oldENBUEID,
 			ENBAddr:           oldENBAddr,
 			BindingGeneration: oldBindingGeneration,
 			CleanupGeneration: oldBindingGeneration + 1,
 			Deadline:          time.Now().Add(30 * time.Second),
-		}
+		})
 	}
 	// PagingAttempts is NOT cleared here — handleServiceRequestReestablished reads it
 	// to increment the paging-success metric, then clears it.
@@ -352,7 +355,7 @@ func (s *Server) handleServiceRequest(
 	// Service Request by sending InitialContextSetupRequest without NAS-PDU.
 	// If a previous UE Context Release is still pending, wait for the release
 	// to clear rather than relying on a fixed sleep.
-	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, sendResumeICS, log)
+	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, newBindingGeneration, sendResumeICS, log)
 }
 
 func (s *Server) handleInitialUEExtendedServiceRequest(
@@ -557,7 +560,7 @@ func (s *Server) resumeIdleUEFromInitialUE(
 		zap.Int("resume_bearer_count", len(resumeBearers)),
 		zap.Bool("s1_release_pending", releasePending))
 
-	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, sendResumeICS, log)
+	s.sendResumeICSWhenReleaseClears(realUE, releasePending, releaseENBID, enbUEID, newBindingGeneration, sendResumeICS, log)
 }
 
 func (s *Server) serviceRequestResumeBearersLocked(ue *uecontext.Context) ([]BearerInfo, error) {
@@ -1009,6 +1012,7 @@ func (s *Server) sendResumeICSWhenReleaseClears(
 	releasePending bool,
 	oldENBUEID uint32,
 	newENBUEID uint32,
+	expectedGeneration uint64,
 	send func(),
 	log *zap.Logger,
 ) {
@@ -1028,13 +1032,23 @@ func (s *Server) sendResumeICSWhenReleaseClears(
 			ue.Lock()
 			stillPending := ue.S1ReleasePending
 			attachStep := ue.AttachStep
+			currentGeneration := ue.S1BindingGeneration
 			ue.Unlock()
 
-			if attachStep != uecontext.AttachStepWaitingICSRespSR {
+			// attachStep alone can't distinguish "this resume is still
+			// pending" from "a newer resume has since taken its place" —
+			// both look identical (WaitingICSRespSR). A UE that reconnects
+			// faster than this wait's timeout would otherwise cause this
+			// stale goroutine to fire an ICS built from this resume's own
+			// captured (and by now outdated) bearer snapshot on top of the
+			// newer, current binding. The generation check closes that gap.
+			if attachStep != uecontext.AttachStepWaitingICSRespSR || currentGeneration != expectedGeneration {
 				log.Info("s1ap: resume ICS cancelled before release cleared",
 					zap.Uint32("old_enb_ue_id", oldENBUEID),
 					zap.Uint32("new_enb_ue_id", newENBUEID),
-					zap.Uint8("attach_step", attachStep))
+					zap.Uint8("attach_step", attachStep),
+					zap.Uint64("expected_binding_generation", expectedGeneration),
+					zap.Uint64("current_binding_generation", currentGeneration))
 				return
 			}
 			if !stillPending {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -51,6 +52,9 @@ type Server struct {
 	pager      Pager
 	gatewaySel *gateway.Selector
 	log        *zap.Logger
+
+	mu      sync.Mutex
+	httpSrv *http.Server
 }
 
 // SetPager wires the S1AP paging implementation into the API server.
@@ -124,7 +128,7 @@ func (s *Server) Handler() http.Handler {
 	return r
 }
 
-// Start runs the HTTP server until it errors. Blocking.
+// Start runs the HTTP server until it errors or Shutdown is called. Blocking.
 func (s *Server) Start() error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.BindAddress, s.cfg.BindPort)
 	s.log.Info("api: listening", zap.String("addr", addr))
@@ -133,41 +137,33 @@ func (s *Server) Start() error {
 		Addr:    addr,
 		Handler: s.Handler(),
 	}
+	s.mu.Lock()
+	s.httpSrv = srv
+	s.mu.Unlock()
 
+	var err error
 	if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
-		return srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+		err = srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
+	} else {
+		err = srv.ListenAndServe()
 	}
-	return srv.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }
 
-// StartWithContext runs the HTTP server and shuts down gracefully when ctx is cancelled.
-func (s *Server) StartWithContext(ctx context.Context) error {
-	addr := fmt.Sprintf("%s:%d", s.cfg.BindAddress, s.cfg.BindPort)
-	s.log.Info("api: listening", zap.String("addr", addr))
-
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: s.Handler(),
+// Shutdown gracefully stops the HTTP server, waiting for in-flight requests
+// to drain until ctx is done. Safe to call even if Start hasn't run yet.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	srv := s.httpSrv
+	s.mu.Unlock()
+	if srv == nil {
+		return nil
 	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		if s.cfg.TLSCertFile != "" && s.cfg.TLSKeyFile != "" {
-			errCh <- srv.ListenAndServeTLS(s.cfg.TLSCertFile, s.cfg.TLSKeyFile)
-		} else {
-			errCh <- srv.ListenAndServe()
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutCtx)
-	case err := <-errCh:
-		if err == http.ErrServerClosed {
-			return nil
-		}
+	if err := srv.Shutdown(ctx); err != nil && err != http.ErrServerClosed {
 		return err
 	}
+	return nil
 }

@@ -134,12 +134,7 @@ func decodeReleaseRequestItemForTest(data []byte) (erabReleaseRequestItemForTest
 	if err != nil {
 		return erabReleaseRequestItemForTest{}, err
 	}
-	r.AlignToByte()
-	causeBytes, err := r.ReadOctets(r.Remaining() / 8)
-	if err != nil {
-		return erabReleaseRequestItemForTest{}, err
-	}
-	group, cause, err := ies.DecodeCause(causeBytes)
+	group, cause, err := ies.ReadCause(r)
 	if err != nil {
 		return erabReleaseRequestItemForTest{}, err
 	}

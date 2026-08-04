@@ -77,10 +77,14 @@ type Manager struct {
 	s13Enabled bool
 	sgdEnabled bool
 	slgEnabled bool
+
+	listener  net.Listener
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func New(cfg config.DiameterConfig, log *zap.Logger, factory Factory) *Manager {
-	m := &Manager{cfg: cfg, log: log, factory: factory}
+	m := &Manager{cfg: cfg, log: log, factory: factory, done: make(chan struct{})}
 	for i, p := range cfg.Peers {
 		m.peers = append(m.peers, &record{config: p, order: i, state: Disconnected, apps: make(map[uint32]bool)})
 	}
@@ -100,7 +104,7 @@ func (m *Manager) SetSGdEnabled(enabled bool) { m.sgdEnabled = enabled }
 func (m *Manager) SetSLgEnabled(enabled bool) { m.slgEnabled = enabled }
 
 // Start maintains every configured outbound peer and optional listeners.
-// It blocks for the process lifetime, like the previous S6a transport loop.
+// It blocks until Close is called.
 func (m *Manager) Start() error {
 	for _, p := range m.peers {
 		go m.connectLoop(p)
@@ -108,7 +112,37 @@ func (m *Manager) Start() error {
 	if m.cfg.BindAddress != "" {
 		go m.listen(m.cfg.BindTransport)
 	}
-	select {}
+	<-m.done
+	return nil
+}
+
+// Close stops accepting new peer connections, closes the inbound listener
+// (if any) and every established peer connection, and signals connectLoop
+// goroutines to stop retrying. Safe to call multiple times.
+func (m *Manager) Close() error {
+	m.closeOnce.Do(func() { close(m.done) })
+
+	m.mu.Lock()
+	ln := m.listener
+	m.listener = nil
+	conns := make([]diam.Conn, 0, len(m.peers))
+	for _, p := range m.peers {
+		if p.conn != nil {
+			conns = append(conns, p.conn)
+			p.conn = nil
+			p.state = Disconnected
+		}
+	}
+	m.mu.Unlock()
+
+	var err error
+	if ln != nil {
+		err = ln.Close()
+	}
+	for _, c := range conns {
+		c.Close()
+	}
+	return err
 }
 
 func (m *Manager) retryDelay() time.Duration {
@@ -120,6 +154,11 @@ func (m *Manager) retryDelay() time.Duration {
 
 func (m *Manager) connectLoop(p *record) {
 	for {
+		select {
+		case <-m.done:
+			return
+		default:
+		}
 		m.setState(p, Connecting)
 		mux := m.factory(nil)
 		cli := m.client(mux)
@@ -131,7 +170,11 @@ func (m *Manager) connectLoop(p *record) {
 			p.state = Down
 			m.mu.Unlock()
 			m.log.Warn("diameter: peer connection failed", zap.String("peer_name", p.config.Name), zap.String("peer_address", p.config.Address), zap.String("transport", p.config.Transport), zap.Error(err))
-			time.Sleep(m.retryDelay())
+			select {
+			case <-time.After(m.retryDelay()):
+			case <-m.done:
+				return
+			}
 			continue
 		}
 		if tos, configured, _ := transportqos.TOS(m.cfg.QoS.DSCP); configured {
@@ -139,11 +182,14 @@ func (m *Manager) connectLoop(p *record) {
 		}
 		m.learn(p, conn)
 		if notifier, ok := conn.(diam.CloseNotifier); ok {
-			<-notifier.CloseNotify()
-		} else {
-			for {
-				time.Sleep(time.Hour)
+			select {
+			case <-notifier.CloseNotify():
+			case <-m.done:
+				return
 			}
+		} else {
+			<-m.done
+			return
 		}
 		m.mu.Lock()
 		if p.conn == conn {
@@ -152,7 +198,11 @@ func (m *Manager) connectLoop(p *record) {
 		}
 		m.mu.Unlock()
 		m.log.Warn("diameter: peer disconnected", zap.String("peer_name", p.config.Name), zap.String("peer_address", p.config.Address))
-		time.Sleep(m.retryDelay())
+		select {
+		case <-time.After(m.retryDelay()):
+		case <-m.done:
+			return
+		}
 	}
 }
 
@@ -266,10 +316,17 @@ func (m *Manager) listen(transport string) {
 			return
 		}
 		ln := qosSCTPListener{SCTPListener: rawListener, dscp: m.cfg.QoS.DSCP}
+		m.mu.Lock()
+		m.listener = ln
+		m.mu.Unlock()
 		m.log.Info("diameter: listening", zap.String("transport", transport), zap.String("address", m.cfg.BindAddress))
 		m.logQoS(transport)
 		if err := diam.Serve(ln, handler); err != nil {
-			m.log.Error("diameter: SCTP listener stopped", zap.Error(err))
+			select {
+			case <-m.done:
+			default:
+				m.log.Error("diameter: SCTP listener stopped", zap.Error(err))
+			}
 		}
 		return
 	}
@@ -280,10 +337,17 @@ func (m *Manager) listen(transport string) {
 		return
 	}
 	ln := qosListener{Listener: rawListener, dscp: m.cfg.QoS.DSCP}
+	m.mu.Lock()
+	m.listener = ln
+	m.mu.Unlock()
 	m.log.Info("diameter: listening", zap.String("transport", transport), zap.String("address", m.cfg.BindAddress))
 	m.logQoS(transport)
 	if err := diam.Serve(ln, handler); err != nil {
-		m.log.Error("diameter: TCP listener stopped", zap.Error(err))
+		select {
+		case <-m.done:
+		default:
+			m.log.Error("diameter: TCP listener stopped", zap.Error(err))
+		}
 	}
 }
 

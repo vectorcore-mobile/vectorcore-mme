@@ -1194,31 +1194,35 @@ func (s *Server) sendCreateBearerResponseWithOptionalPiggyback(tx *uecontext.Ded
 	return true
 }
 
-func (s *Server) advanceLinkedDefaultBearerAfterCreateBearerResponse(tx *uecontext.DedicatedBearerTransaction, cause uint8) {
-	if tx == nil || tx.LinkedEBI == 0 {
+func (s *Server) advanceLinkedDefaultBearerAfterCreateBearerResponse(txID string, localTEID uint32, linkedEBI uint8, cause uint8) {
+	if linkedEBI == 0 {
 		return
 	}
-	ue, _ := s.findUEByLocalS11TEID(tx.LocalTEID, tx.LinkedEBI)
+	ue, _ := s.findUEByLocalS11TEID(localTEID, linkedEBI)
 	if ue == nil {
 		return
 	}
 	s.log.Debug("s1ap: evaluating linked default bearer after Create Bearer response",
-		zap.String("transaction_id", tx.ID),
+		zap.String("transaction_id", txID),
 		zap.String("imsi", ue.IMSI),
 		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
-		zap.Uint8("linked_ebi", tx.LinkedEBI),
+		zap.Uint8("linked_ebi", linkedEBI),
 		zap.Uint8("create_bearer_cause", cause),
 		zap.String("trigger", "create_bearer_response_sent"))
-	s.maybeAdvanceDefaultBearer(ue, tx.LinkedEBI, "create-bearer-response-sent", s.log)
+	s.maybeAdvanceDefaultBearer(ue, linkedEBI, "create-bearer-response-sent", s.log)
 }
 
 func (s *Server) scheduleLinkedDefaultBearerAdvance(tx *uecontext.DedicatedBearerTransaction, cause uint8) {
 	if tx == nil || tx.LinkedEBI == 0 {
 		return
 	}
-	copyTx := *tx
+	// Snapshot the plain fields needed later rather than copying *tx: the
+	// struct carries an atomic.Bool (responseSent), which must never be
+	// copied, and tx may be mutated or removed from the UE's pending-
+	// transaction map by the time this fires 40ms from now.
+	txID, localTEID, linkedEBI := tx.ID, tx.LocalTEID, tx.LinkedEBI
 	time.AfterFunc(40*time.Millisecond, func() {
-		s.advanceLinkedDefaultBearerAfterCreateBearerResponse(&copyTx, cause)
+		s.advanceLinkedDefaultBearerAfterCreateBearerResponse(txID, localTEID, linkedEBI, cause)
 	})
 }
 

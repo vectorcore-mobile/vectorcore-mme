@@ -234,16 +234,17 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	obsoleteRelease := oldENBUEID != 0 && oldENBAddr != "" &&
 		(oldENBUEID != enbUEID || oldENBAddr != remoteAddr)
 	if obsoleteRelease {
-		// One bounded record is sufficient: a prior replacement command has
-		// already been sent and any late completion is safely stale.
-		ue.ObsoleteS1Release = &uecontext.ObsoleteS1BindingRelease{
+		// A UE that reconnects faster than the eNB acknowledges a release can
+		// leave more than one superseded binding outstanding at once; each is
+		// tracked and retired independently as its own Release Complete arrives.
+		ue.AddObsoleteS1Release(&uecontext.ObsoleteS1BindingRelease{
 			MMEUES1APID:       oldMMEUEID,
 			ENBS1APID:         oldENBUEID,
 			ENBAddr:           oldENBAddr,
 			BindingGeneration: oldBindingGeneration,
 			CleanupGeneration: oldBindingGeneration + 1,
 			Deadline:          time.Now().Add(30 * time.Second),
-		}
+		})
 	}
 	ue.ENBS1APID = enbUEID
 	ue.ENBGlobalID = remoteAddr

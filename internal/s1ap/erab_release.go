@@ -121,7 +121,7 @@ func encodeERABReleaseItemBody(item ERABReleaseItem) []byte {
 	w.WriteBit(0) // iE-Extensions absent
 	w.WriteBit(0) // E-RAB-ID root
 	_ = aper.EncodeConstrainedWholeNumber(w, int64(item.EBI), 0, 15)
-	w.WriteOctets(ies.EncodeCause(item.CauseGroup, item.Cause))
+	ies.WriteCause(w, item.CauseGroup, item.Cause)
 	return w.Bytes()
 }
 

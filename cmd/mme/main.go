@@ -133,11 +133,13 @@ func main() {
 
 	// S10 GTPv2-C server (inter-MME context transfer)
 	var s10c s1ap.S10Client = s1ap.NoopS10Client{}
+	var s10Srv *s10server.Server
 	if cfg.S10.Enabled {
 		srv, err := s10server.NewServer(cfg.S10, log)
 		if err != nil {
 			log.Fatal("s10: init failed", zap.Error(err))
 		}
+		s10Srv = srv
 		s10c = srv
 		// Handler is wired after s1apSrv is created below.
 		go func() { errCh <- srv.Start() }()
@@ -252,8 +254,9 @@ func main() {
 	}
 	go func() { errCh <- s6aHandlers.Start() }()
 
+	var apiSrv *api.Server
 	if cfg.API.Enabled {
-		apiSrv := api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
+		apiSrv = api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
 		apiSrv.SetPager(s1apSrv)
 		apiSrv.SetGatewaySelector(gatewaySelector)
 		go func() { errCh <- apiSrv.Start() }()
@@ -270,6 +273,11 @@ func main() {
 		log.Info("mme: shutting down", zap.String("signal", sig.String()))
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		if apiSrv != nil {
+			if err := apiSrv.Shutdown(shutCtx); err != nil {
+				log.Warn("mme: API server shutdown error", zap.Error(err))
+			}
+		}
 		if slsCancel != nil {
 			slsCancel()
 		}
@@ -281,6 +289,14 @@ func main() {
 		}
 		s6aHandlers.ShutdownSLg()
 		s1apSrv.Shutdown(shutCtx)
+		if s10Srv != nil {
+			if err := s10Srv.Close(); err != nil {
+				log.Warn("mme: S10 close error", zap.Error(err))
+			}
+		}
+		if err := s6aHandlers.Close(); err != nil {
+			log.Warn("mme: diameter peer manager close error", zap.Error(err))
+		}
 		if sbcapSrv != nil {
 			if err := sbcapSrv.Close(); err != nil {
 				log.Warn("mme: SBc-AP close error", zap.Error(err))

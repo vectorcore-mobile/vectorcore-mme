@@ -382,20 +382,36 @@ const (
 	CauseMiscUnspecified                            uint8 = 4
 )
 
-// EncodeCause encodes a Cause IE value (CHOICE with 5 alternatives).
-func EncodeCause(group CauseGroup, value uint8) []byte {
-	w := aper.NewBitWriter()
+// WriteCause writes a Cause IE value's bits directly onto w, continuing from
+// its current bit position with no alignment padding. Cause is a small,
+// closed CHOICE — it must never be octet-aligned when embedded inline inside
+// a larger APER-encoded structure (e.g. E-RABItem's SEQUENCE); doing so
+// inserts a stray bit that shifts everything encoded after it, corrupting
+// the group/value on the wire. Use this whenever a Cause is one field among
+// several being packed onto a shared BitWriter. For a standalone Cause IE
+// value, use EncodeCause instead.
+func WriteCause(w *aper.BitWriter, group CauseGroup, value uint8) {
 	// Cause is a CHOICE with extension marker, 5 root alternatives.
 	w.WriteBit(0) // extension bit
 	w.WriteBits(uint64(group), 3)
 	w.WriteBit(0) // ENUMERATED extension bit
 	w.WriteBits(uint64(value), causeRootBits(group))
+}
+
+// EncodeCause encodes a standalone Cause IE value (CHOICE with 5 alternatives).
+func EncodeCause(group CauseGroup, value uint8) []byte {
+	w := aper.NewBitWriter()
+	WriteCause(w, group, value)
 	return w.Bytes()
 }
 
-// DecodeCause decodes a Cause IE value encoded by EncodeCause.
-func DecodeCause(data []byte) (CauseGroup, uint8, error) {
-	r := aper.NewBitReader(data)
+// ReadCause reads a Cause IE value's bits directly from r, continuing from
+// its current bit position with no alignment padding. Symmetric counterpart
+// to WriteCause — use this whenever a Cause is embedded inline inside a
+// larger APER-encoded structure being decoded from a shared BitReader (e.g.
+// E-RABItem); aligning first would misread bits shifted in by an earlier,
+// already-consumed field.
+func ReadCause(r *aper.BitReader) (CauseGroup, uint8, error) {
 	if _, err := r.ReadBit(); err != nil {
 		return 0, 0, err
 	}
@@ -411,13 +427,23 @@ func DecodeCause(data []byte) (CauseGroup, uint8, error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	return groupID, uint8(value), nil
+}
+
+// DecodeCause decodes a standalone Cause IE value encoded by EncodeCause.
+func DecodeCause(data []byte) (CauseGroup, uint8, error) {
+	r := aper.NewBitReader(data)
+	groupID, value, err := ReadCause(r)
+	if err != nil {
+		return 0, 0, err
+	}
 	if len(data) == 2 && data[0]&0x0f == 0 && data[1]&0x07 == 0 {
 		shifted := data[1] >> 3
-		if shifted > uint8(value) && CauseName(groupID, shifted) != "unknown" {
-			value = uint64(shifted)
+		if shifted > value && CauseName(groupID, shifted) != "unknown" {
+			value = shifted
 		}
 	}
-	return groupID, uint8(value), nil
+	return groupID, value, nil
 }
 
 func causeRootBits(group CauseGroup) int {

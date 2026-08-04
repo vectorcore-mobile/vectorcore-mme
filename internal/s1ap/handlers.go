@@ -179,6 +179,9 @@ type Server struct {
 	lppSink                        LPPSink
 	lppPendingMu                   sync.Mutex
 	lppPending                     map[uint32][][]byte
+
+	transportMu sync.Mutex
+	sctpSrv     *s1sctp.Server
 }
 
 // NewServer creates a new S1AP Server.
@@ -296,6 +299,9 @@ func (s *Server) Start() error {
 		s.handleMessage,
 		s.handleDisconnect,
 	)
+	s.transportMu.Lock()
+	s.sctpSrv = srv
+	s.transportMu.Unlock()
 	return srv.Listen()
 }
 
@@ -678,13 +684,17 @@ func (s *Server) Shutdown(ctx context.Context) {
 	ues := s.ueManager.List()
 	s.log.Info("s1ap: graceful shutdown: draining sessions", zap.Int("ues", len(ues)))
 	drained := 0
+	deadlineReached := false
 	for _, ue := range ues {
 		select {
 		case <-ctx.Done():
 			s.log.Warn("s1ap: shutdown deadline reached, abandoning remaining sessions",
 				zap.Int("remaining", len(ues)-drained))
-			return
+			deadlineReached = true
 		default:
+		}
+		if deadlineReached {
+			break
 		}
 		ue.Lock()
 		mmeUEID := ue.MMEUES1APID
@@ -702,6 +712,17 @@ func (s *Server) Shutdown(ctx context.Context) {
 		drained++
 	}
 	s.log.Info("s1ap: graceful shutdown complete", zap.Int("drained", drained))
+
+	s.transportMu.Lock()
+	sctpSrv := s.sctpSrv
+	s.transportMu.Unlock()
+	if sctpSrv != nil {
+		if err := sctpSrv.Close(); err != nil {
+			s.log.Warn("s1ap: SCTP transport close error", zap.Error(err))
+		} else {
+			s.log.Info("s1ap: SCTP transport closed")
+		}
+	}
 }
 
 // getENB returns the ENBContext for a remote address, or nil.

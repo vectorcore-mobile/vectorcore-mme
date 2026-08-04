@@ -695,6 +695,95 @@ func TestHandleIdleTAUMessage_RepeatedInactiveInitialUEBindingsDoNotAccumulate(t
 	}
 }
 
+// TestHandleIdleTAUMessage_MultipleObsoleteBindingsEachRetiredIndependently
+// reproduces a UE reconnecting faster than the eNB acknowledges each S1
+// release: two obsolete bindings end up outstanding for the same UE at once.
+// Each must be matched and retired by its own (possibly out-of-order, possibly
+// very late) Release Complete — a stale binding must never fall through to
+// findUEForReleaseComplete and draw a spurious unknown-pair-ue-s1ap-id
+// ErrorIndication.
+func TestHandleIdleTAUMessage_MultipleObsoleteBindingsEachRetiredIndependently(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "10.0.0.33:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	mmeID := realUE.MMEUES1APID
+	realUE.Unlock()
+
+	enbIDs := []uint32{5000, 5001, 5002}
+	for i, enbID := range enbIDs {
+		tempUE := srv.ueManager.Allocate()
+		tempUE.Lock()
+		tempUE.ENBS1APID = enbID
+		tempUE.ENBGlobalID = remoteAddr
+		tempUE.Unlock()
+		srv.handleIdleTAUMessage(tempUE, nil, buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti))
+		if i > 0 {
+			select {
+			case <-ch: // old-binding Release Command
+			case <-time.After(100 * time.Millisecond):
+				t.Fatalf("iteration %d: no old-binding release", i)
+			}
+		}
+		select {
+		case <-ch: // TAU Accept
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("iteration %d: no TAU Accept", i)
+		}
+		select {
+		case <-ch: // UE Context Release Command for this now-inactive binding
+		case <-time.After(100 * time.Millisecond):
+			t.Fatalf("iteration %d: no S1 release", i)
+		}
+	}
+
+	// Two eNB-issued releases (5000 and 5001) are now outstanding at once,
+	// neither yet acknowledged by the eNB.
+	realUE.Lock()
+	obsoleteCount := len(realUE.ObsoleteS1Releases)
+	realUE.Unlock()
+	if obsoleteCount != 2 {
+		t.Fatalf("obsolete bindings got %d, want 2", obsoleteCount)
+	}
+
+	// The eNB acknowledges out of order and late: the *newer* stale binding
+	// (5001) completes before the older one (5000).
+	srv.handleUEContextReleaseComplete(remoteAddr, nil, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(5001)},
+	})
+	select {
+	case unexpected := <-ch:
+		t.Fatalf("obsolete binding 5001 Release Complete produced unexpected message: %x", unexpected)
+	case <-time.After(25 * time.Millisecond):
+	}
+	realUE.Lock()
+	if len(realUE.ObsoleteS1Releases) != 1 || realUE.ObsoleteS1Releases[0].ENBS1APID != 5000 {
+		t.Fatalf("after retiring 5001, obsolete bindings got %+v, want only 5000", realUE.ObsoleteS1Releases)
+	}
+	realUE.Unlock()
+
+	srv.handleUEContextReleaseComplete(remoteAddr, nil, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Value: ies.EncodeMMEUEApID(mmeID)},
+		{ID: pdu.IEENBS1APID, Value: ies.EncodeENBUEApID(5000)},
+	})
+	select {
+	case unexpected := <-ch:
+		t.Fatalf("obsolete binding 5000 Release Complete produced unexpected message: %x", unexpected)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	realUE.Lock()
+	defer realUE.Unlock()
+	if len(realUE.ObsoleteS1Releases) != 0 {
+		t.Fatalf("obsolete bindings got %+v, want none left", realUE.ObsoleteS1Releases)
+	}
+	if realUE.ENBS1APID != 5002 {
+		t.Fatalf("current binding disturbed: enb_ue_id=%d, want 5002", realUE.ENBS1APID)
+	}
+}
+
 // ── handleIdleTAUMessage: ECMState fix (review fix 1) ────────────────────────
 
 func TestHandleIdleTAUMessage_SetsECMConnected(t *testing.T) {

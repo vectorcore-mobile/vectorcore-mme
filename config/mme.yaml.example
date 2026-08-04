@@ -22,6 +22,7 @@ nf:
     #   mnc: "435"
     #   tac: 10
 
+# Interface between MME and eNodeBs
 s1ap:
   bind_address: "0.0.0.0"
   bind_port: 36412
@@ -30,6 +31,7 @@ s1ap:
   # qos:
   #   dscp: 24 # CS3
 
+# PWS interface between CBC and MME
 sbcap:
   enabled: false
   bind_address: "0.0.0.0"
@@ -158,7 +160,7 @@ sgd:
   transaction_timeout: "30s"
   mme_number_for_mt_sms: "+15551230001"
 
-# Optional MME-to-E-SMLC SLs association (TS 29.171; fixed SCTP PPID 29).
+# MME-to-E-SMLC SLs association (TS 29.171).
 sls:
   enabled: false
   local_address: "0.0.0.0"
@@ -179,6 +181,8 @@ emm_timers:
   implicit_detach_seconds: 300
   implicit_detach_cleanup_timeout_seconds: 30
 
+
+# control interface used between Mobility Management Entities (MMEs)
 s10:
   enabled: false
   bind_address: "0.0.0.0"
@@ -211,7 +215,7 @@ gateway_selection:
     sgw_enabled: true
     pgw_enabled: true
     resolver:
-      servers: []
+      servers: []      # Blank uses system resolver or set DNS servers [10.0.0.5,10.0.1.5]
       timeout: "2s"
       retries: 2
       prefer_ipv6: false
@@ -264,27 +268,27 @@ nas:
     t3412: 3240
     t3423: 720
 
-# operator:
-#   name:
-#     full: "Example Network"
-#     short: "ExNet"
-#     show_full: true
-#     show_short: true
-#     encoding: "gsm7"   # gsm7 or ucs2
-#     add_country_initials: false
-#   nitz:
-#     enabled: true
-#     timezone: "America/Chicago"  # preferred IANA zone; overrides static fields below
-#     timezone_offset_minutes: -300 # fallback when timezone is unset
-#     daylight_saving: 1           # fallback when timezone is unset: 0=none, 1=+1h, 2=+2h
-#     include_local_time_zone: true
-#     include_universal_time_and_local_time_zone: true
-#     include_daylight_saving_time: true
-#   emm_information:
-#     enabled: true
-#     send_after_attach: true
-#     send_after_tau: true
-#   tau:
-#     # Same-MME TAU normally does not need GUTI reallocation. Leave disabled
-#     # unless a deployment explicitly wants privacy-driven TAU reallocation.
-#     reallocate_guti: false
+operator:
+  name:
+    full: "Example Network"
+    short: "ExNet"
+    show_full: true
+    show_short: true
+    encoding: "gsm7"   # gsm7 or ucs2
+    add_country_initials: false
+  nitz:
+    enabled: true
+    timezone: "America/Chicago"  # preferred IANA zone; overrides static fields below
+    timezone_offset_minutes: -300 # fallback when timezone is unset
+    daylight_saving: 1           # fallback when timezone is unset: 0=none, 1=+1h, 2=+2h
+    include_local_time_zone: true
+    include_universal_time_and_local_time_zone: true
+    include_daylight_saving_time: true
+  emm_information:
+    enabled: true
+    send_after_attach: false
+    send_after_tau: true
+  tau:
+    # Same-MME TAU normally does not need GUTI reallocation. Leave disabled
+    # unless a deployment explicitly wants privacy-driven TAU reallocation.
+    reallocate_guti: false

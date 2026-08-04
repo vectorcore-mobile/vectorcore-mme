@@ -5,6 +5,7 @@ package sctp
 import (
 	"fmt"
 	"net"
+	"sync"
 	"syscall"
 
 	"github.com/ishidawataru/sctp"
@@ -34,6 +35,11 @@ type Server struct {
 	onMessage    MessageHandler
 	onConnect    ConnectHandler
 	onDisconnect DisconnectHandler
+
+	mu       sync.Mutex
+	listener net.Listener
+	conns    map[*sctp.SCTPConn]struct{}
+	closed   bool
 }
 
 // NewServer creates an SCTP server that will call onMessage for each S1AP PDU received.
@@ -47,6 +53,7 @@ func NewServer(bindAddr string, port int, dscp *int, log *zap.Logger,
 		onMessage:    onMessage,
 		onConnect:    onConnect,
 		onDisconnect: onDisconnect,
+		conns:        make(map[*sctp.SCTPConn]struct{}),
 	}
 }
 
@@ -64,6 +71,9 @@ func (s *Server) Listen() error {
 		return fmt.Errorf("sctp: listen %s:%d: %w", s.bindAddr, s.port, err)
 	}
 	defer ln.Close()
+	s.mu.Lock()
+	s.listener = ln
+	s.mu.Unlock()
 	s.log.Info("s1ap: SCTP listening", zap.String("addr", fmt.Sprintf("%s:%d", s.bindAddr, s.port)))
 	if tos, configured, _ := transportqos.TOS(s.dscp); configured {
 		s.log.Info("s1ap: outbound QoS configured", zap.Int("dscp", *s.dscp), zap.String("tos", fmt.Sprintf("0x%02x", tos)))
@@ -72,6 +82,12 @@ func (s *Server) Listen() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			s.mu.Lock()
+			closed := s.closed
+			s.mu.Unlock()
+			if closed {
+				return nil
+			}
 			return fmt.Errorf("sctp: accept: %w", err)
 		}
 		sctpConn := conn.(*sctp.SCTPConn)
@@ -84,9 +100,36 @@ func (s *Server) Listen() error {
 	}
 }
 
+// Close stops the listener and closes every active eNB SCTP association,
+// unblocking Listen's Accept loop and each handleConn's Read loop so the
+// server shuts down without leaking sockets or goroutines.
+func (s *Server) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	ln := s.listener
+	conns := make([]*sctp.SCTPConn, 0, len(s.conns))
+	for c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+
+	var err error
+	if ln != nil {
+		err = ln.Close()
+	}
+	for _, c := range conns {
+		_ = c.Close()
+	}
+	return err
+}
+
 func (s *Server) handleConn(conn *sctp.SCTPConn) {
 	remote := conn.RemoteAddr().String()
 	s.log.Info("s1ap: new SCTP connection", zap.String("remote", remote))
+
+	s.mu.Lock()
+	s.conns[conn] = struct{}{}
+	s.mu.Unlock()
 
 	// Create send channel and notify caller
 	sendCh := make(chan []byte, 64)
@@ -102,6 +145,9 @@ func (s *Server) handleConn(conn *sctp.SCTPConn) {
 	}()
 
 	defer func() {
+		s.mu.Lock()
+		delete(s.conns, conn)
+		s.mu.Unlock()
 		close(sendCh)
 		conn.Close()
 		s.log.Info("s1ap: SCTP connection closed", zap.String("remote", remote))

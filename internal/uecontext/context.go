@@ -139,9 +139,12 @@ type S1ReleaseRABRTransaction struct {
 	Sessions      map[string]*S1ReleaseRABRSession
 }
 
-// ObsoleteS1BindingRelease records the replaced logical S1 connection while a
-// newer binding is authoritative. It is bounded to one outstanding record and
-// must never drive ECM/RABR state for the replacement binding.
+// ObsoleteS1BindingRelease records a replaced logical S1 connection while a
+// newer binding is authoritative. Several of these can be outstanding for the
+// same UE at once — a UE that reconnects faster than the eNB acknowledges a
+// prior release leaves each superseded binding pending its own Release
+// Complete. None of them may ever drive ECM/RABR state for the replacement
+// binding.
 type ObsoleteS1BindingRelease struct {
 	MMEUES1APID       uint32
 	ENBS1APID         uint32
@@ -162,7 +165,7 @@ type Context struct {
 	ENBGlobalID         string // serialised GlobalENBID
 	S1BindingGeneration uint64
 	S1BindingState      S1BindingState
-	ObsoleteS1Release   *ObsoleteS1BindingRelease
+	ObsoleteS1Releases  []*ObsoleteS1BindingRelease
 
 	// S1 release in progress for the previous access context. Kept separate
 	// from the current ENBS1APID so a fast Service Request can rebind the UE
@@ -549,6 +552,35 @@ func (c *Context) Lock() { c.mu.Lock() }
 
 // Unlock releases the context mutex.
 func (c *Context) Unlock() { c.mu.Unlock() }
+
+// AddObsoleteS1Release records a superseded S1 binding pending its own
+// Release Complete from the eNB. Callers must hold the context lock.
+func (c *Context) AddObsoleteS1Release(rel *ObsoleteS1BindingRelease) {
+	c.ObsoleteS1Releases = append(c.ObsoleteS1Releases, rel)
+}
+
+// FindObsoleteS1Release returns the first obsolete binding satisfying match,
+// without removing it. Callers must hold the context lock.
+func (c *Context) FindObsoleteS1Release(match func(*ObsoleteS1BindingRelease) bool) *ObsoleteS1BindingRelease {
+	for _, rel := range c.ObsoleteS1Releases {
+		if match(rel) {
+			return rel
+		}
+	}
+	return nil
+}
+
+// TakeObsoleteS1Release removes and returns the first obsolete binding
+// satisfying match, if any. Callers must hold the context lock.
+func (c *Context) TakeObsoleteS1Release(match func(*ObsoleteS1BindingRelease) bool) *ObsoleteS1BindingRelease {
+	for i, rel := range c.ObsoleteS1Releases {
+		if match(rel) {
+			c.ObsoleteS1Releases = append(c.ObsoleteS1Releases[:i], c.ObsoleteS1Releases[i+1:]...)
+			return rel
+		}
+	}
+	return nil
+}
 
 // SetEMMState transitions the EMM state.
 func (c *Context) SetEMMState(s emm.EMMState) {

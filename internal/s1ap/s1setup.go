@@ -365,8 +365,10 @@ func (s *Server) handlePartialENBReset(remoteAddr string, items []resetConnectio
 			for _, ue := range s.ueManager.List() {
 				ue.Lock()
 				match := ue.ENBGlobalID == remoteAddr && ue.ENBS1APID == item.ENBUEID
-				if !match && ue.ObsoleteS1Release != nil {
-					match = ue.ObsoleteS1Release.ENBAddr == remoteAddr && ue.ObsoleteS1Release.ENBS1APID == item.ENBUEID
+				if !match {
+					match = ue.FindObsoleteS1Release(func(rel *uecontext.ObsoleteS1BindingRelease) bool {
+						return rel.ENBAddr == remoteAddr && rel.ENBS1APID == item.ENBUEID
+					}) != nil
 				}
 				ue.Unlock()
 				if match {
@@ -399,12 +401,12 @@ func (s *Server) handlePartialENBReset(remoteAddr string, items []resetConnectio
 				candidate.ENBU_TEID, candidate.ENBU_IP = 0, nil
 				s.invalidateASSecuritySnapshotLocked(candidate)
 			} else {
-				obsolete := candidate.ObsoleteS1Release
-				obsoleteMatch := obsolete != nil && obsolete.ENBAddr == remoteAddr &&
-					(!item.HasMMEUEID || obsolete.MMEUES1APID == item.MMEUEID) &&
-					(!item.HasENBUEID || obsolete.ENBS1APID == item.ENBUEID)
-				if obsoleteMatch {
-					candidate.ObsoleteS1Release = nil
+				obsolete := candidate.TakeObsoleteS1Release(func(rel *uecontext.ObsoleteS1BindingRelease) bool {
+					return rel.ENBAddr == remoteAddr &&
+						(!item.HasMMEUEID || rel.MMEUES1APID == item.MMEUEID) &&
+						(!item.HasENBUEID || rel.ENBS1APID == item.ENBUEID)
+				})
+				if obsolete != nil {
 					outcome, action = "obsolete_match", "retire_obsolete_binding"
 				} else {
 					outcome = "stale_or_contradictory"

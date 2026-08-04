@@ -291,8 +291,75 @@ func TestHandleServiceRequest_AuthenticatedReplacementFromECMConnectedBinding(t 
 	if realUE.ENBS1APID != 121 || realUE.ENBGlobalID != newAddr || realUE.S1BindingGeneration != 5 {
 		t.Fatalf("replacement binding not installed: enb=%d remote=%q generation=%d", realUE.ENBS1APID, realUE.ENBGlobalID, realUE.S1BindingGeneration)
 	}
-	if obsolete := realUE.ObsoleteS1Release; obsolete == nil || obsolete.ENBS1APID != 120 || obsolete.BindingGeneration != 4 {
-		t.Fatalf("obsolete binding record got %+v", obsolete)
+	if len(realUE.ObsoleteS1Releases) != 1 || realUE.ObsoleteS1Releases[0].ENBS1APID != 120 || realUE.ObsoleteS1Releases[0].BindingGeneration != 4 {
+		t.Fatalf("obsolete binding record got %+v", realUE.ObsoleteS1Releases)
+	}
+}
+
+// TestResumeIdleUEFromInitialUE_OverlappingResumesDoNotSendStaleDuplicateICS
+// reproduces a UE that triggers two overlapping resumes (e.g. a Service
+// Request immediately followed by an Extended Service Request) while a prior
+// S1 release is still pending. Both resumes' sendResumeICSWhenReleaseClears
+// goroutines end up waiting concurrently; attachStep alone can't tell them
+// apart since both reach AttachStepWaitingICSRespSR. Without the binding
+// generation check, the stale first resume's goroutine also fires send()
+// after its own wait times out — and because SendInitialContextSetupWithBearers
+// reads the eNB target from the UE's *current* state (not a stale capture),
+// that duplicate lands on the current (second) binding's own channel, not
+// the first resume's original one — a spurious duplicate ICS for the
+// legitimate, already-served connection.
+func TestResumeIdleUEFromInitialUE_OverlappingResumesDoNotSendStaleDuplicateICS(t *testing.T) {
+	srv := newTAUTestServer()
+	const oldAddr = "10.0.2.50:36412"
+	const addr1 = "10.0.2.51:36412"
+	const addr2 = "10.0.2.52:36412"
+	ch1 := setupSendCapture(srv, addr1)
+	ch2 := setupSendCapture(srv, addr2)
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, oldAddr)
+	realUE.Lock()
+	// A prior eNB-initiated release request is still unacknowledged, forcing
+	// sendResumeICSWhenReleaseClears onto its waiting (goroutine) path
+	// instead of sending the ICS immediately.
+	realUE.S1ReleasePending = true
+	realUE.Unlock()
+
+	log := zap.NewNop()
+
+	tempUE1 := srv.ueManager.Allocate()
+	tempUE1.Lock()
+	tempUE1.ENBS1APID = 501
+	tempUE1.ENBGlobalID = addr1
+	tempUE1.Unlock()
+	srv.resumeIdleUEFromInitialUE(tempUE1, realUE, nil, log)
+
+	tempUE2 := srv.ueManager.Allocate()
+	tempUE2.Lock()
+	tempUE2.ENBS1APID = 502
+	tempUE2.ENBGlobalID = addr2
+	tempUE2.Unlock()
+	srv.resumeIdleUEFromInitialUE(tempUE2, realUE, nil, log)
+
+	select {
+	case raw := <-ch2:
+		msg, err := pdu.Decode(raw)
+		if err != nil || msg.ProcedureCode != pdu.ProcInitialContextSetup {
+			t.Fatalf("current resume ICS got msg=%+v err=%v, want InitialContextSetup", msg, err)
+		}
+	case <-time.After(600 * time.Millisecond):
+		t.Fatal("no ICS sent for the current (second) resume")
+	}
+
+	// Neither channel should receive anything further: not a duplicate on
+	// the current binding's channel (the stale first resume's goroutine
+	// waking up late and re-sending), nor anything on the first resume's
+	// own now-superseded channel.
+	select {
+	case unexpected := <-ch2:
+		t.Fatalf("stale first resume sent a duplicate ICS on the current binding: %x", unexpected)
+	case unexpected := <-ch1:
+		t.Fatalf("stale first resume sent an unexpected ICS on its own channel: %x", unexpected)
+	case <-time.After(700 * time.Millisecond):
 	}
 }
 

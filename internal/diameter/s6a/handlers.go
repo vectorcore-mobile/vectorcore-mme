@@ -164,6 +164,11 @@ func (h *Handlers) SetSLsProvider(provider interface {
 // ShutdownSLg deterministically cancels outstanding no-state transactions.
 func (h *Handlers) ShutdownSLg() { h.slgTx.Close() }
 
+// Close stops the Diameter peer manager: it closes the inbound listener (if
+// any), every established peer connection, and signals connect loops to stop
+// retrying.
+func (h *Handlers) Close() error { return h.peers.Close() }
+
 // S13Enabled reports whether the equipment-check client is enabled for attach.
 func (h *Handlers) S13Enabled() bool { return h.s13Cfg.Enabled && h.s13Cfg.CheckOnAttach }
 

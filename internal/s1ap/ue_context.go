@@ -175,16 +175,15 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 	// release. Retire only that record; do not enter normal ECM/RABR release.
 	if ue, ok := s.ueManager.GetByMMEID(mmeUEID); ok {
 		ue.Lock()
-		obsolete := ue.ObsoleteS1Release
-		if obsolete != nil && obsolete.ENBAddr == remoteAddr && obsolete.ENBS1APID == enbUEID {
-			oldGeneration := obsolete.BindingGeneration
-			ue.ObsoleteS1Release = nil
-			ue.Unlock()
+		obsolete := ue.TakeObsoleteS1Release(func(rel *uecontext.ObsoleteS1BindingRelease) bool {
+			return rel.ENBAddr == remoteAddr && rel.ENBS1APID == enbUEID
+		})
+		ue.Unlock()
+		if obsolete != nil {
 			log.Info("s1ap: obsolete replacement binding Release Complete",
-				zap.Uint64("old_binding_generation", oldGeneration), zap.String("action", "old-binding-release-complete"))
+				zap.Uint64("old_binding_generation", obsolete.BindingGeneration), zap.String("action", "old-binding-release-complete"))
 			return
 		}
-		ue.Unlock()
 	}
 
 	ue, ok := s.findUEForReleaseComplete(remoteAddr, p, mmeUEID, enbUEID)
@@ -318,13 +317,13 @@ func (s *Server) scheduleObsoleteS1BindingCleanup(ue *uecontext.Context, generat
 			return
 		}
 		current.Lock()
-		if current.ObsoleteS1Release == nil || current.ObsoleteS1Release.BindingGeneration != generation {
-			current.Unlock()
+		old := current.TakeObsoleteS1Release(func(rel *uecontext.ObsoleteS1BindingRelease) bool {
+			return rel.BindingGeneration == generation
+		})
+		current.Unlock()
+		if old == nil {
 			return
 		}
-		old := current.ObsoleteS1Release
-		current.ObsoleteS1Release = nil
-		current.Unlock()
 		s.log.Info("s1ap: obsolete replacement binding release timeout",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("enb_ue_id", old.ENBS1APID),
 			zap.Uint64("binding_generation", generation), zap.String("action", "old-binding-release-timeout"))
