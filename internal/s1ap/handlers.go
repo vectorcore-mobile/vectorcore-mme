@@ -22,6 +22,7 @@ import (
 	"github.com/vectorcore/mme/internal/repository"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	s1sctp "github.com/vectorcore/mme/internal/s1ap/sctp"
+	"github.com/vectorcore/mme/internal/sgsap"
 	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -132,6 +133,70 @@ func (NoopS10Client) SendContextRequest(_ string, _ *s10.ContextRequest) (<-chan
 func (NoopS10Client) SendContextAcknowledge(_ string, _ uint32, _ uint8) error { return nil }
 func (NoopS10Client) LocalAddr() string                                        { return "" }
 
+// VLRManager is the interface the S1AP layer uses to reach the SGs-AP VLR
+// association layer. Implemented by vlr.Manager; NoopVLRManager is used
+// when SGs is disabled. Breaks the circular dependency between s1ap and vlr
+// (vlr.Handler is implemented on *Server), the same pattern as S6a/S10/S11.
+type VLRManager interface {
+	Available(vlrName string) bool
+	LookupVLR(mcc, mnc string, tac uint16) (config.SGsTAILAIMapItem, bool)
+
+	SendLocationUpdateRequest(vlrName string, r sgsap.LocationUpdateRequest) error
+	SendUplinkUnitdata(vlrName string, u sgsap.UplinkUnitdata) error
+	SendServiceRequest(vlrName string, r sgsap.ServiceRequest) error
+	SendTMSIReallocationComplete(vlrName, imsi string) error
+	SendEPSDetachIndication(vlrName string, d sgsap.EPSDetachIndication) error
+	SendIMSIDetachIndication(vlrName string, d sgsap.IMSIDetachIndication) error
+	SendPagingReject(vlrName, imsi string, cause sgsap.Cause) error
+	SendAlertAck(vlrName, imsi string) error
+	SendAlertReject(vlrName, imsi string, cause sgsap.Cause) error
+	SendUEUnreachable(vlrName string, u sgsap.UEUnreachable) error
+	SendUEActivityIndication(vlrName, imsi string) error
+	SendMOCSFBIndication(vlrName string, ind sgsap.MOCSFBIndication) error
+}
+
+// NoopVLRManager is used when SGs is disabled.
+type NoopVLRManager struct{}
+
+func (NoopVLRManager) Available(string) bool { return false }
+func (NoopVLRManager) LookupVLR(string, string, uint16) (config.SGsTAILAIMapItem, bool) {
+	return config.SGsTAILAIMapItem{}, false
+}
+func (NoopVLRManager) SendLocationUpdateRequest(string, sgsap.LocationUpdateRequest) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendUplinkUnitdata(string, sgsap.UplinkUnitdata) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendServiceRequest(string, sgsap.ServiceRequest) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendTMSIReallocationComplete(string, string) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendEPSDetachIndication(string, sgsap.EPSDetachIndication) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendIMSIDetachIndication(string, sgsap.IMSIDetachIndication) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendPagingReject(string, string, sgsap.Cause) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendAlertAck(string, string) error { return errors.New("sgs: disabled") }
+func (NoopVLRManager) SendAlertReject(string, string, sgsap.Cause) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendUEUnreachable(string, sgsap.UEUnreachable) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendUEActivityIndication(string, string) error {
+	return errors.New("sgs: disabled")
+}
+func (NoopVLRManager) SendMOCSFBIndication(string, sgsap.MOCSFBIndication) error {
+	return errors.New("sgs: disabled")
+}
+
 // Server is the S1AP layer: manages eNB connections and dispatches messages.
 type Server struct {
 	cfg                config.S1APConfig
@@ -143,6 +208,9 @@ type Server struct {
 	pagingCfg          config.PagingConfig
 	operCfg            config.OperatorConfig
 	sgdCfg             config.SGdConfig
+	sgsCfg             config.SGsConfig
+	smsCfg             config.SMSConfig
+	vlr                VLRManager
 	roamingCfg         config.RoamingConfig
 	roamingConfigured  bool
 	store              repository.Repository
@@ -161,6 +229,7 @@ type Server struct {
 	sms                *smsservice.Service
 	smsTimeout         time.Duration
 	pendingMTSMS       sync.Map // IMSI -> *pendingMTSMS
+	pendingSGsMT       sync.Map // IMSI -> *pendingSGsMTSMS
 	pendingMOSMS       sync.Map // imsi:cp-ti -> *pendingMOSMS
 	smsMu              sync.Mutex
 	nextMTSMSTI        map[string]uint8
@@ -229,6 +298,7 @@ func NewServer(
 		pgwIP:               pgwIP,
 		restartEpoch:        fmt.Sprintf("%d", time.Now().UnixNano()),
 		log:                 log,
+		vlr:                 NoopVLRManager{},
 		nextMTSMSTI:         make(map[string]uint8),
 		pwsTransactionBases: make(map[string]struct{}),
 	}
@@ -249,6 +319,14 @@ func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 
 func (s *Server) SetSMSService(service *smsservice.Service) { s.sms = service }
 func (s *Server) SetSGdConfig(cfg config.SGdConfig)         { s.sgdCfg = cfg }
+func (s *Server) SetSGsConfig(cfg config.SGsConfig)         { s.sgsCfg = cfg }
+func (s *Server) SetSMSConfig(cfg config.SMSConfig)         { s.smsCfg = cfg }
+func (s *Server) SetVLRManager(m VLRManager) {
+	if m == nil {
+		m = NoopVLRManager{}
+	}
+	s.vlr = m
+}
 func (s *Server) SetRoamingConfig(cfg config.RoamingConfig) {
 	s.roamingCfg, s.roamingConfigured = cfg, true
 }

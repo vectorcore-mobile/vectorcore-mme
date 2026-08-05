@@ -9,6 +9,10 @@ const (
 	// ServiceTypeMobileOriginatingCSFallback is the Extended Service Request
 	// service type for an MO CS fallback request.
 	ServiceTypeMobileOriginatingCSFallback uint8 = 0
+	// ServiceTypeMobileTerminatingCSFallback is the Extended Service Request
+	// service type a UE sends in response to being paged for CS Fallback
+	// (TS 24.301 §9.9.3.27 table 9.9.3.27.1, value 1).
+	ServiceTypeMobileTerminatingCSFallback uint8 = 1
 )
 
 // ExtendedServiceRequest holds the decoded fields of a plain NAS Extended

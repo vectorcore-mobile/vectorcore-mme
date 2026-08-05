@@ -36,6 +36,7 @@ import (
 	"github.com/vectorcore/mme/internal/sls"
 	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
+	"github.com/vectorcore/mme/internal/vlr"
 )
 
 func main() {
@@ -152,6 +153,17 @@ func main() {
 	s1apSrv.SetPersistentRecovery(databaseMode(cfg.Database) != "memory")
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	s1apSrv.SetSGdConfig(cfg.SGd)
+	s1apSrv.SetSGsConfig(cfg.SGs)
+	s1apSrv.SetSMSConfig(cfg.SMS)
+	var vlrMgr *vlr.Manager
+	var vlrCancel context.CancelFunc
+	if cfg.SGs.Enabled {
+		vlrCtx, cancelVLR := context.WithCancel(context.Background())
+		vlrCancel = cancelVLR
+		vlrMgr = vlr.New(cfg.SGs, s1apSrv.MMEFQDNForSGs(), s1apSrv, log)
+		s1apSrv.SetVLRManager(vlrMgr)
+		vlrMgr.Start(vlrCtx)
+	}
 	s1apSrv.SetRoamingConfig(cfg.Roaming)
 	if slsProvider != nil {
 		slsProvider.SetLPPaRelay(s1apSrv)
@@ -286,6 +298,12 @@ func main() {
 		}
 		if slsTransport != nil {
 			_ = slsTransport.Close()
+		}
+		if vlrCancel != nil {
+			vlrCancel()
+		}
+		if vlrMgr != nil {
+			vlrMgr.Close()
 		}
 		s6aHandlers.ShutdownSLg()
 		s1apSrv.Shutdown(shutCtx)

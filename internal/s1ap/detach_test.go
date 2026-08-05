@@ -11,6 +11,7 @@ import (
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/sgsap"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -232,6 +233,107 @@ func TestInitialUEDetachDeletesAllActivePDNSessionsOutOfOrderResponses(t *testin
 	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
 	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
 		t.Fatal("UE still active after both out-of-order DSR results")
+	}
+}
+
+func TestInitialUEDetachEPSOnlySendsEPSDetachIndicationAndAcceptsImmediately(t *testing.T) {
+	srv, fake := sgsTestServer()
+	const addr = "10.0.0.44:36412"
+	ch := setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.SGsState = uecontext.SGsUEAssociated
+	realUE.SGsVLRName = "vlr-1"
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 7, nasPDU))
+
+	fake.mu.Lock()
+	gotEPS := fake.lastEPSDetach
+	fake.mu.Unlock()
+	if gotEPS == nil || gotEPS.IMSI != realUE.IMSI || gotEPS.DetachType != sgsap.EPSDetachUEInitiated {
+		t.Fatalf("expected EPS-DETACH-INDICATION sent, got %+v", gotEPS)
+	}
+
+	realUE.Lock()
+	sgsState := realUE.SGsState
+	realUE.Unlock()
+	if sgsState != uecontext.SGsUENull {
+		t.Fatalf("SGs state after EPS detach = %v, want SGs-NULL", sgsState)
+	}
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected Detach Accept sent immediately for an EPS-only detach")
+	}
+}
+
+func TestInitialUEDetachIMSIOnlyWithholdsDetachAcceptUntilAck(t *testing.T) {
+	srv, fake := sgsTestServer()
+	srv.sgsCfg.RequestTimeout = 5 * time.Second
+	const addr = "10.0.0.45:36412"
+	ch := setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.SGsState = uecontext.SGsUEAssociated
+	realUE.SGsVLRName = "vlr-1"
+	srv.ueManager.Register(realUE)
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeIMSIDetach, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 8, nasPDU))
+
+	fake.mu.Lock()
+	gotIMSI := fake.lastIMSIDetach
+	fake.mu.Unlock()
+	if gotIMSI == nil || gotIMSI.IMSI != realUE.IMSI || gotIMSI.DetachType != sgsap.NonEPSDetachExplicitUEInitiated {
+		t.Fatalf("expected IMSI-DETACH-INDICATION sent, got %+v", gotIMSI)
+	}
+
+	select {
+	case <-ch:
+		t.Fatal("Detach Accept must not be sent before SGsAP-IMSI-DETACH-ACK")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	srv.HandleIMSIDetachAck("vlr-1", realUE.IMSI)
+
+	select {
+	case <-ch:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected Detach Accept sent after SGsAP-IMSI-DETACH-ACK arrived")
+	}
+}
+
+func TestInitialUEDetachCombinedTimesOutAndSendsDetachAcceptAnyway(t *testing.T) {
+	srv, _ := sgsTestServer()
+	srv.sgsCfg.RequestTimeout = 50 * time.Millisecond
+	const addr = "10.0.0.46:36412"
+	ch := setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.SGsState = uecontext.SGsUEAssociated
+	realUE.SGsVLRName = "vlr-1"
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeEPSAndIMSI, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 9, nasPDU))
+
+	select {
+	case <-ch:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Detach Accept sent once the SGs request timeout elapsed without an ack")
 	}
 }
 

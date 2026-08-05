@@ -68,6 +68,31 @@ func DecodeLAI(data []byte) (LAI, error) {
 	return l, nil
 }
 
+// EncodeMSIdentityTMSI encodes the value part of the "MS identity" IE
+// (TS 24.301 §9.9.2.3, referencing TS 24.008 §10.5.1.4) as a TMSI-type
+// mobile identity: fill nibble (1111), a zero spare/odd-even bit, identity
+// type 100 (TMSI), then the 4-octet TMSI value big-endian. This is the same
+// byte layout SGsAP's own Mobile Identity IE (TS 29.118 §9.4.14) uses for
+// the identical purpose - confirmed against both internal/sgsap's own
+// EncodeMobileIdentity and open5gs's emm-build.c, which independently agree
+// on 0xF4 as octet 1.
+func EncodeMSIdentityTMSI(tmsi uint32) []byte {
+	b := make([]byte, 5)
+	b[0] = 0xf4
+	binary.BigEndian.PutUint32(b[1:], tmsi)
+	return b
+}
+
+// DecodeMSIdentityTMSI is the inverse of EncodeMSIdentityTMSI. The MME only
+// ever sends this IE (relaying a VLR-assigned TMSI); this decoder exists to
+// round-trip test the encoder.
+func DecodeMSIdentityTMSI(v []byte) (uint32, error) {
+	if len(v) != 5 || v[0]&0x07 != 0x04 {
+		return 0, fmt.Errorf("emm: MS identity is not a 5-octet TMSI-type mobile identity")
+	}
+	return binary.BigEndian.Uint32(v[1:]), nil
+}
+
 // EPSNetworkFeatureSupport represents TS 24.301 §9.9.3.12A.
 type EPSNetworkFeatureSupport struct {
 	IMSVoiceOverPSSessionInS1Mode bool

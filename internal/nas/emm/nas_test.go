@@ -57,6 +57,56 @@ func TestEncodeAttachAcceptCiscoSGdCombinedPolicy(t *testing.T) {
 	}
 }
 
+func TestEncodeAttachAcceptWithParams_LAI(t *testing.T) {
+	tai := emm.TAI{PLMN: [3]byte{0x00, 0xf1, 0x10}, TAC: 1}
+	lai := emm.LAI{PLMN: tai.PLMN, LAC: 1}
+	got := emm.EncodeAttachAcceptWithParams(emm.AttachAcceptParams{
+		AttachResult: emm.AttachTypeCombinedEPSAndIMSI,
+		T3412:        0x49,
+		TAIList:      []emm.TAI{tai},
+		ESMContainer: []byte{0x52, 0x01, 0xd1, 0x21},
+		LAI:          &lai,
+	})
+	if got[2]&0x07 != emm.AttachTypeCombinedEPSAndIMSI {
+		t.Fatalf("Attach Accept result got %#x, want combined", got[2]&0x07)
+	}
+	if !bytes.Contains(got, []byte{0x13, 0x00, 0xf1, 0x10, 0x00, 0x01}) {
+		t.Fatalf("real SGs combined Attach Accept missing LAI IE: %x", got)
+	}
+}
+
+func TestDecodeAttachRequest_WithAdditionalUpdateTypeSMSOnly(t *testing.T) {
+	imsiIDBytes := []byte{
+		0x09,       // digit1=0, odd, type=IMSI
+		0x10, 0x01, // d2=1,d3=0; d4=0,d5=1
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x10, // d14=0, d15=1
+	}
+	netCapBytes := []byte{0x01, 0xE0}
+	esmData := []byte{0x01, 0x08, 0xAB}
+	esmContainer := append([]byte{0x00, byte(len(esmData))}, esmData...)
+
+	body := make([]byte, 0, 32)
+	body = append(body, 0x72) // AttachType=Combined EPS/IMSI
+	body = append(body, byte(len(imsiIDBytes)))
+	body = append(body, imsiIDBytes...)
+	body = append(body, netCapBytes...)
+	body = append(body, esmContainer...)
+	body = append(body, 0xF1) // Additional update type: SMS only
+
+	ar, err := emm.DecodeAttachRequest(body)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if ar.AdditionalUpdateType == nil {
+		t.Fatal("AdditionalUpdateType should not be nil")
+	}
+	if *ar.AdditionalUpdateType&emm.AdditionalUpdateTypeSMSOnlyBit == 0 {
+		t.Fatalf("AdditionalUpdateType = %#x, want SMS-only bit set", *ar.AdditionalUpdateType)
+	}
+}
+
 func TestEncodeEPSNetworkFeatureSupportIMSVoiceOverPS(t *testing.T) {
 	got := emm.EncodeEPSNetworkFeatureSupport(emm.EPSNetworkFeatureSupport{
 		IMSVoiceOverPSSessionInS1Mode: true,

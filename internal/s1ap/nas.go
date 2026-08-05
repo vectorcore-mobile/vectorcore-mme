@@ -22,6 +22,7 @@ import (
 	"github.com/vectorcore/mme/internal/nas/esm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	nastimer "github.com/vectorcore/mme/internal/nas/timer"
+	"github.com/vectorcore/mme/internal/sgsap"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -306,6 +307,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		tai := ue.TAI
 		guti := ue.GUTI
 		attachType := ue.AttachType
+		requestedSMSOnly := ue.RequestedSMSOnly
 		smsRegistrationState := ue.SMSRegistrationState
 		intAlg := ue.IntAlg
 		encAlg := ue.EncAlg
@@ -328,7 +330,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		if tai != nil {
 			taiList = []emm.TAI{*tai}
 		}
-		attachResult, additionalResult := s.attachAcceptRegistration(attachType, smsRegistrationState)
+		attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 		featureSupport := s.epsNetworkFeatureSupport()
 		t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 		if timerErr != nil {
@@ -346,6 +348,8 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			ESMContainer:             esmReject,
 			EPSNetworkFeatureSupport: featureSupport,
 			AdditionalUpdateResult:   additionalResult,
+			LAI:                      sgsLAI,
+			NewTMSI:                  sgsNewTMSI,
 		})
 
 		// TS 24.301 §4.4.5 and TS 33.401 §8.2 regard EEA0 as ciphering.
@@ -360,10 +364,15 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		enbAddr := ue.ENBGlobalID
 		enbUEID := ue.ENBS1APID
 		ue.DLNASCount.Increment()
+		if sgsNewTMSI != nil {
+			ue.SGsPendingNewTMSI = nil
+			ue.SGsSentNewTMSI = sgsNewTMSI
+		}
 		ue.Unlock()
 		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, protected)
 		metrics.NASProceduresTotal.WithLabelValues("Attach", "accept_noop").Inc()
 		log.Info("s1ap: Attach Accept sent without ICS (noop S11, no bearer)")
+		s.maybeSendSGsLocationUpdateRequest(ue, attachType == emm.AttachTypeCombinedEPSAndIMSI, requestedSMSOnly, sgsap.EPSLocationUpdateTypeIMSIAttach)
 		return
 	}
 
@@ -590,6 +599,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	tai := ue.TAI
 	guti := ue.GUTI
 	attachType := ue.AttachType
+	requestedSMSOnly := ue.RequestedSMSOnly
 	smsRegistrationState := ue.SMSRegistrationState
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
@@ -663,7 +673,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	if tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
-	attachResult, additionalResult := s.attachAcceptRegistration(attachType, smsRegistrationState)
+	attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 	featureSupport := s.epsNetworkFeatureSupport()
 	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 	if timerErr != nil {
@@ -681,6 +691,8 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		ESMContainer:             esmAccept,
 		EPSNetworkFeatureSupport: featureSupport,
 		AdditionalUpdateResult:   additionalResult,
+		LAI:                      sgsLAI,
+		NewTMSI:                  sgsNewTMSI,
 	})
 
 	// EEA0 is a null cipher, not an integrity-only procedure. It uses header type 2.
@@ -692,6 +704,10 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	}
 	ue.Lock()
 	ue.DLNASCount.Increment()
+	if sgsNewTMSI != nil {
+		ue.SGsPendingNewTMSI = nil
+		ue.SGsSentNewTMSI = sgsNewTMSI
+	}
 	ue.Unlock()
 
 	t3412ConfiguredSeconds := s.nasCfg.Timers.T3412
@@ -739,6 +755,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "accept").Inc()
 	log.Info("s1ap: ICS sent with E-RAB", zap.Uint8("ebi", ebi),
 		zap.String("ue_ipv4", ueIPv4.String()))
+	s.maybeSendSGsLocationUpdateRequest(ue, attachType == emm.AttachTypeCombinedEPSAndIMSI, requestedSMSOnly, sgsap.EPSLocationUpdateTypeIMSIAttach)
 }
 
 // HandleMBRResult is called when a Modify Bearer Response arrives.
@@ -1247,16 +1264,33 @@ func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, g
 		zap.String("full_guti_lookup_key", uecontext.SerialiseGUTI(guti)))
 }
 
-// attachAcceptRegistration uses the completed, per-UE SMS-in-MME registration
-// outcome rather than temporary Diameter peer state. The Cisco SGd-only
-// reference responds to successful combined Attach with result 2 and explicit
-// Additional Update Result F0, without SGs, CS service, LAI, or CS TMSI.
-func (s *Server) attachAcceptRegistration(attachType uint8, smsState uecontext.SMSRegistrationState) (uint8, *uint8) {
-	if attachType != emm.AttachTypeCombinedEPSAndIMSI || !s.sgdCfg.Enabled || smsState != uecontext.SMSRegistrationRegistered {
-		return emm.AttachTypeEPSOnly, nil
+// attachAcceptRegistration uses the completed, per-UE registration outcome
+// rather than temporary Diameter/SGs peer state. A genuine SGs association
+// (real VLR, real LAI) takes priority over the Cisco SGd-only reference
+// behavior, which responds to successful combined Attach with result 2 and
+// explicit Additional Update Result F0, without SGs, CS service, LAI, or CS
+// TMSI. A fresh Attach's SGs association is essentially never already up at
+// this point - HandleLocationUpdateAccept/Reject and the SGs Location
+// Update itself only run after Attach Accept is sent (see
+// maybeSendSGsLocationUpdateRequest) - so real combined-with-LAI attach
+// results, in practice, first appear on the UE's next TAU.
+func (s *Server) attachAcceptRegistration(ue *uecontext.Context, attachType uint8, smsState uecontext.SMSRegistrationState) (uint8, *uint8, *emm.LAI, *uint32) {
+	if attachType != emm.AttachTypeCombinedEPSAndIMSI {
+		return emm.AttachTypeEPSOnly, nil, nil, nil
 	}
-	noAdditionalInfo := uint8(0)
-	return emm.AttachTypeCombinedEPSAndIMSI, &noAdditionalInfo
+	ue.Lock()
+	sgsAssociated := ue.SGsState == uecontext.SGsUEAssociated
+	sgsLAI := ue.SGsLAI
+	pendingTMSI := ue.SGsPendingNewTMSI
+	ue.Unlock()
+	if s.sgsCfg.Enabled && sgsAssociated && sgsLAI != nil {
+		return emm.AttachTypeCombinedEPSAndIMSI, nil, sgsLAI, pendingTMSI
+	}
+	if s.sgdCfg.Enabled && smsState == uecontext.SMSRegistrationRegistered {
+		noAdditionalInfo := uint8(0)
+		return emm.AttachTypeCombinedEPSAndIMSI, &noAdditionalInfo, nil, nil
+	}
+	return emm.AttachTypeEPSOnly, nil, nil, nil
 }
 
 func (s *Server) epsNetworkFeatureSupport() *emm.EPSNetworkFeatureSupport {

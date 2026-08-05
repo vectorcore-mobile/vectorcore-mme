@@ -35,7 +35,16 @@ type AttachRequest struct {
 	OldTAI              *TAI
 	TAI                 *TAI // last visited TAI
 	LastVisitedTAI      *TAI
+	// AdditionalUpdateType is nil when the IE is absent. When present, bit 1
+	// (AdditionalUpdateTypeSMSOnlyBit) set means the UE requested "SMS only"
+	// rather than a full combined attach (TS 24.301 §9.9.3.0B).
+	AdditionalUpdateType *uint8
 }
+
+// AdditionalUpdateTypeSMSOnlyBit is bit 1 (AUTV) of the Additional update
+// type IE value: set means "SMS only", clear means "no additional
+// information" (interpreted as a request for combined attach/TAU).
+const AdditionalUpdateTypeSMSOnlyBit uint8 = 0x01
 
 // AttachComplete holds the decoded Attach Complete body.
 type AttachComplete struct {
@@ -52,6 +61,16 @@ type AttachAcceptParams struct {
 	ESMContainer             []byte
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
 	AdditionalUpdateResult   *uint8
+	// LAI is the real SGs-assigned location area identification (TS 24.301
+	// §8.2.1.3), included only for a genuine combined attach where an SGs
+	// Location Update actually succeeded. It is deliberately distinct from
+	// the SGd-only "combined" result, which never carries a LAI.
+	LAI *LAI
+	// NewTMSI is a VLR-assigned TMSI (from SGsAP-LOCATION-UPDATE-ACCEPT)
+	// relayed to the UE via the "MS identity" IE, TS 29.118 §5.2.2.3. Only
+	// meaningful alongside LAI - a CS-domain identity means nothing to a UE
+	// without an SGs association.
+	NewTMSI *uint32
 }
 
 // DecodeAttachRequest decodes a NAS Attach Request message body (after the 2-byte header).
@@ -121,6 +140,15 @@ func DecodeAttachRequest(data []byte) (*AttachRequest, error) {
 	for offset < len(data) {
 		iei := data[offset]
 		offset++
+		if iei&0xf0 == 0xf0 {
+			// Additional update type: type-1 half-octet IE, IEI 0xF. Already
+			// fully consumed by the single IEI byte - checked before the
+			// bounds guard below, which only applies to IEs that need a
+			// following value/length byte.
+			v := iei & 0x0F
+			ar.AdditionalUpdateType = &v
+			continue
+		}
 		if offset >= len(data) {
 			break
 		}
@@ -242,6 +270,23 @@ func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 		b = append(b, 0x50)
 		gutiBytes := params.GUTI.Encode()
 		b = append(b, gutiBytes...)
+	}
+
+	// Location area identification (optional, IEI 0x13). TS 24.301 Table
+	// 8.2.1.1 marks this IE format TV, length 6 (IEI + fixed 5-octet value,
+	// no length octet) - unlike GUTI/MS identity, which are TLV. Encoded the
+	// same way as the sibling TAU Accept LAI IE (internal/nas/emm/tau.go).
+	if params.LAI != nil {
+		b = append(b, 0x13)
+		b = append(b, params.LAI.Encode()...)
+	}
+
+	// MS identity (optional, IEI 0x23, TLV per TS 24.301 Table 8.2.1.1).
+	// Relays a VLR-assigned TMSI (TS 29.118 §5.2.2.3).
+	if params.NewTMSI != nil {
+		msIdentity := EncodeMSIdentityTMSI(*params.NewTMSI)
+		b = append(b, 0x23, byte(len(msIdentity)))
+		b = append(b, msIdentity...)
 	}
 
 	if params.T3402 != nil {

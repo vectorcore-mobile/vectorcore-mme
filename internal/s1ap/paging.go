@@ -32,8 +32,22 @@ var (
 )
 
 // PageUE implements api.Pager. It validates the UE state, selects target eNBs,
-// sends S1AP Paging, and starts T3413 with retry logic.
+// sends S1AP Paging with CN Domain=PS, and starts T3413 with retry logic.
 func (s *Server) PageUE(imsi string) error {
+	return s.pageUEWithCNDomain(imsi, 0)
+}
+
+// PageUEForCSFB pages a UE for a VLR-originated CS Fallback (SGsAP-PAGING-
+// REQUEST), sending CN Domain=CS so the UE responds with an Extended
+// Service Request (mobile terminating CS fallback) rather than a plain
+// Service Request. It shares PageUE's T3413 retry machinery; callers must
+// set ue.SGsPendingPaging before calling so the pending paging survives
+// retries.
+func (s *Server) PageUEForCSFB(imsi string) error {
+	return s.pageUEWithCNDomain(imsi, 1)
+}
+
+func (s *Server) pageUEWithCNDomain(imsi string, cnDomain uint8) error {
 	ue, ok := s.ueManager.GetByIMSI(imsi)
 	if !ok {
 		metrics.PagingTotal.WithLabelValues("unknown_imsi").Inc()
@@ -80,6 +94,7 @@ func (s *Server) PageUE(imsi string) error {
 	log := s.log.With(
 		zap.String("imsi", imsi),
 		zap.String("procedure", "Paging"),
+		zap.Uint8("cn_domain", cnDomain),
 	)
 	if guti != nil {
 		log = log.With(zap.Uint8("mmec", guti.MMEC), zap.Uint32("mtmsi", guti.MTMSI))
@@ -90,6 +105,7 @@ func (s *Server) PageUE(imsi string) error {
 
 	ue.Lock()
 	ue.PagingAttempts = 1
+	ue.PagingCNDomain = cnDomain
 	ue.Unlock()
 
 	log.Info("s1ap: Paging UE", zap.Int("enb_count", len(targets)), zap.Uint8("attempt", 1))
@@ -165,6 +181,7 @@ func (s *Server) sendPaging(enbAddr string, ue *uecontext.Context, log *zap.Logg
 	ue.Lock()
 	guti := ue.GUTI
 	tai := ue.TAI
+	cnDomain := ue.PagingCNDomain
 	ue.Unlock()
 	if guti == nil {
 		return ErrNoPagingIdentity
@@ -188,7 +205,7 @@ func (s *Server) sendPaging(enbAddr string, ue *uecontext.Context, log *zap.Logg
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEUEIdentityIndexValue, Criticality: aper.CriticalityIgnore, Value: idxValue},
 		{ID: pdu.IEUEPagingID, Criticality: aper.CriticalityIgnore, Value: pagingIDValue},
-		{ID: pdu.IECNDomain, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCNDomain(0)},
+		{ID: pdu.IECNDomain, Criticality: aper.CriticalityIgnore, Value: ies.EncodeCNDomain(cnDomain)},
 		{ID: pdu.IEPagingTAIList, Criticality: aper.CriticalityIgnore, Value: taiListValue},
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcPaging, aper.CriticalityIgnore, ieList)
@@ -274,8 +291,15 @@ func (s *Server) onPagingTimeout(ue *uecontext.Context, attempt uint8, log *zap.
 	// All attempts exhausted — record timeout. UE stays EMM-REGISTERED/ECM-IDLE.
 	ue.Lock()
 	ue.PagingAttempts = 0
+	sgsPaging := ue.SGsPendingPaging
+	ue.SGsPendingPaging = nil
+	imsi := ue.IMSI
 	ue.Unlock()
 
 	metrics.PagingTotal.WithLabelValues("timeout").Inc()
 	log.Warn("s1ap: Paging timeout — UE did not respond", zap.Uint8("max_attempts", maxPagingAttempts))
+
+	if sgsPaging != nil {
+		s.reportSGsUEUnreachable(sgsPaging.VLRName, imsi)
+	}
 }

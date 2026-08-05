@@ -729,6 +729,19 @@ func EncodeCNDomain(domain uint8) []byte {
 	return w.Bytes()
 }
 
+// EncodeCSFallbackIndicator encodes the CSFallbackIndicator IE: an
+// ENUMERATED with an extension marker (TS 36.413 §9.2.3.21) whose only root
+// value is cs-fallback-required. cs-fallback-high-priority is an extension
+// addition (APER extended-enumerated encoding) and is deliberately not
+// supported; every CSFB paging/redirection in this MME uses "required".
+func EncodeCSFallbackIndicator() []byte {
+	w := aper.NewBitWriter()
+	w.WriteBit(0) // extension bit: root value selected
+	// The root list has exactly one value (cs-fallback-required), so
+	// selecting it needs zero further bits.
+	return w.Bytes()
+}
+
 // EncodeRelativeMMECapacity encodes RelativeMMECapacity INTEGER (0..255).
 func EncodeRelativeMMECapacity(v uint8) []byte {
 	w := aper.NewBitWriter()

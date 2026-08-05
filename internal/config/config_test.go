@@ -219,6 +219,115 @@ sgd:
 	}
 }
 
+func TestLoadSGsConfigurationAndDisabledValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mme.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sgs:
+  enabled: true
+  smsonly: true
+  vlr:
+    - name: vlr-1
+      address: "192.0.2.50"
+      port: 29118
+  tai_lai_map:
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 1 }
+      vlr: vlr-1
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := load(t, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SGs.Enabled || !cfg.SGs.SMSOnly || len(cfg.SGs.VLR) != 1 || len(cfg.SGs.TAILAIMap) != 1 {
+		t.Fatalf("unexpected SGs config: %+v", cfg.SGs)
+	}
+	if cfg.SGs.ReconnectInterval <= 0 || cfg.SGs.RequestTimeout <= 0 {
+		t.Fatalf("SGs defaults must be applied: %+v", cfg.SGs)
+	}
+	if cfg.SMS.PreferredTransport != "sgd" {
+		t.Fatalf("sms.preferred_transport must default to sgd, got %q", cfg.SMS.PreferredTransport)
+	}
+
+	path = filepath.Join(dir, "disabled.yaml")
+	if err := os.WriteFile(path, []byte(`
+nf:
+  origin_host: mme.example
+  mcc: "001"
+  mnc: "01"
+sgs:
+  enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := load(t, path); err != nil {
+		t.Fatalf("disabled SGs must not validate missing vlr/tai_lai_map: %v", err)
+	}
+
+	for name, yamlFrag := range map[string]string{
+		"no vlr": `
+sgs:
+  enabled: true
+  tai_lai_map:
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 1 }
+      vlr: vlr-1
+`,
+		"no tai_lai_map": `
+sgs:
+  enabled: true
+  vlr:
+    - name: vlr-1
+      address: "192.0.2.50"
+      port: 29118
+`,
+		"unknown vlr reference": `
+sgs:
+  enabled: true
+  vlr:
+    - name: vlr-1
+      address: "192.0.2.50"
+      port: 29118
+  tai_lai_map:
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 1 }
+      vlr: vlr-2
+`,
+		"duplicate tai": `
+sgs:
+  enabled: true
+  vlr:
+    - name: vlr-1
+      address: "192.0.2.50"
+      port: 29118
+  tai_lai_map:
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 1 }
+      vlr: vlr-1
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 2 }
+      vlr: vlr-1
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := filepath.Join(dir, "invalid-"+name+".yaml")
+			data := []byte("nf:\n  origin_host: mme.example\n  mcc: \"001\"\n  mnc: \"01\"\n" + yamlFrag)
+			if err := os.WriteFile(p, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := load(t, p); err == nil {
+				t.Fatalf("expected validation error for %s", name)
+			}
+		})
+	}
+}
+
 func TestSBcAPLegacyPPIDZeroDefaultsStrictAndParses(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mme.yaml")

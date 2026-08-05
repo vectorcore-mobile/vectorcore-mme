@@ -285,6 +285,7 @@ func (s *Server) cleanupUEOwnedSMS(ue *uecontext.Context) {
 		}
 		return true
 	})
+	s.pendingSGsMT.Delete(imsi)
 }
 
 func (s *Server) cancelReachabilityForDetach(ue *uecontext.Context) {

@@ -18,6 +18,8 @@ type Config struct {
 	S6a              S6aConfig              `yaml:"s6a"`
 	S13              S13Config              `yaml:"s13"`
 	SGd              SGdConfig              `yaml:"sgd"`
+	SGs              SGsConfig              `yaml:"sgs"`
+	SMS              SMSConfig              `yaml:"sms"`
 	SLg              SLgConfig              `yaml:"slg"`
 	SLs              SLsConfig              `yaml:"sls"`
 	SBcAP            SBcAPConfig            `yaml:"sbcap"`
@@ -267,6 +269,55 @@ type SGdConfig struct {
 	TransactionTimeout   time.Duration `yaml:"transaction_timeout"`
 }
 
+// SMSConfig is cross-cutting SMS routing policy that is not owned by either
+// transport. PreferredTransport is only consulted for a UE registered on
+// both SGd and SGs simultaneously; it has no effect when only one of
+// sgd.enabled / sgs.enabled is true.
+type SMSConfig struct {
+	PreferredTransport string `yaml:"preferred_transport"` // "sgd" or "sgs"
+}
+
+// SGsConfig controls the MME-to-VLR SGs-AP association (TS 29.118), used for
+// CS Fallback and/or SMS over SGs. Unlike SGd, SGs is not a Diameter
+// application: the MME establishes its own outbound SCTP association to
+// each configured VLR. TAILAIMap ties every TAI this MME serves to the LAI
+// to present to the UE/VLR and to the specific VLR association to use, the
+// same split open5gs uses (a "vlr" list plus a TAI-LAI "csmap"); there is no
+// TMSI/NRI-based VLR pooling.
+type SGsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// SMSOnly restricts the SGs association to SMS relay: the MME still
+	// performs the SGs Location Update, but never treats the UE as CS
+	// Fallback capable (no Extended Service Request/CSFB-indicator handling).
+	SMSOnly           bool               `yaml:"smsonly"`
+	ReconnectInterval time.Duration      `yaml:"reconnect_interval"`
+	RequestTimeout    time.Duration      `yaml:"request_timeout"`
+	QoS               QoSConfig          `yaml:"qos"`
+	VLR               []SGsVLRConfig     `yaml:"vlr"`
+	TAILAIMap         []SGsTAILAIMapItem `yaml:"tai_lai_map"`
+}
+
+type SGsVLRConfig struct {
+	Name    string `yaml:"name"`
+	Address string `yaml:"address"`
+	Port    int    `yaml:"port"`
+}
+
+type SGsLAIItem struct {
+	MCC string `yaml:"mcc"`
+	MNC string `yaml:"mnc"`
+	LAC uint16 `yaml:"lac"`
+}
+
+// SGsTAILAIMapItem pins one served TAI to the LAI the MME presents to the
+// VLR/UE and to the specific VLR association (by name, from SGsConfig.VLR)
+// used to reach it.
+type SGsTAILAIMapItem struct {
+	TAI TAIItem    `yaml:"tai"`
+	LAI SGsLAIItem `yaml:"lai"`
+	VLR string     `yaml:"vlr"`
+}
+
 // SLgConfig controls the MME-side TS 29.172 Diameter application.  Diameter
 // transport and routing remain under diameter; SLg is disabled by default.
 type SLgConfig struct {
@@ -420,6 +471,13 @@ func Load(path string) (*Config, error) {
 			SGdSCAddressEncoding:   "tbcd",
 			TransactionTimeout:     30 * time.Second,
 		},
+		SGs: SGsConfig{
+			ReconnectInterval: 5 * time.Second,
+			RequestTimeout:    10 * time.Second,
+		},
+		SMS: SMSConfig{
+			PreferredTransport: "sgd",
+		},
 		SLg: SLgConfig{TransactionTimeout: 30 * time.Second, ReportTimeout: 30 * time.Second, TransactionCapacity: 1024},
 		SLs: SLsConfig{LocalAddress: "0.0.0.0", RemotePort: 9082, ReconnectInterval: 5 * time.Second, RequestTimeout: 10 * time.Second, MaxTransactions: 1024, MaxPDUSize: 1 << 20},
 		SBcAP: SBcAPConfig{
@@ -516,6 +574,7 @@ func Load(path string) (*Config, error) {
 		"diameter.qos": cfg.Diameter.QoS,
 		"s10.qos":      cfg.S10.QoS,
 		"s11.qos":      cfg.S11.QoS,
+		"sgs.qos":      cfg.SGs.QoS,
 	} {
 		if err := validateQoS(qos); err != nil {
 			return nil, fmt.Errorf("config: %s: %w", name, err)
@@ -578,6 +637,15 @@ func Load(path string) (*Config, error) {
 		if cfg.SGd.TransactionTimeout <= 0 {
 			return nil, fmt.Errorf("config: sgd.transaction_timeout must be greater than 0")
 		}
+	}
+	if err := validateSGs(cfg.SGs); err != nil {
+		return nil, err
+	}
+	if cfg.SMS.PreferredTransport == "" {
+		cfg.SMS.PreferredTransport = "sgd"
+	}
+	if cfg.SMS.PreferredTransport != "sgd" && cfg.SMS.PreferredTransport != "sgs" {
+		return nil, fmt.Errorf("config: sms.preferred_transport must be sgd or sgs")
 	}
 	if cfg.SLg.TransactionTimeout <= 0 || cfg.SLg.ReportTimeout <= 0 || cfg.SLg.TransactionCapacity < 1 {
 		return nil, fmt.Errorf("config: slg transaction_timeout/report_timeout must be greater than 0 and transaction_capacity must be at least 1")
@@ -683,6 +751,64 @@ func validateQoS(cfg QoSConfig) error {
 	}
 	if *cfg.DSCP < 0 || *cfg.DSCP > 63 {
 		return fmt.Errorf("dscp must be between 0 and 63, got %d", *cfg.DSCP)
+	}
+	return nil
+}
+
+func validateSGs(cfg SGsConfig) error {
+	if !cfg.Enabled {
+		return nil
+	}
+	if cfg.ReconnectInterval <= 0 || cfg.RequestTimeout <= 0 {
+		return fmt.Errorf("config: sgs.reconnect_interval and sgs.request_timeout must be greater than 0")
+	}
+	if len(cfg.VLR) == 0 {
+		return fmt.Errorf("config: sgs.vlr must contain at least one VLR when enabled")
+	}
+	vlrNames := make(map[string]struct{}, len(cfg.VLR))
+	for i, vlr := range cfg.VLR {
+		if vlr.Name == "" {
+			return fmt.Errorf("config: sgs.vlr[%d].name is required", i)
+		}
+		if net.ParseIP(vlr.Address) == nil {
+			return fmt.Errorf("config: sgs.vlr[%d].address must be an IP address", i)
+		}
+		if vlr.Port < 1 || vlr.Port > 65535 {
+			return fmt.Errorf("config: sgs.vlr[%d].port must be between 1 and 65535", i)
+		}
+		if _, exists := vlrNames[vlr.Name]; exists {
+			return fmt.Errorf("config: duplicate sgs.vlr name %q", vlr.Name)
+		}
+		vlrNames[vlr.Name] = struct{}{}
+	}
+	if len(cfg.TAILAIMap) == 0 {
+		return fmt.Errorf("config: sgs.tai_lai_map must contain at least one entry when enabled")
+	}
+	seenTAI := make(map[plmn.PLMN]map[uint16]struct{}, len(cfg.TAILAIMap))
+	for i, m := range cfg.TAILAIMap {
+		taiPLMN := plmn.PLMN{MCC: m.TAI.MCC, MNC: m.TAI.MNC}
+		if err := taiPLMN.Validate(); err != nil {
+			return fmt.Errorf("config: sgs.tai_lai_map[%d].tai: %w", i, err)
+		}
+		laiPLMN := plmn.PLMN{MCC: m.LAI.MCC, MNC: m.LAI.MNC}
+		if err := laiPLMN.Validate(); err != nil {
+			return fmt.Errorf("config: sgs.tai_lai_map[%d].lai: %w", i, err)
+		}
+		if m.VLR == "" {
+			return fmt.Errorf("config: sgs.tai_lai_map[%d].vlr is required", i)
+		}
+		if _, ok := vlrNames[m.VLR]; !ok {
+			return fmt.Errorf("config: sgs.tai_lai_map[%d].vlr %q does not match any sgs.vlr[].name", i, m.VLR)
+		}
+		tacs, ok := seenTAI[taiPLMN]
+		if !ok {
+			tacs = make(map[uint16]struct{})
+			seenTAI[taiPLMN] = tacs
+		}
+		if _, dup := tacs[m.TAI.TAC]; dup {
+			return fmt.Errorf("config: sgs.tai_lai_map[%d] duplicates an already-mapped TAI", i)
+		}
+		tacs[m.TAI.TAC] = struct{}{}
 	}
 	return nil
 }

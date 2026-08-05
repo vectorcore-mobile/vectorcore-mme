@@ -17,6 +17,7 @@ import (
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/sgsap"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -809,6 +810,7 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 	ueRadioCapability := append([]byte(nil), ue.UERadioCapability...)
 	kenb := append([]byte(nil), ue.KeNB...)
 	kenbULNASCount := ue.KeNBULCount
+	sgsPendingPaging := ue.SGsPendingPaging
 	kenbSource := "stored_snapshot"
 	if len(kenb) == 0 {
 		var err error
@@ -868,6 +870,19 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 				ID:          pdu.IEUERadioCapability,
 				Criticality: aper.CriticalityIgnore,
 				Value:       ies.EncodeUERadioCapability(ueRadioCapability),
+			})
+		}
+		// CS Fallback Indicator (TS 36.413 §9.2.3.21): this ICS is resuming a
+		// NAS signalling connection the UE established in answer to a VLR
+		// CS-call page (SGsAP-PAGING-REQUEST, service indicator = CS call).
+		// sgs.smsonly is a network policy override: even if a VLR somehow
+		// pages for a CS call, this MME never signals CSFB when smsonly is
+		// set (see docs/sgs-ap.md).
+		if sgsPendingPaging != nil && sgsPendingPaging.ServiceIndicator == uint8(sgsap.ServiceIndicatorCSCall) && !s.sgsCfg.SMSOnly {
+			ieList = append(ieList, pdu.ProtocolIE{
+				ID:          pdu.IECSFallbackIndicator,
+				Criticality: aper.CriticalityIgnore,
+				Value:       ies.EncodeCSFallbackIndicator(),
 			})
 		}
 	}

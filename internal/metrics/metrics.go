@@ -26,6 +26,9 @@ var (
 	SMSTimerExpirationsTotal   = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "timer_expirations_total", Help: "SMS transaction timer expirations."}, []string{"direction"})
 	SMSDuplicateMessagesTotal  = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sms", Name: "duplicate_messages_total", Help: "Suppressed duplicate SMS messages."}, []string{"direction"})
 
+	// SGs (TS 29.118) metrics
+	SGsLocationUpdateRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{Namespace: "mme", Subsystem: "sgs", Name: "location_update_requests_total", Help: "SGs Location Update Requests by result."}, []string{"result"})
+
 	// S1AP metrics
 	S1APMessagesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "mme",

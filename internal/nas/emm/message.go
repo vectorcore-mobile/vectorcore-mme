@@ -7,9 +7,9 @@ import (
 // NASHeader is the common header for all plain NAS EMM messages.
 // Security-protected messages wrap this inside a SecurityProtectedHeader.
 type NASHeader struct {
-	SecurityHeaderType uint8 // bits 7:4 of byte 0
+	SecurityHeaderType    uint8 // bits 7:4 of byte 0
 	ProtocolDiscriminator uint8 // bits 3:0 of byte 0
-	MessageType        uint8 // byte 1
+	MessageType           uint8 // byte 1
 }
 
 // Encode returns the 2-byte NAS header.

@@ -17,7 +17,6 @@ export default function Sidebar() {
         <div className="sidebar-logo">VectorCore</div>
         <div className="sidebar-logo-sub">Mobility Management Entity</div>
         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 2, letterSpacing: '0.04em' }}>
-          LTE EPC S1-MME S6a S11
         </div>
       </div>
 

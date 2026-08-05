@@ -930,3 +930,95 @@ func capturedInitialUEMessagePDU(t *testing.T) []byte {
 	}
 	return raw
 }
+
+func TestSendInitialContextSetup_IncludesCSFallbackIndicatorForPendingCSFBPaging(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.30:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010206
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.SGsPendingPaging = &uecontext.SGsPagingContext{VLRName: "vlr-1", ServiceIndicator: 1} // CS call
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	found := false
+	for _, ie := range ieList {
+		if ie.ID == pdu.IECSFallbackIndicator {
+			found = true
+			if !bytes.Equal(ie.Value, ies.EncodeCSFallbackIndicator()) {
+				t.Fatalf("CS Fallback Indicator value = %x", ie.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected CS Fallback Indicator IE in the resuming ICS for a pending CS-call page")
+	}
+}
+
+func TestSendInitialContextSetup_OmitsCSFallbackIndicatorForSMSPaging(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.31:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010207
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.SGsPendingPaging = &uecontext.SGsPagingContext{VLRName: "vlr-1", ServiceIndicator: 2} // SMS
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID == pdu.IECSFallbackIndicator {
+			t.Fatal("did not expect CS Fallback Indicator IE for an SMS-indicator page")
+		}
+	}
+}
+
+func TestSendInitialContextSetup_OmitsCSFallbackIndicatorWhenSMSOnly(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.sgsCfg.SMSOnly = true
+	const remoteAddr = "192.0.2.32:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010208
+	ue.KASME = make([]byte, 32)
+	ue.UENetworkCapability = []byte{0xf0, 0xf0}
+	ue.UEAMBRDown = 100000000
+	ue.UEAMBRUp = 100000000
+	ue.SGsPendingPaging = &uecontext.SGsPagingContext{VLRName: "vlr-1", ServiceIndicator: 1} // CS call
+
+	bearer := &BearerInfo{EBI: 5, SGWU_TEID: 0x01020304, SGWU_IP: []byte{10, 0, 0, 1}}
+	if err := srv.SendInitialContextSetup(ue.MMEUES1APID, []byte{0x27, 0x42}, bearer); err != nil {
+		t.Fatalf("SendInitialContextSetup: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID == pdu.IECSFallbackIndicator {
+			t.Fatal("sgs.smsonly must suppress the CS Fallback Indicator even for a pending CS-call page")
+		}
+	}
+}

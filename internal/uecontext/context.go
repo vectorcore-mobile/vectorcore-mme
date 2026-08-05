@@ -19,6 +19,22 @@ type S1BindingState uint8
 // register every subscriber for SMS in MME.
 type SMSRegistrationState string
 
+// SGsUEState is the per-UE SGs association state (TS 29.118 §4.3.3). It is
+// independent of EMMState/ECMState and of SMSRegistrationState: SGs covers
+// CS Fallback and/or SMS over SGs, SMSRegistrationState covers SMS over
+// SGd, and a UE can be registered on neither, either, or (when both
+// interfaces are enabled) both at once - sms.preferred_transport picks
+// between them for outbound MO SMS. A VLR-side rejection (or an SGs LU
+// timing out) only ever moves this state back to SGsUENull; it must never
+// fail or roll back the EPS attach/TAU that triggered it.
+type SGsUEState string
+
+const (
+	SGsUENull              SGsUEState = "SGs-NULL"
+	SGsUELAUpdateRequested SGsUEState = "LA-UPDATE-REQUESTED"
+	SGsUEAssociated        SGsUEState = "SGs-ASSOCIATED"
+)
+
 // LogicalPGWInterface reserves the S5/S8 decision for the roaming integration
 // phase. Phase 1 does not use it to select a gateway or create a session.
 type LogicalPGWInterface string
@@ -81,6 +97,25 @@ const (
 	DDNPagingTimedOut         DDNPagingStatus = "timed-out"
 	DDNPagingFailed           DDNPagingStatus = "failed"
 )
+
+// SGsPagingContext tracks one outstanding SGsAP-PAGING-REQUEST from the VLR
+// until it is completed by an SGsAP-SERVICE-REQUEST (TS 29.118 §5.1.3).
+type SGsPagingContext struct {
+	VLRName          string
+	ServiceIndicator uint8 // sgsap.ServiceIndicator value: 1=CS call, 2=SMS
+	StartedAt        time.Time
+}
+
+// SGsPendingDetachAccept holds an already-encoded (integrity-protected and
+// ciphered) Detach Accept, held back while the MME waits for an
+// SGsAP-IMSI-DETACH-ACK before confirming an IMSI or combined EPS/IMSI
+// detach to the UE (TS 29.118 §5.5.2.2).
+type SGsPendingDetachAccept struct {
+	MMEUEID uint32
+	ENBUEID uint32
+	ENBAddr string
+	Payload []byte
+}
 
 type DDNPagingTransaction struct {
 	ID                 string
@@ -197,6 +232,20 @@ type Context struct {
 	SMSRegistrationCause string
 	SMSRegistrationAt    time.Time
 
+	// Runtime-only SGs association state (TS 29.118 §4.3.3). Never restored
+	// after restart: an SGs-ASSOCIATED UE re-establishes the association via
+	// its next combined TAU, the same recovery model already used for
+	// SMSRegistrationState. SGsVLRName/SGsLAI identify which configured VLR
+	// and LAI the association belongs to; SGsRejectCause/SGsRejectAt record
+	// the last VLR-side rejection for diagnostics without ever affecting the
+	// EPS attach/TAU outcome.
+	SGsState        SGsUEState
+	SGsVLRName      string
+	SGsLAI          *emm.LAI
+	SGsRejectCause  uint8
+	SGsRejectAt     time.Time
+	SGsAssociatedAt time.Time
+
 	// GUTI
 	GUTI *emm.GUTI
 
@@ -235,6 +284,12 @@ type Context struct {
 	UENetworkCapability []byte
 	MSNetworkCapability []byte
 	AttachType          uint8
+	// RequestedSMSOnly is transient: true when the UE's Attach Request
+	// included Additional Update Type = "SMS only" (TS 24.301 §9.9.3.0B).
+	// TAU carries this through the request directly instead of storing it
+	// here, since (unlike Attach Accept) TAU Accept is built and sent
+	// synchronously in the same call chain that decodes the TAU Request.
+	RequestedSMSOnly bool
 
 	// UE radio capability (raw S1AP UERadioCapability OCTET STRING).
 	UERadioCapability []byte
@@ -322,9 +377,30 @@ type Context struct {
 
 	// Paging state
 	PagingAttempts   uint8 // 0 = not paging; >0 = paging cycle active
+	PagingCNDomain   uint8 // CN Domain sent in the S1AP Paging PDU: 0=ps, 1=cs
 	DDNPaging        *DDNPagingTransaction
 	DefaultPagingDRX uint8
 	S1ReleaseRABR    *S1ReleaseRABRTransaction
+
+	// SGsPendingPaging records an outstanding SGsAP-PAGING-REQUEST from the
+	// VLR (TS 29.118 §5.1) while the MME pages the UE or waits for an
+	// already-connected UE's SGsAP-SERVICE-REQUEST. ServiceIndicator mirrors
+	// sgsap.ServiceIndicator's numeric value; this package intentionally
+	// does not import internal/sgsap.
+	SGsPendingPaging *SGsPagingContext
+
+	// SGsPendingDetachAccept holds a Detach Accept withheld pending
+	// SGsAP-IMSI-DETACH-ACK; see the type's doc comment.
+	SGsPendingDetachAccept *SGsPendingDetachAccept
+
+	// SGsPendingNewTMSI holds a VLR-assigned TMSI (from SGsAP-LOCATION-
+	// UPDATE-ACCEPT's optional Mobile identity IE) awaiting relay to the UE
+	// via the next Attach/TAU Accept (TS 29.118 §5.2.2.3). Once included in
+	// an outgoing Accept it moves to SGsSentNewTMSI, which
+	// completeSGsTMSIReallocation clears once SGsAP-TMSI-REALLOCATION-
+	// COMPLETE has been sent for it.
+	SGsPendingNewTMSI *uint32
+	SGsSentNewTMSI    *uint32
 
 	// Active timers
 	timers map[string]*time.Timer
@@ -532,6 +608,7 @@ func NewContext(mmeID uint32) *Context {
 	return &Context{
 		MMEUES1APID:               mmeID,
 		SMSRegistrationState:      SMSRegistrationNotRequested,
+		SGsState:                  SGsUENull,
 		EMMState:                  emm.StateDeregistered,
 		ECMState:                  emm.ECMIdle,
 		PDNs:                      make(map[string]*PDNContext),

@@ -4,4 +4,3 @@ S10 Testing.
 API/Web-UI updates.
 Recovery... Finish startup logic and testing.
 S11 interop testing.
-test other Enb's

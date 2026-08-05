@@ -308,6 +308,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.UENetworkCapability = ar.UENetworkCapability
 	ue.MSNetworkCapability = ar.MSNetworkCapability
 	ue.AttachType = ar.AttachType
+	ue.RequestedSMSOnly = ar.AdditionalUpdateType != nil && *ar.AdditionalUpdateType&emm.AdditionalUpdateTypeSMSOnlyBit != 0
 	ue.InitialAttachRequestNAS = hashMMEInput
 	ue.Unlock()
 
@@ -709,9 +710,27 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 
 func (s *Server) processExtendedServiceRequest(ue *uecontext.Context, body []byte, log *zap.Logger) error {
 	req, err := emm.DecodeExtendedServiceRequest(body)
+	if err == nil && req.ServiceType == emm.ServiceTypeMobileTerminatingCSFallback {
+		ue.Lock()
+		mmeUEID, imsi := ue.MMEUES1APID, ue.IMSI
+		ue.Unlock()
+		log.Info("s1ap: MT CSFB Extended Service Request received", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
+		s.completeSGsPaging(ue)
+		metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "mt_csfb").Inc()
+		return nil
+	}
 	if err == nil && req.ServiceType == emm.ServiceTypeMobileOriginatingCSFallback {
-		// SGd/SMS-in-MME is not an operational SGs or CS service. Complete the
-		// unsupported CSFB request without touching any pending EPS procedure.
+		ue.Lock()
+		sgsAvailable := s.sgsCfg.Enabled && !s.sgsCfg.SMSOnly && ue.SGsState == uecontext.SGsUEAssociated
+		ue.Unlock()
+		if sgsAvailable {
+			s.handleMOCSFBExtendedServiceRequest(ue, log)
+			metrics.NASProceduresTotal.WithLabelValues("ExtendedServiceRequest", "mo_csfb").Inc()
+			return nil
+		}
+		// No operational SGs association (disabled, smsonly, or not yet
+		// associated - see docs/sgs-ap.md). Complete the unsupported CSFB
+		// request without touching any pending EPS procedure.
 		ue.Lock()
 		mmeUEID := ue.MMEUES1APID
 		enbUEID := ue.ENBS1APID
@@ -1037,6 +1056,7 @@ func (s *Server) processAttachComplete(ue *uecontext.Context, body []byte, log *
 
 	metrics.AttachedUEs.Inc()
 	s.refreshReachability(ue, "attach-complete")
+	s.completeSGsTMSIReallocation(ue)
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "complete").Inc()
 	log.Info("s1ap: UE attached",
 		zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
@@ -1203,6 +1223,8 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 	knasInt := append([]byte(nil), ue.KNASint...)
 	knasEnc := append([]byte(nil), ue.KNASenc...)
 	dlCount := uint32(ue.DLNASCount)
+	sgsState := ue.SGsState
+	sgsVLRName := ue.SGsVLRName
 	ue.SetEMMState(emm.StateDeregisteredInitiated)
 	ue.Unlock()
 
@@ -1215,20 +1237,36 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 		zap.Uint8("ksi", dr.NASKeySetIdentifier),
 		zap.String("eps_mobile_identity_hex", hex.EncodeToString(dr.EPSMobileIdentity)))
 
+	// SGsAP EPS/IMSI Detach Indication (TS 29.118 §5.4/§5.5): only applies to
+	// a UE that isn't already SGs-NULL. An IMSI or combined EPS/IMSI detach
+	// not due to switch-off must hold back the Detach Accept (and, with it,
+	// the S1 context release) until SGsAP-IMSI-DETACH-ACK arrives.
+	waitForIMSIDetachAck := false
+	if s.sgsCfg.Enabled && sgsState != uecontext.SGsUENull {
+		sentIMSIDetach := s.sendSGsDetachIndicationForUE(ue, sgsVLRName, imsi, dr.DetachType, log)
+		waitForIMSIDetachAck = sentIMSIDetach && !dr.SwitchOff
+	}
+
 	if !dr.SwitchOff {
 		detachAccept := emm.EncodeDetachAccept()
 		protected, encErr := nas.EncodeIntegrityAndCiphered(detachAccept, intAlg, encAlg, knasInt, knasEnc, dlCount)
 		if encErr != nil {
 			return fmt.Errorf("processDetach: encode detach accept: %w", encErr)
 		}
-		s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, protected)
-		ue.Lock()
-		ue.DLNASCount.Increment()
-		ue.Unlock()
-		log.Info("s1ap: Detach Accept sent",
-			zap.Uint32("mme_ue_id", mmeUEID),
-			zap.Uint32("dl_nas_count", dlCount),
-			zap.Uint8("security_header_type", protected[0]>>4))
+		if waitForIMSIDetachAck {
+			s.deferDetachAcceptForIMSIDetachAck(ue, mmeUEID, enbUEID, enbAddr, protected, log)
+			log.Info("s1ap: Detach Accept withheld pending SGsAP-IMSI-DETACH-ACK",
+				zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("dl_nas_count", dlCount))
+		} else {
+			s.sendDownlinkNASTransport(enbAddr, mmeUEID, enbUEID, protected)
+			ue.Lock()
+			ue.DLNASCount.Increment()
+			ue.Unlock()
+			log.Info("s1ap: Detach Accept sent",
+				zap.Uint32("mme_ue_id", mmeUEID),
+				zap.Uint32("dl_nas_count", dlCount),
+				zap.Uint8("security_header_type", protected[0]>>4))
+		}
 	} else {
 		log.Info("s1ap: Detach Accept suppressed for switch-off detach",
 			zap.Uint32("mme_ue_id", mmeUEID))
@@ -1245,8 +1283,12 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 
 	// Initiate UE context release; metrics.AttachedUEs.Dec() is called in
 	// handleUEContextReleaseComplete once the eNB confirms release, guarded by
-	// wasAttached — do not decrement here to avoid double-count.
-	s.sendUEContextReleaseCommand(enbAddr, mmeUEID, enbUEID)
+	// wasAttached — do not decrement here to avoid double-count. Deferred
+	// until the withheld Detach Accept above actually goes out, since the S1
+	// signalling connection is needed to deliver it.
+	if !waitForIMSIDetachAck {
+		s.sendUEContextReleaseCommand(enbAddr, mmeUEID, enbUEID)
+	}
 
 	metrics.NASProceduresTotal.WithLabelValues("Detach", "request").Inc()
 	return nil

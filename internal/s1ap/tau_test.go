@@ -183,14 +183,45 @@ func TestAttachAcceptRegistrationUsesPerUECompletedSGdOutcome(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv.sgdCfg = config.SGdConfig{Enabled: tc.sgdEnabled}
-			got, additional := srv.attachAcceptRegistration(tc.attachType, tc.smsState)
+			ue := uecontext.NewContext(1)
+			got, additional, lai, _ := srv.attachAcceptRegistration(ue, tc.attachType, tc.smsState)
 			if got != tc.result {
 				t.Fatalf("result got %#x, want %#x", got, tc.result)
 			}
 			if (additional != nil) != tc.f0 || additional != nil && *additional != 0 {
 				t.Fatalf("additional update result got %v, want F0 present=%t", additional, tc.f0)
 			}
+			if lai != nil {
+				t.Fatalf("expected no LAI without a genuine SGs association, got %+v", lai)
+			}
 		})
+	}
+}
+
+func TestAttachAcceptRegistrationPrefersGenuineSGsAssociation(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.sgdCfg = config.SGdConfig{Enabled: true}
+	srv.sgsCfg = config.SGsConfig{Enabled: true}
+	ue := uecontext.NewContext(1)
+	lai := emm.LAI{PLMN: [3]byte{0x00, 0xF1, 0x10}, LAC: 1}
+	ue.SGsState = uecontext.SGsUEAssociated
+	ue.SGsLAI = &lai
+	ue.SMSRegistrationState = uecontext.SMSRegistrationRegistered
+	pendingTMSI := uint32(0xAABBCCDD)
+	ue.SGsPendingNewTMSI = &pendingTMSI
+
+	got, additional, gotLAI, gotTMSI := srv.attachAcceptRegistration(ue, emm.AttachTypeCombinedEPSAndIMSI, ue.SMSRegistrationState)
+	if got != emm.AttachTypeCombinedEPSAndIMSI {
+		t.Fatalf("result got %#x, want combined", got)
+	}
+	if additional != nil {
+		t.Fatalf("a genuine SGs association must not synthesize an Additional Update Result, got %v", additional)
+	}
+	if gotLAI == nil || *gotLAI != lai {
+		t.Fatalf("expected the real SGs LAI, got %+v", gotLAI)
+	}
+	if gotTMSI == nil || *gotTMSI != pendingTMSI {
+		t.Fatalf("expected the pending SGs TMSI, got %v", gotTMSI)
 	}
 }
 

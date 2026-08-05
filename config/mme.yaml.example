@@ -160,6 +160,39 @@ sgd:
   transaction_timeout: "30s"
   mme_number_for_mt_sms: "+15551230001"
 
+# MME-to-VLR SGs-AP association (TS 29.118), used for CS Fallback and/or
+# SMS over SGs. The MME opens its own outbound SCTP association per listed
+# VLR; tai_lai_map ties every served TAI to the LAI presented to the UE/VLR
+# and to one of those VLRs. There is no TMSI/NRI-based VLR pooling: exactly
+# one VLR per TAI, same as open5gs's vlr/csmap split.
+sgs:
+  enabled: false
+  # true: SGs association is used for SMS relay only; the MME performs the
+  # Location Update but never signals CS Fallback for the UE (no Extended
+  # Service Request / CSFB-indicator handling). false: full CSFB.
+  smsonly: false
+  reconnect_interval: "5s"
+  request_timeout: "10s"
+  # qos:
+  #   dscp: 24 # CS3
+
+  vlr:
+    - name: "vlr-1"
+      address: "192.0.2.50"
+      port: 29118
+
+  tai_lai_map:
+    - tai: { mcc: "001", mnc: "01", tac: 1 }
+      lai: { mcc: "001", mnc: "01", lac: 1 }
+      vlr: "vlr-1"
+
+# Cross-cutting SMS routing policy. preferred_transport is only consulted
+# when both sgd.enabled and sgs.enabled are true for a UE registered on both
+# paths; it has no effect otherwise. Most UEs use SMS over IMS and never
+# touch either of these legacy paths.
+sms:
+  preferred_transport: "sgd" # sgd | sgs
+
 # MME-to-E-SMLC SLs association (TS 29.171).
 sls:
   enabled: false

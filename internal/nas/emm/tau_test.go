@@ -201,6 +201,23 @@ func TestDecodeTAURequest_WithSpareZeroBeforeBearerStatus(t *testing.T) {
 	}
 }
 
+func TestDecodeTAURequest_WithAdditionalUpdateTypeSMSOnly(t *testing.T) {
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xf1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 0x01020304}
+	body := buildTAURequestBody(emm.EPSUpdateTypeCombined, guti)
+	body = append(body, 0xF1) // Additional update type: SMS only
+
+	req, err := emm.DecodeTAURequest(body)
+	if err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if req.AdditionalUpdateType == nil {
+		t.Fatal("AdditionalUpdateType should not be nil")
+	}
+	if *req.AdditionalUpdateType&emm.AdditionalUpdateTypeSMSOnlyBit == 0 {
+		t.Fatalf("AdditionalUpdateType = %#x, want SMS-only bit set", *req.AdditionalUpdateType)
+	}
+}
+
 func TestDecodeTAURequest_TooShort(t *testing.T) {
 	_, err := emm.DecodeTAURequest([]byte{0x03})
 	if err == nil {
@@ -408,7 +425,7 @@ func TestEncodeTAUAcceptWithParams_SMSOnlyCombinedTAU(t *testing.T) {
 		LAI:                    &lai,
 		AdditionalUpdateResult: &additional,
 	})
-	if !bytes.Contains(b, []byte{0x13, 0x05, 0x00, 0xf1, 0x10, 0x00, 0x01, 0xf2}) {
+	if !bytes.Contains(b, []byte{0x13, 0x00, 0xf1, 0x10, 0x00, 0x01, 0xf2}) {
 		t.Fatalf("TAU Accept missing LAI or SMS-only Additional Update Result: %x", b)
 	}
 	decoded, err := emm.DecodeTAUAccept(b)

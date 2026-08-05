@@ -1206,6 +1206,12 @@ func (s *Server) handleServiceRequestReestablished(ue *uecontext.Context, log *z
 	s.persistUERecoverySnapshot(ue, models.RecoveryStateRecovered, "ESTABLISHED")
 	s.ResumePendingNetworkBearerProcedures(ue)
 	s.deliverPendingMTSMS(ue)
+	s.deliverPendingSGsMT(ue)
+	// Fallback completion for an SGs paging cycle answered by a plain
+	// Service Request rather than an MT CSFB Extended Service Request (e.g.
+	// paging for an SMS-indicator, not a CS call). completeSGsPaging is a
+	// no-op if processExtendedServiceRequest already completed it.
+	s.completeSGsPaging(ue)
 
 	for _, group := range mbrGroups {
 		if group.sgwcTEID == 0 || len(group.bearers) == 0 {

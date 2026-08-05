@@ -12,6 +12,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **SLg** - disabled-by-default TS 29.172 Diameter PLR/PLA and LRR/LRA wire support
 - **SLs / E-SMLC** - optional TS 29.171 SCTP/LCS-AP positioning interface, including bounded SLg location transactions and transparent UE-associated LPP/LPPa relay
 - **SMS in MME / SGd** - EPS-only S6a SMS registration, protected SMS-over-NAS CP/RP handling, MO OFR, MT TFR, ECM-IDLE paging coordination, and Cisco `ascii_digits` SC-Address interoperability
+- **SGs-AP** - TS 29.118 MME-to-VLR association (outbound SCTP, node-level Reset procedure), `smsonly`/full-CSFB config, genuine combined Attach/TAU with real VLR-assigned LAI once the SGs Location Update succeeds, and SMS-over-SGs relay in both directions; MT/MO CS Fallback paging are not yet implemented
 - **S11 GTPv2-C** - CSR, MBR, DSR to S-GW/P-GW
 - **S8HR roaming** - verified HPLMN/VPLMN admission, home-HSS S6a routing, visited-SGW selection, and home-PGW selection over S8
 - **S10 GTPv2-C** - inter-MME context transfer (idle-mode TAU across MME pools)
@@ -22,7 +23,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - **APER codec** - hand-written, reflection-driven; no external ASN.1 library
 
 ## Planed Features:
-- SGs-AP - MME to MSC SMSoSGS/CSFB 
+- SGs-AP MT/MO CS Fallback paging
 - N26 interface - MME to AMF GTP-C
 - Full EN-DC 5G NSA
 - NB-IoT/LTE-M - Starting with Standard LTE data path, HSS needs some rework for this.
@@ -441,9 +442,10 @@ deferred-MT flow boundaries.
 
 Active CP/RP, pending Diameter, and pending paging SMS transactions are
 in-memory only. They are discarded on MME restart; the normal S6a ULR refresh
-restores per-subscriber eligibility. SGs-AP and SMS over IMS are not included
-in this release. A future SGs-AP adapter reuses the NAS SMS codec and shared
-SMS service rather than duplicating CP/RP state machines.
+restores per-subscriber eligibility. SMS over IMS is not included in this
+release. SMS over SGs is now implemented (see [SGs-AP](docs/sgs-ap.md)) as a
+transparent NAS-message-container relay, independent of the CP/RP state
+machine SGd uses.
 
 S13 queries an Equipment Identity Register during attach. It is disabled by
 default; disabled S13 sends no ECR and does not advertise application

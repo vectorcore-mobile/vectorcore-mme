@@ -11,6 +11,10 @@ type TAURequest struct {
 	UENetworkCapability []byte
 	LastVisitedTAI      *TAI
 	EPSBearerStatus     *EPSBearerContextStatus
+	// AdditionalUpdateType is nil when the IE is absent. When present, bit 1
+	// (AdditionalUpdateTypeSMSOnlyBit) set means the UE requested "SMS only"
+	// rather than a full combined TAU (TS 24.301 §9.9.3.0B).
+	AdditionalUpdateType *uint8
 }
 
 // TAUAcceptParams holds the semantic inputs for a TAU Accept encoder.
@@ -25,8 +29,11 @@ type TAUAcceptParams struct {
 	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
 	LAI                      *LAI
-	AdditionalUpdateResult   *uint8
-	EMMCause                 *uint8
+	// NewTMSI is a VLR-assigned TMSI relayed to the UE via the "MS identity"
+	// IE (TS 29.118 §5.2.2.3). Only meaningful alongside LAI.
+	NewTMSI                *uint32
+	AdditionalUpdateResult *uint8
+	EMMCause               *uint8
 }
 
 // TAUAccept holds decoded fields used by tests and diagnostics.
@@ -38,6 +45,7 @@ type TAUAccept struct {
 	EPSBearerStatus          *EPSBearerContextStatus
 	EPSNetworkFeatureSupport *EPSNetworkFeatureSupport
 	LAI                      *LAI
+	NewTMSI                  *uint32
 	AdditionalUpdateResult   *uint8
 	EMMCause                 *uint8
 }
@@ -184,6 +192,15 @@ func DecodeTAURequest(data []byte) (*TAURequest, error) {
 	for offset < len(data) {
 		iei := data[offset]
 		offset++
+		if iei&0xf0 == 0xf0 {
+			// Additional update type: type-1 half-octet IE, IEI 0xF. Already
+			// fully consumed by the single IEI byte - checked before the
+			// bounds guard below, which only applies to IEs that need a
+			// following value/length byte.
+			v := iei & 0x0F
+			r.AdditionalUpdateType = &v
+			continue
+		}
 		if offset >= len(data) {
 			break
 		}
@@ -279,10 +296,20 @@ func EncodeTAUAcceptWithParams(params TAUAcceptParams) []byte {
 		b = append(b, 0x57, byte(len(value)))
 		b = append(b, value...)
 	}
+	// Location area identification (optional, IEI 0x13). TS 24.301 Table
+	// 8.2.26.1 marks this IE format TV, length 6 (IEI + fixed 5-octet value,
+	// no length octet) - unlike GUTI/MS identity, which are TLV.
 	if params.LAI != nil {
-		lai := params.LAI.Encode()
-		b = append(b, 0x13, byte(len(lai)))
-		b = append(b, lai...)
+		b = append(b, 0x13)
+		b = append(b, params.LAI.Encode()...)
+	}
+
+	// MS identity (optional, IEI 0x23, TLV per TS 24.301 Table 8.2.26.1).
+	// Relays a VLR-assigned TMSI (TS 29.118 §5.2.2.3).
+	if params.NewTMSI != nil {
+		msIdentity := EncodeMSIdentityTMSI(*params.NewTMSI)
+		b = append(b, 0x23, byte(len(msIdentity)))
+		b = append(b, msIdentity...)
 	}
 
 	if params.T3402 != nil {
@@ -384,20 +411,30 @@ func DecodeTAUAccept(data []byte) (*TAUAccept, error) {
 			}
 			out.EPSBearerStatus = status
 			offset += l
-		case 0x13: // Location area identification
-			if offset >= len(data) {
-				return nil, fmt.Errorf("emm: TAU Accept truncated LAI length")
+		case 0x13: // Location area identification — TV format, fixed 5-octet value, no length octet
+			if offset+5 > len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated LAI")
 			}
-			l := int(data[offset])
-			offset++
-			if l != 5 || offset+l > len(data) {
-				return nil, fmt.Errorf("emm: TAU Accept invalid LAI length %d", l)
-			}
-			lai, err := DecodeLAI(data[offset : offset+l])
+			lai, err := DecodeLAI(data[offset : offset+5])
 			if err != nil {
 				return nil, err
 			}
 			out.LAI = &lai
+			offset += 5
+		case 0x23: // MS identity (TLV) — VLR-assigned TMSI relayed via SGs
+			if offset >= len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated MS identity length")
+			}
+			l := int(data[offset])
+			offset++
+			if offset+l > len(data) {
+				return nil, fmt.Errorf("emm: TAU Accept truncated MS identity")
+			}
+			tmsi, err := DecodeMSIdentityTMSI(data[offset : offset+l])
+			if err != nil {
+				return nil, err
+			}
+			out.NewTMSI = &tmsi
 			offset += l
 		case 0x53: // EMM cause (TV)
 			if offset >= len(data) {

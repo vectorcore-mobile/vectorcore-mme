@@ -81,6 +81,13 @@ func (s *Server) processUplinkSMS(ue *uecontext.Context, payload []byte) error {
 			zap.String("plain_nas_hex", fmt.Sprintf("0763%x", payload)))
 		return err
 	}
+	if s.selectSMSPath(ue) == "sgs" {
+		// SMS over SGs is a transparent NAS-message-container relay (TS
+		// 29.118 §9.4.15): the VLR/MSC owns the CP/RP protocol, so unlike
+		// SGd below, the MME never parses CP-DATA/CP-ACK/CP-ERROR itself -
+		// it forwards every uplink container as-is.
+		return s.relayUplinkSMSToSGs(ue, cpdu)
+	}
 	cp, err := nassms.DecodeCP(cpdu)
 	if err != nil {
 		return fmt.Errorf("sms: invalid MO CP-DATA: %w", err)

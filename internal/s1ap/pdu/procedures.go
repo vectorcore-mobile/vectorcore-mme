@@ -121,6 +121,7 @@ const (
 	IEPagingTAIList                             uint16 = 46  // TAI List for Paging message
 	IEUEIdentityIndexValue                      uint16 = 80  // UE Identity Index Value (10-bit BIT STRING)
 	IECNDomain                                  uint16 = 109 // CN Domain (mandatory in Paging; ps or cs)
+	IECSFallbackIndicator                       uint16 = 108 // CS Fallback Indicator (Initial Context Setup / UE Context Modification)
 	IEERABToBeSwitchedInUplinkList              uint16 = 22  // Path Switch Request: uplink E-RAB list
 	IEERABToBeModifiedListBearerModInd          uint16 = 199
 	IEERABToBeModifiedItemBearerModInd          uint16 = 200

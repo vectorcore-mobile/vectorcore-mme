@@ -13,6 +13,7 @@ import (
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
+	"github.com/vectorcore/mme/internal/sgsap"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -384,7 +385,19 @@ func (s *Server) sendIdleActiveTAUAcceptAndResume(ue *uecontext.Context, log *za
 	ue.Lock()
 	ue.DLNASCount.Increment()
 	ue.SetEMMState(emm.StateRegistered)
+	if opts.NewTMSI != nil {
+		ue.SGsPendingNewTMSI = nil
+		ue.SGsSentNewTMSI = opts.NewTMSI
+	}
 	ue.Unlock()
+	if opts.NewTMSI != nil {
+		// This resume path never includes a GUTI (buildTAUAcceptNAS hardcodes
+		// IncludeGUTI: false), so no TAU Complete will follow to trigger the
+		// completion the way processTAUComplete does for GUTI reallocation -
+		// the TAU Accept carrying the TMSI has already gone out, so complete
+		// it now instead of waiting for an event that will never arrive.
+		s.completeSGsTMSIReallocation(ue)
+	}
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "accept").Inc()
 	log.Info("nas: TAU Accept sent",
 		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
@@ -502,6 +515,7 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "complete").Inc()
 	s.refreshReachability(ue, "tau-complete")
+	s.completeSGsTMSIReallocation(ue)
 	log.Info("nas: TAU Complete: UE re-registered",
 		zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi))
 
@@ -538,6 +552,7 @@ type tauAcceptOptions struct {
 	UpdateResult       uint8
 	EPSBearerStatus    *emm.EPSBearerContextStatus
 	LAI                *emm.LAI
+	NewTMSI            *uint32
 	AdditionalResult   *uint8
 	EMMCause           *uint8
 }
@@ -565,18 +580,26 @@ func (s *Server) sendTAUAcceptWithGUTIReallocation(ue *uecontext.Context, log *z
 }
 
 func (s *Server) sendTAUAcceptForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) error {
-	return s.sendTAUAcceptWithOptions(ue, log, s.tauAcceptOptionsForRequest(ue, log, req))
+	if err := s.sendTAUAcceptWithOptions(ue, log, s.tauAcceptOptionsForRequest(ue, log, req)); err != nil {
+		return err
+	}
+	if req != nil {
+		smsOnly := req.AdditionalUpdateType != nil && *req.AdditionalUpdateType&emm.AdditionalUpdateTypeSMSOnlyBit != 0
+		s.maybeSendSGsLocationUpdateRequest(ue, req.EPSUpdateType == emm.EPSUpdateTypeCombined || req.EPSUpdateType == emm.EPSUpdateTypeCombinedIMSIAttach, smsOnly, sgsap.EPSLocationUpdateTypeNormal)
+	}
+	return nil
 }
 
 func (s *Server) tauAcceptOptionsForRequest(ue *uecontext.Context, log *zap.Logger, req *emm.TAURequest) tauAcceptOptions {
 	updateResult := emm.EPSUpdateResultTAUpdated
 	var nonEPSCause *uint8
 	var lai *emm.LAI
+	var newTMSI *uint32
 	var additionalResult *uint8
 	var requestStatus *emm.EPSBearerContextStatus
 	reconcileRequestStatus := true
 	if req != nil {
-		updateResult, nonEPSCause, lai, additionalResult = s.tauAcceptResultForRequest(ue, req.EPSUpdateType)
+		updateResult, nonEPSCause, lai, additionalResult, newTMSI = s.tauAcceptResultForRequest(ue, req.EPSUpdateType)
 		requestStatus = req.EPSBearerStatus
 		// Reconcile the bearer-status view for active-flag TAU, where the UE is
 		// explicitly requesting resume for its currently active bearers, and for
@@ -662,6 +685,7 @@ func (s *Server) tauAcceptOptionsForRequest(ue *uecontext.Context, log *zap.Logg
 		UpdateResult:       updateResult,
 		EPSBearerStatus:    responseStatus,
 		LAI:                lai,
+		NewTMSI:            newTMSI,
 		AdditionalResult:   additionalResult,
 		EMMCause:           nonEPSCause,
 	}
@@ -704,6 +728,7 @@ func (s *Server) buildTAUAcceptNAS(ue *uecontext.Context, log *zap.Logger, opts 
 		EPSBearerStatus:          opts.EPSBearerStatus,
 		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
 		LAI:                      opts.LAI,
+		NewTMSI:                  opts.NewTMSI,
 		AdditionalUpdateResult:   opts.AdditionalResult,
 		EMMCause:                 opts.EMMCause,
 	})
@@ -868,6 +893,7 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 		EPSBearerStatus:          opts.EPSBearerStatus,
 		EPSNetworkFeatureSupport: s.epsNetworkFeatureSupport(),
 		LAI:                      opts.LAI,
+		NewTMSI:                  opts.NewTMSI,
 		AdditionalUpdateResult:   opts.AdditionalResult,
 		EMMCause:                 opts.EMMCause,
 	})
@@ -911,6 +937,10 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	var retry int
 	ue.Lock()
 	ue.DLNASCount.Increment()
+	if opts.NewTMSI != nil {
+		ue.SGsPendingNewTMSI = nil
+		ue.SGsSentNewTMSI = opts.NewTMSI
+	}
 	if newGUTI != nil {
 		if !reallocPending {
 			ue.PendingOldGUTI = cloneGUTI(oldGUTI)
@@ -935,6 +965,13 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	}
 	ue.Unlock()
 
+	if newGUTI == nil && opts.NewTMSI != nil {
+		// No GUTI reallocation this cycle means no TAU Complete is expected
+		// to trigger the completion via processTAUComplete - the TAU Accept
+		// carrying the TMSI has already gone out, so complete it now.
+		s.completeSGsTMSIReallocation(ue)
+	}
+
 	if newGUTI != nil {
 		s.ueManager.AddGUTIAlias(ue, oldAlias)
 		s.ueManager.AddGUTIAlias(ue, pendingAlias)
@@ -958,26 +995,35 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 	return nil
 }
 
-func (s *Server) tauAcceptResultForRequest(ue *uecontext.Context, updateType uint8) (uint8, *uint8, *emm.LAI, *uint8) {
+func (s *Server) tauAcceptResultForRequest(ue *uecontext.Context, updateType uint8) (uint8, *uint8, *emm.LAI, *uint8, *uint32) {
 	// TS 24.301 v16.9.0 §5.5.3.3.4.2 permits combined TAU success for EPS and
 	// SMS only.  SGd is not SGs/VLR registration, so this is available only
 	// after the actual SMS-in-MME registration outcome is authoritative.
 	if updateType == emm.EPSUpdateTypeCombined || updateType == emm.EPSUpdateTypeCombinedIMSIAttach {
 		ue.Lock()
+		sgsAssociated := ue.SGsState == uecontext.SGsUEAssociated
+		sgsLAI := ue.SGsLAI
+		pendingTMSI := ue.SGsPendingNewTMSI
 		smsRegistered := ue.SMSRegistrationState == uecontext.SMSRegistrationRegistered
 		ue.Unlock()
+		if s.sgsCfg.Enabled && sgsAssociated && sgsLAI != nil {
+			// A genuine SGs Location Update already succeeded for this UE
+			// (typically triggered by an earlier Attach or TAU - see
+			// maybeSendSGsLocationUpdateRequest). Report the real LAI.
+			return emm.EPSUpdateResultCombinedTALAUpdated, nil, sgsLAI, nil, pendingTMSI
+		}
 		if s.sgdCfg.Enabled && smsRegistered {
 			// Cisco's captured successful SGd flow uses periodic TAU. If a UE
 			// does send a combined TAU, keep the result consistent with its
 			// successful combined Attach without synthesising LAI/F2/CS state.
-			return emm.EPSUpdateResultCombinedTALAUpdated, nil, nil, nil
+			return emm.EPSUpdateResultCombinedTALAUpdated, nil, nil, nil, nil
 		}
 		// No operational SMS-in-MME outcome exists for this UE.  This remains
 		// EPS-only rather than falsely reporting an SGs/VLR registration.
 		cause := uint8(emm.CauseCSDomainNotAvailable)
-		return emm.EPSUpdateResultTAUpdated, &cause, nil, nil
+		return emm.EPSUpdateResultTAUpdated, &cause, nil, nil, nil
 	}
-	return emm.EPSUpdateResultTAUpdated, nil, nil, nil
+	return emm.EPSUpdateResultTAUpdated, nil, nil, nil, nil
 }
 
 func tauMMEBearerContextStatusLocked(ue *uecontext.Context) *emm.EPSBearerContextStatus {

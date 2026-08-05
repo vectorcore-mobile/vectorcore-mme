@@ -1,12 +1,18 @@
 package s1ap
 
 import (
-	nas "github.com/vectorcore/mme/internal/nas"
-	"github.com/vectorcore/mme/internal/nas/emm"
-	"github.com/vectorcore/mme/internal/uecontext"
-	"go.uber.org/zap"
+	"bytes"
 	"testing"
 	"time"
+
+	"go.uber.org/zap"
+
+	nas "github.com/vectorcore/mme/internal/nas"
+	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/s1ap/ies"
+	"github.com/vectorcore/mme/internal/s1ap/pdu"
+	"github.com/vectorcore/mme/internal/sgsap"
+	"github.com/vectorcore/mme/internal/uecontext"
 )
 
 func TestProcessEMM_MOCSFBESRSendsProtectedRejectAndPreservesIMS(t *testing.T) {
@@ -188,5 +194,111 @@ func TestProcessExtendedServiceRequestDoesNotPromoteAmbiguousDefaultBearers(t *t
 	}
 	if ue.PDNs["hos"].NASAccepted {
 		t.Fatal("HOS NASAccepted=true, want false")
+	}
+}
+
+func TestProcessEMM_MTCSFBExtendedServiceRequestCompletesSGsPaging(t *testing.T) {
+	srv, fake := sgsTestServer()
+	const remoteAddr = "10.0.0.91:36412"
+	setupSendCapture(srv, remoteAddr)
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.IMSI = "001010123456789"
+	ue.SGsPendingPaging = &uecontext.SGsPagingContext{VLRName: "vlr-1", ServiceIndicator: 1}
+	ue.Unlock()
+	srv.ueManager.Register(ue)
+
+	// byte0 = (ksi<<4)|serviceType; serviceType=1 is mobile terminating CS
+	// fallback (TS 24.301 §9.9.3.27 table 9.9.3.27.1).
+	result := &nas.DecodeResult{MsgType: emm.MsgExtendedServiceRequest, Inner: []byte{0x01, 0x05, 0xf4, 0xaa, 0xbb, 0xcc, 0xdd}}
+	if err := srv.processEMM(ue, result, 0); err != nil {
+		t.Fatalf("processEMM: %v", err)
+	}
+
+	fake.mu.Lock()
+	got := fake.lastServiceRequest
+	fake.mu.Unlock()
+	if got == nil || got.IMSI != ue.IMSI || got.UEEMMMode != sgsap.UEEMMModeConnected {
+		t.Fatalf("expected SERVICE-REQUEST sent to VLR after MT CSFB ESR, got %+v", got)
+	}
+	ue.Lock()
+	pending := ue.SGsPendingPaging
+	ue.Unlock()
+	if pending != nil {
+		t.Fatalf("expected SGs pending paging cleared, got %+v", pending)
+	}
+}
+
+func TestProcessEMM_MOCSFBExtendedServiceRequestWithSGsAssociationSignalsRealCSFB(t *testing.T) {
+	srv, fake := sgsTestServer()
+	const remoteAddr = "10.0.0.92:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.IMSI = "001010123456789"
+	ue.ENBS1APID = 0x010209
+	ue.SGsState = uecontext.SGsUEAssociated
+	ue.SGsVLRName = "vlr-1"
+	ue.Unlock()
+
+	// service type 0 = mobile-originating CS fallback.
+	result := &nas.DecodeResult{MsgType: emm.MsgExtendedServiceRequest, Inner: []byte{0x00, 0x05, 0xf4, 0xaa, 0xbb, 0xcc, 0xdd}}
+	if err := srv.processEMM(ue, result, 0); err != nil {
+		t.Fatalf("processEMM: %v", err)
+	}
+
+	fake.mu.Lock()
+	gotSR := fake.lastServiceRequest
+	gotInd := fake.lastMOCSFBIndication
+	fake.mu.Unlock()
+	if gotSR == nil || gotSR.IMSI != ue.IMSI || gotSR.ServiceIndicator != sgsap.ServiceIndicatorCSCall {
+		t.Fatalf("expected CS-call SERVICE-REQUEST sent to VLR for MO CSFB, got %+v", gotSR)
+	}
+	if gotInd == nil || gotInd.IMSI != ue.IMSI {
+		t.Fatalf("expected MO-CSFB-INDICATION sent to VLR, got %+v", gotInd)
+	}
+
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	found := false
+	for _, ie := range ieList {
+		if ie.ID == pdu.IECSFallbackIndicator {
+			found = true
+			if !bytes.Equal(ie.Value, ies.EncodeCSFallbackIndicator()) {
+				t.Fatalf("CS Fallback Indicator value = %x", ie.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected CS Fallback Indicator IE in UE Context Modification Request for MO CSFB")
+	}
+}
+
+func TestProcessEMM_MOCSFBExtendedServiceRequestWithoutSGsAssociationFallsBackToReject(t *testing.T) {
+	srv, _ := sgsTestServer()
+	const remoteAddr = "10.0.0.93:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue, _ := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	ue.Lock()
+	ue.IMSI = "001010123456789"
+	// SGs is enabled at the server level, but this UE has never associated.
+	ue.SGsState = uecontext.SGsUENull
+	ue.Unlock()
+
+	result := &nas.DecodeResult{MsgType: emm.MsgExtendedServiceRequest, Inner: []byte{0x00, 0x05, 0xf4, 0xaa, 0xbb, 0xcc, 0xdd}}
+	if err := srv.processEMM(ue, result, 0); err != nil {
+		t.Fatalf("processEMM: %v", err)
+	}
+	select {
+	case sent := <-ch:
+		nasPDU := decodeDownlinkNASFromRawPDU(t, sent)
+		if len(nasPDU) < 9 || nasPDU[7] != emm.MsgServiceReject || nasPDU[8] != emm.CauseCSDomainNotAvailable {
+			t.Fatalf("expected protected Service Reject for unassociated MO CSFB, got %x", nasPDU)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no Service Reject sent")
 	}
 }
