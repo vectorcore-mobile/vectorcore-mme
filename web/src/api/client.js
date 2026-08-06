@@ -32,6 +32,7 @@ export const getUEByIMSI = (imsi) => request('GET', `/ue/${encodeURIComponent(im
 // OAM
 export const getVersion = () => request('GET', '/oam/version')
 export const getHealth = () => request('GET', '/oam/health')
+export const getInterfaces = () => request('GET', '/oam/interfaces').then(r => r?.interfaces ?? [])
 
 // Raw Prometheus
 export async function getPrometheusText() {

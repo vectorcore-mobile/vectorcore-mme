@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { RefreshCw, CheckCircle, XCircle, Activity, Shield, Wifi } from 'lucide-react'
 import Spinner from '../components/Spinner.jsx'
 import { usePoller } from '../hooks/usePoller.js'
-import { getVersion, getHealth } from '../api/client.js'
+import { getVersion, getHealth, getInterfaces } from '../api/client.js'
 
 function formatUptime(seconds) {
   if (!seconds && seconds !== 0) return '—'
@@ -19,6 +19,9 @@ function formatUptime(seconds) {
 export default function OAM() {
   const fetchFn = useCallback(getVersion, [])
   const { data: version, error: versionError, loading, refresh } = usePoller(fetchFn, 5000)
+
+  const interfacesFetchFn = useCallback(getInterfaces, [])
+  const { data: interfaces, error: interfacesError, refresh: refreshInterfaces } = usePoller(interfacesFetchFn, 5000)
 
   const [health, setHealth] = useState(null)
   const [healthError, setHealthError] = useState(null)
@@ -55,7 +58,7 @@ export default function OAM() {
           <div className="page-title">OAM</div>
           <div className="page-subtitle">Operations, administration, and maintenance</div>
         </div>
-        <button className="btn btn-ghost" onClick={() => { refresh(); fetchHealth() }}>
+        <button className="btn btn-ghost" onClick={() => { refresh(); fetchHealth(); refreshInterfaces() }}>
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
@@ -134,26 +137,72 @@ export default function OAM() {
         )}
       </div>
 
-      {/* S6a Connection */}
+      {/* Interfaces */}
       <div className="oam-section">
         <div className="flex items-center gap-8 mb-16">
           <Wifi size={16} style={{ color: 'var(--accent)' }} />
-          <h3 className="card-title">S6a Connection (Diameter)</h3>
+          <h3 className="card-title">Interfaces</h3>
         </div>
-        <div className="flex items-center gap-8">
-          {health == null ? (
-            <div className="flex items-center gap-8 text-muted text-sm"><Spinner size="sm" /> Checking...</div>
-          ) : health.s6a_connected ? (
-            <><CheckCircle size={18} style={{ color: 'var(--success)' }} />
-              <span style={{ color: 'var(--success)', fontWeight: 600 }}>Peer connected</span></>
-          ) : (
-            <><XCircle size={18} style={{ color: 'var(--warning)' }} />
-              <span style={{ color: 'var(--warning)', fontWeight: 600 }}>No peer connected</span>
-              <span className="text-muted text-sm" style={{ marginLeft: 4 }}>
-                — DRA/HSS has not established a Diameter connection on {version?.origin_host ?? ''}:3868
-              </span></>
-          )}
-        </div>
+
+        {interfacesError && !interfaces ? (
+          <div className="error-state" style={{ padding: '20px 0' }}>
+            <XCircle size={20} className="error-icon" /><div>{interfacesError}</div>
+          </div>
+        ) : interfaces == null ? (
+          <div className="flex items-center gap-8 text-muted text-sm"><Spinner size="sm" /> Checking...</div>
+        ) : interfaces.length === 0 ? (
+          <div className="empty-state">
+            <Wifi size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
+            <div>No connection-oriented interfaces enabled.</div>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Interface</th>
+                  <th>Peer</th>
+                  <th>Address</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {interfaces.flatMap((iface) => {
+                  const peers = iface.peers ?? []
+                  if (peers.length === 0) {
+                    return [
+                      <tr key={iface.interface}>
+                        <td style={{ fontWeight: 600 }}>{iface.interface}</td>
+                        <td colSpan={3} className="text-muted text-sm">No peers configured.</td>
+                      </tr>,
+                    ]
+                  }
+                  return peers.map((peer, i) => (
+                    <tr key={`${iface.interface}-${peer.name || i}`}>
+                      <td style={{ fontWeight: 600 }}>{i === 0 ? iface.interface : ''}</td>
+                      <td style={{ fontSize: '0.82rem' }}>{peer.name || '—'}</td>
+                      <td className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                        {peer.address || '—'}
+                      </td>
+                      <td>
+                        <div className="flex items-center gap-8">
+                          {peer.healthy ? (
+                            <CheckCircle size={16} style={{ color: 'var(--success)' }} />
+                          ) : (
+                            <XCircle size={16} style={{ color: 'var(--warning)' }} />
+                          )}
+                          <span style={{ color: peer.healthy ? 'var(--success)' : 'var(--warning)', fontWeight: 600, fontSize: '0.82rem' }}>
+                            {peer.detail || (peer.healthy ? 'Up' : 'Down')}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )

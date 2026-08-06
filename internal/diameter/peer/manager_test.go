@@ -136,6 +136,28 @@ func TestReportTransactionFailureInvalidatesStaleConnection(t *testing.T) {
 	}
 }
 
+func TestSnapshotReportsPerPeerState(t *testing.T) {
+	m := New(config.DiameterConfig{Peers: []config.DiameterPeerConfig{
+		{Name: "dra-1", Address: "10.0.0.1:3868", Transport: "sctp"},
+		{Name: "dra-2", Address: "10.0.0.2:3868", Transport: "tcp"},
+	}}, zap.NewNop(), nil)
+	m.peers[0].state = Ready
+	m.peers[0].originHost = "dra1.example.net"
+	m.peers[1].state = Down
+	m.peers[1].failures = 3
+
+	got := m.Snapshot()
+	if len(got) != 2 {
+		t.Fatalf("Snapshot() len = %d, want 2", len(got))
+	}
+	if got[0].Name != "dra-1" || got[0].Address != "10.0.0.1:3868" || got[0].State != Ready || got[0].OriginHost != "dra1.example.net" {
+		t.Fatalf("peer 0 = %+v", got[0])
+	}
+	if got[1].Name != "dra-2" || got[1].State != Down || got[1].Failures != 3 {
+		t.Fatalf("peer 1 = %+v", got[1])
+	}
+}
+
 func TestRouteLocalAddressUsesSingleRouteSelectedIP(t *testing.T) {
 	addr, err := routeLocalAddress("127.0.0.1:3868")
 	if err != nil {

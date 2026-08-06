@@ -450,6 +450,41 @@ func (m *Manager) ReportTransactionFailure(name string) {
 	m.mu.Unlock()
 }
 
+// PeerStatus is a point-in-time snapshot of one configured Diameter peer,
+// for OAM/API reporting - unlike Peer, it is not a routing decision and has
+// no live connection handle.
+type PeerStatus struct {
+	Name        string
+	Address     string
+	Transport   string
+	State       State
+	OriginHost  string
+	OriginRealm string
+	LastDWA     time.Time
+	Failures    uint64
+}
+
+// Snapshot returns the current status of every configured Diameter peer, in
+// configured order.
+func (m *Manager) Snapshot() []PeerStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]PeerStatus, 0, len(m.peers))
+	for _, p := range m.peers {
+		out = append(out, PeerStatus{
+			Name:        p.config.Name,
+			Address:     p.config.Address,
+			Transport:   p.config.Transport,
+			State:       p.state,
+			OriginHost:  p.originHost,
+			OriginRealm: p.originRealm,
+			LastDWA:     p.lastDWA,
+			Failures:    p.failures,
+		})
+	}
+	return out
+}
+
 // SelectPeer prefers a ready direct application peer, then a ready relay.
 func (m *Manager) SelectPeer(app uint32, realm string) (*Peer, error) {
 	m.mu.RLock()

@@ -17,10 +17,13 @@ import (
 
 	"github.com/vectorcore/mme/internal/buildinfo"
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/diameter/peer"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/repository"
+	"github.com/vectorcore/mme/internal/sbcap"
 	"github.com/vectorcore/mme/internal/uecontext"
+	"github.com/vectorcore/mme/internal/vlr"
 )
 
 // appVersion is set at build time via -ldflags; see internal/buildinfo.
@@ -33,6 +36,7 @@ const apiPrefix = "/api/v1"
 // DiamStatus is a narrow interface for querying Diameter connection state.
 type DiamStatus interface {
 	Connected() bool
+	DiameterPeers() []peer.PeerStatus
 }
 
 // Pager is implemented by the S1AP server to trigger network-initiated paging.
@@ -40,18 +44,37 @@ type Pager interface {
 	PageUE(imsi string) error
 }
 
+// VLRStatusProvider is a narrow interface for querying SGs/VLR association state.
+type VLRStatusProvider interface {
+	Snapshot() []vlr.VLRStatus
+}
+
+// SBcAPStatusProvider is a narrow interface for querying SBc-AP CBC association state.
+type SBcAPStatusProvider interface {
+	Snapshot() []sbcap.PeerStatus
+}
+
+// SLsStatusProvider is a narrow interface for querying the single SLs/LCS association.
+type SLsStatusProvider interface {
+	Available() bool
+}
+
 // Server is the OAM API server.
 type Server struct {
-	cfg        config.APIConfig
-	nfCfg      config.NFConfig
-	operCfg    config.OperatorConfig
-	store      repository.Repository
-	enbTracker *peertracker.Tracker
-	ueManager  *uecontext.Manager
-	s6a        DiamStatus
-	pager      Pager
-	gatewaySel *gateway.Selector
-	log        *zap.Logger
+	cfg         config.APIConfig
+	nfCfg       config.NFConfig
+	operCfg     config.OperatorConfig
+	store       repository.Repository
+	enbTracker  *peertracker.Tracker
+	ueManager   *uecontext.Manager
+	s6a         DiamStatus
+	pager       Pager
+	vlrStatus   VLRStatusProvider
+	sbcapStatus SBcAPStatusProvider
+	slsStatus   SLsStatusProvider
+	slsCfg      config.SLsConfig
+	gatewaySel  *gateway.Selector
+	log         *zap.Logger
 
 	mu      sync.Mutex
 	httpSrv *http.Server
@@ -62,6 +85,18 @@ func (s *Server) SetPager(p Pager) { s.pager = p }
 
 // SetGatewaySelector wires gateway DNS cache inspection and control into the API server.
 func (s *Server) SetGatewaySelector(selector *gateway.Selector) { s.gatewaySel = selector }
+
+// SetVLRStatus wires SGs/VLR association status reporting into the API server.
+func (s *Server) SetVLRStatus(v VLRStatusProvider) { s.vlrStatus = v }
+
+// SetSBcAPStatus wires SBc-AP CBC association status reporting into the API server.
+func (s *Server) SetSBcAPStatus(v SBcAPStatusProvider) { s.sbcapStatus = v }
+
+// SetSLsStatus wires SLs/LCS association status reporting into the API server.
+func (s *Server) SetSLsStatus(v SLsStatusProvider, cfg config.SLsConfig) {
+	s.slsStatus = v
+	s.slsCfg = cfg
+}
 
 // New creates a new API Server.
 func New(

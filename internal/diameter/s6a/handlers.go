@@ -141,6 +141,10 @@ func (h *Handlers) SetSGdEnabled(enabled bool) { h.peers.SetSGdEnabled(enabled) 
 // SetSLgEnabled controls SLg capability advertisement and request handling.
 func (h *Handlers) SetSLgEnabled(enabled bool) { h.peers.SetSLgEnabled(enabled) }
 
+// DiameterPeers reports the current status of every configured Diameter
+// peer (shared by S6a, S13, SGd, and SLg), for OAM reporting.
+func (h *Handlers) DiameterPeers() []peer.PeerStatus { return h.peers.Snapshot() }
+
 // SetS13Config installs the top-level S13 policy before Start.
 func (h *Handlers) SetS13Config(cfg config.S13Config) { h.s13Cfg = cfg }
 

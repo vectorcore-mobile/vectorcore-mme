@@ -60,6 +60,8 @@ type transport interface {
 
 type association struct {
 	name      string
+	address   string
+	port      int
 	transport transport
 
 	mu          sync.Mutex
@@ -103,6 +105,8 @@ func New(cfg config.SGsConfig, mmeName string, handler Handler, log *zap.Logger)
 	for _, v := range cfg.VLR {
 		m.associations[v.Name] = &association{
 			name:      v.Name,
+			address:   v.Address,
+			port:      v.Port,
 			transport: newSCTPTransport(v.Address, v.Port, cfg.ReconnectInterval, log.With(zap.String("vlr_name", v.Name))),
 		}
 	}
@@ -149,6 +153,28 @@ func (m *Manager) Available(vlrName string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.transport.available() && a.confirmed
+}
+
+// VLRStatus is a point-in-time snapshot of one configured VLR association,
+// for OAM/API reporting.
+type VLRStatus struct {
+	Name      string
+	Address   string
+	Port      int
+	Available bool // transport up and node-level Reset procedure completed
+}
+
+// Snapshot returns the current status of every configured VLR, in no
+// particular order (m.associations is a map).
+func (m *Manager) Snapshot() []VLRStatus {
+	out := make([]VLRStatus, 0, len(m.associations))
+	for _, a := range m.associations {
+		a.mu.Lock()
+		available := a.transport.available() && a.confirmed
+		a.mu.Unlock()
+		out = append(out, VLRStatus{Name: a.name, Address: a.address, Port: a.port, Available: available})
+	}
+	return out
 }
 
 func (m *Manager) association(vlrName string) (*association, error) {

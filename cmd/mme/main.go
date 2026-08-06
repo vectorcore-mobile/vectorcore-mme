@@ -271,6 +271,15 @@ func main() {
 		apiSrv = api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
 		apiSrv.SetPager(s1apSrv)
 		apiSrv.SetGatewaySelector(gatewaySelector)
+		if vlrMgr != nil {
+			apiSrv.SetVLRStatus(vlrMgr)
+		}
+		if sbcapSrv != nil {
+			apiSrv.SetSBcAPStatus(sbcapSrv)
+		}
+		if slsTransport != nil {
+			apiSrv.SetSLsStatus(slsTransport, cfg.SLs)
+		}
 		go func() { errCh <- apiSrv.Start() }()
 	}
 

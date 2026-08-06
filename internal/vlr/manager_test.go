@@ -190,6 +190,23 @@ func TestHandleResetAckMarksAssociationUp(t *testing.T) {
 	}
 }
 
+func TestSnapshotReportsConfiguredVLRsAndAvailability(t *testing.T) {
+	m, _, _ := testManager(t)
+
+	got := m.Snapshot()
+	if len(got) != 1 || got[0].Name != "vlr-1" || got[0].Address != "192.0.2.50" || got[0].Port != 29118 || got[0].Available {
+		t.Fatalf("Snapshot() before reset ack = %+v, want one unavailable vlr-1", got)
+	}
+
+	ack := sgsap.BuildResetAck(sgsap.Reset{VLRName: "vlr-1.example.org"})
+	m.onMessage("vlr-1", ack)
+
+	got = m.Snapshot()
+	if len(got) != 1 || !got[0].Available {
+		t.Fatalf("Snapshot() after reset ack = %+v, want vlr-1 available", got)
+	}
+}
+
 func TestOnLossMarksAssociationDown(t *testing.T) {
 	m, _, _ := testManager(t)
 	m.onMessage("vlr-1", sgsap.BuildResetAck(sgsap.Reset{VLRName: "vlr-1.example.org"}))

@@ -216,6 +216,27 @@ func ppid(info *sctp.SndRcvInfo) uint32 {
 	return info.PPID
 }
 
+// PeerStatus is a point-in-time snapshot of one configured CBC peer, for
+// OAM/API reporting.
+type PeerStatus struct {
+	Name      string
+	Addresses []string
+	Connected bool
+}
+
+// Snapshot returns the current status of every configured CBC peer, in
+// configured order.
+func (s *Server) Snapshot() []PeerStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]PeerStatus, 0, len(s.cfg.Peers))
+	for _, p := range s.cfg.Peers {
+		_, connected := s.connections[p.Name]
+		out = append(out, PeerStatus{Name: p.Name, Addresses: p.Addresses, Connected: connected})
+	}
+	return out
+}
+
 // Send delivers an SBc-AP PDU to the currently active association for peer.
 // It does not queue warning state across an association loss.
 func (s *Server) Send(peer string, payload []byte) error {

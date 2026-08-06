@@ -33,6 +33,23 @@ func TestInboundPPIDPolicy(t *testing.T) {
 	}
 }
 
+func TestSnapshotReportsConfiguredPeersAndConnectedState(t *testing.T) {
+	s := testServer(false)
+	got := s.Snapshot()
+	if len(got) != 1 || got[0].Name != "cbc" || got[0].Connected {
+		t.Fatalf("Snapshot() before connect = %+v, want one disconnected cbc peer", got)
+	}
+
+	s.mu.Lock()
+	s.connections["cbc"] = &connection{}
+	s.mu.Unlock()
+
+	got = s.Snapshot()
+	if len(got) != 1 || !got[0].Connected || len(got[0].Addresses) != 1 || got[0].Addresses[0] != "127.0.0.2" {
+		t.Fatalf("Snapshot() after connect = %+v, want connected cbc peer", got)
+	}
+}
+
 func TestLegacyPPIDDoesNotAdmitUnknownPeer(t *testing.T) {
 	s := testServer(true)
 	if _, ok := s.authorized["127.0.0.99"]; ok {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/api"
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/diameter/peer"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -20,7 +21,8 @@ import (
 // stubDiamStatus satisfies api.DiamStatus for tests.
 type stubDiamStatus struct{}
 
-func (stubDiamStatus) Connected() bool { return false }
+func (stubDiamStatus) Connected() bool                  { return false }
+func (stubDiamStatus) DiameterPeers() []peer.PeerStatus { return nil }
 
 func newTestAPIServer(mgr *uecontext.Manager) http.Handler {
 	log, _ := zap.NewDevelopment()
