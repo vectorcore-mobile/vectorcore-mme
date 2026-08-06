@@ -501,7 +501,6 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 	ue.Lock()
 	attachStep := ue.AttachStep
-	emmState := ue.EMMState
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
 	knasInt := ue.KNASint
@@ -520,44 +519,29 @@ func (s *Server) processNAS(ue *uecontext.Context, raw []byte) error {
 
 	switch {
 	case attachStep == uecontext.AttachStepWaitingAuthResp:
-		// Expect plain Auth Response (or Auth Failure)
+		// Expect plain Auth Response (or Auth Failure) - no security context yet.
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
-	case attachStep == uecontext.AttachStepWaitingSMCCplt:
-		// SMC Complete arrives integrity-protected and ciphered with the new EPS security context.
-		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
-		if err == nil {
-			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
-			commitULCount = err == nil
-		}
-	case attachStep == uecontext.AttachStepWaitingEquipmentIdentity:
-		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
-		if err == nil {
-			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
-			commitULCount = err == nil
-		}
-	case attachStep == uecontext.AttachStepWaitingAttachCplt:
-		// Attach Complete arrives integrity-protected (and possibly ciphered)
-		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
-		if err == nil {
-			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
-			commitULCount = err == nil
-		}
-	case attachStep == uecontext.AttachStepWaitingTAUComplete:
-		// TAU Complete arrives integrity-protected (and possibly ciphered)
-		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
-		if err == nil {
-			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
-			commitULCount = err == nil
-		}
-	case emmState == emm.StateRegistered:
-		// Normal uplink: integrity + possibly ciphered
+	case len(knasInt) > 0 || len(knasEnc) > 0:
+		// NAS security context is established (Security Mode Complete has
+		// already been processed and keys derived). Every uplink message from
+		// here on arrives integrity-protected (and usually ciphered) under
+		// that context, regardless of which attach/TAU/service-request
+		// sub-step the UE context happens to be waiting on - e.g. AttachStep
+		// values between SMC Complete and Attach Complete such as
+		// AttachStepWaitingULA/CSRsp/ICSResp/S13ECA. Gating this on an
+		// enumerated whitelist of AttachStep values previously missed several
+		// of those intermediate steps: any uplink NAS (typically Attach
+		// Complete) that raced ahead of the eNB's Initial Context Setup
+		// Response fell through to the unprotected default case below, which
+		// silently no-ops both MAC verification and decryption (EIA0/EEA0),
+		// corrupting the message instead of rejecting or correctly decoding it.
 		countUsed, _, err = reconstructFullULNASCount(raw, ulCountVal)
 		if err == nil {
 			result, err = nas.Decode(raw, intAlg, encAlg, knasInt, knasEnc, countUsed)
 			commitULCount = err == nil
 		}
 	default:
-		// Plain or early messages
+		// Plain or early messages (no security context yet)
 		result, err = nas.Decode(raw, 0, 0, nil, nil, 0)
 	}
 
