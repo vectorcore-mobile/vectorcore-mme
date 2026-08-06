@@ -301,8 +301,10 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	}
 	// InitialUE created this S1 signalling connection even if the retained
 	// context says ECM-CONNECTED. An inactive TAU without a pending TAU Complete
-	// or downlink follow-up must release that new access binding explicitly.
-	if !tauReq.ActiveFlag && !(s.operCfg.EMMInformation.Enabled && s.operCfg.EMMInformation.SendAfterTAU) {
+	// must release that new access binding explicitly, regardless of whether
+	// EMM Information is also being sent (that send is fire-and-forget and
+	// races the release the same way it already does in processTAUComplete).
+	if !tauReq.ActiveFlag {
 		if step == uecontext.AttachStepNone {
 			s.beginIdleTAUPostAcceptRelease(ue, log)
 		} else if step == uecontext.AttachStepWaitingTAUComplete {
