@@ -15,6 +15,7 @@ const (
 	PPID                     uint32 = 29
 	IECorrelationID          uint16 = 2
 	IEECGI                   uint16 = 4
+	IELCSClientType          uint16 = 8
 	IELCSCause               uint16 = 11
 	IELocationEstimate       uint16 = 12
 	IELocationType           uint16 = 13
@@ -46,6 +47,13 @@ type PDU struct {
 // extensions remain forward compatible.
 func Decode(b []byte) (PDU, error) {
 	r := aper.NewBitReader(b)
+	extBit, err := r.ReadBit()
+	if err != nil {
+		return PDU{}, fmt.Errorf("lcs-ap: read extension bit: %w", err)
+	}
+	if extBit != 0 {
+		return PDU{}, fmt.Errorf("lcs-ap: extended PDU type not supported")
+	}
 	v, err := r.ReadBits(2)
 	if err != nil || v > 2 {
 		return PDU{}, fmt.Errorf("lcs-ap: invalid PDU choice")
@@ -66,6 +74,20 @@ func Decode(b []byte) (PDU, error) {
 		return PDU{}, fmt.Errorf("lcs-ap: trailing PDU data")
 	}
 	br := aper.NewBitReader(body)
+	bodyExt, err := br.ReadBit()
+	if err != nil {
+		return PDU{}, fmt.Errorf("lcs-ap: procedure extension marker: %w", err)
+	}
+	if bodyExt != 0 {
+		return PDU{}, fmt.Errorf("lcs-ap: procedure extensions not supported")
+	}
+	hasProtocolExtensions, err := br.ReadBit()
+	if err != nil {
+		return PDU{}, fmt.Errorf("lcs-ap: protocolExtensions presence bit: %w", err)
+	}
+	if hasProtocolExtensions != 0 {
+		return PDU{}, fmt.Errorf("lcs-ap: protocolExtensions not supported")
+	}
 	n, err := aper.DecodeConstrainedWholeNumber(br, 0, 65535)
 	if err != nil {
 		return PDU{}, err
@@ -99,6 +121,8 @@ func Encode(p PDU) ([]byte, error) {
 		return nil, fmt.Errorf("lcs-ap: invalid PDU category")
 	}
 	bw := aper.NewBitWriter()
+	bw.WriteBit(0) // procedure SEQUENCE extension marker: no extension additions
+	bw.WriteBit(0) // protocolExtensions OPTIONAL: absent
 	if err := aper.EncodeConstrainedWholeNumber(bw, int64(len(p.IEs)), 0, 65535); err != nil {
 		return nil, err
 	}
@@ -110,6 +134,7 @@ func Encode(p PDU) ([]byte, error) {
 		aper.WriteOpenType(bw, ie.Value)
 	}
 	w := aper.NewBitWriter()
+	w.WriteBit(0) // PDU CHOICE extension marker: root alternative
 	w.WriteBits(uint64(p.Category), 2)
 	w.WriteOctet(p.Procedure)
 	aper.EncodeCriticality(w, p.Criticality)

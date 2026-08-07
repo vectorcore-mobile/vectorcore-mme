@@ -92,13 +92,20 @@ func (c *capturingS6a) SendPUR(_ string) error { return nil }
 // ── Mock S11 (capturing MBR) ──────────────────────────────────────────────────
 
 type capturingS11 struct {
-	mbrCalls []*gtpv2.ModifyBearerRequest
+	mbrCalls chan *gtpv2.ModifyBearerRequest
 	mbrErr   error
+}
+
+// newCapturingS11 gives mbrCalls enough buffer that SendMBR never blocks,
+// even in tests that don't read it — the goroutine under test must never
+// stall on a test double.
+func newCapturingS11() *capturingS11 {
+	return &capturingS11{mbrCalls: make(chan *gtpv2.ModifyBearerRequest, 4)}
 }
 
 func (c *capturingS11) SendCSR(_ uint32, _ *gtpv2.CreateSessionRequest) error { return nil }
 func (c *capturingS11) SendMBR(_ uint32, req *gtpv2.ModifyBearerRequest) error {
-	c.mbrCalls = append(c.mbrCalls, req)
+	c.mbrCalls <- req
 	return c.mbrErr
 }
 func (c *capturingS11) SendDSR(_ uint32, _ *gtpv2.DeleteSessionRequest) error { return nil }
@@ -234,7 +241,7 @@ func TestResolveOldMME_MMEGIFilter(t *testing.T) {
 // context import → TAU Accept sent → CTX-Ack sent to old MME → MBR sent to SGW.
 func TestInterMMETAU_SuccessNoopS6a(t *testing.T) {
 	ms10 := newMockS10()
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	srv := newS10TAUServer(ms10, NoopS6aClient{}, ms11)
 
 	const remoteAddr = "192.168.0.1:36412"
@@ -300,10 +307,13 @@ func TestInterMMETAU_SuccessNoopS6a(t *testing.T) {
 	}
 
 	// MBR should have been sent (SGWC_TEID != 0).
-	if len(ms11.mbrCalls) == 0 {
-		t.Error("expected MBR sent, got none")
-	} else if ms11.mbrCalls[0].MMEC_TEID == 0 {
-		t.Error("MBR MMEC_TEID should be non-zero")
+	select {
+	case mbr := <-ms11.mbrCalls:
+		if mbr.MMEC_TEID == 0 {
+			t.Error("MBR MMEC_TEID should be non-zero")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected MBR sent, got none")
 	}
 }
 
@@ -417,7 +427,7 @@ func TestInterMMETAU_OldMMEUnreachable(t *testing.T) {
 // context import → ULR sent → HandleULAResult called → TAU Accept → CTX-Ack → MBR.
 func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 	ms10 := newMockS10()
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	s6a := &capturingS6a{
 		ulrCalls: make(chan struct {
 			imsi    string
@@ -489,8 +499,10 @@ func TestInterMMETAU_SuccessWithS6a(t *testing.T) {
 	}
 
 	// MBR must have been sent.
-	if len(ms11.mbrCalls) == 0 {
-		t.Error("expected MBR sent after ULA, got none")
+	select {
+	case <-ms11.mbrCalls:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected MBR sent after ULA, got none")
 	}
 }
 
@@ -682,7 +694,7 @@ func TestHandleContextAcknowledge_NotFound(t *testing.T) {
 
 // TestHandleContextAcknowledge_NoDSR verifies the S11 noop client received no DSR.
 func TestHandleContextAcknowledge_NoDSR(t *testing.T) {
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	log, _ := zap.NewDevelopment()
 	srv := &Server{
 		s10:        NoopS10Client{},
@@ -702,9 +714,12 @@ func TestHandleContextAcknowledge_NoDSR(t *testing.T) {
 
 	srv.HandleContextAcknowledge(ue.MMEUES1APID, gtpv2.CauseRequestAccepted)
 
-	// DSR must NOT have been called.
-	if len(ms11.mbrCalls) != 0 {
+	// DSR must NOT have been called. HandleContextAcknowledge above ran
+	// synchronously (no goroutine), so a non-blocking check is sufficient.
+	select {
+	case <-ms11.mbrCalls:
 		t.Error("unexpected MBR call in NoDSR test")
+	default:
 	}
 }
 
@@ -714,7 +729,7 @@ func TestHandleContextAcknowledge_NoDSR(t *testing.T) {
 // the AttachedUEs gauge so it stays accurate after context transfer from the old MME.
 func TestInterMMETAU_AttachedUEsIncremented(t *testing.T) {
 	ms10 := newMockS10()
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	srv := newS10TAUServer(ms10, NoopS6aClient{}, ms11)
 
 	const remoteAddr = "192.168.2.1:36412"
@@ -750,7 +765,7 @@ func TestInterMMETAU_AttachedUEsIncremented(t *testing.T) {
 // sets ECMConnected so that handleDisconnect does not silently skip the UE.
 func TestInterMMETAU_ECMConnectedAfterImport(t *testing.T) {
 	ms10 := newMockS10()
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	srv := newS10TAUServer(ms10, NoopS6aClient{}, ms11)
 
 	const remoteAddr = "192.168.2.2:36412"
@@ -795,7 +810,7 @@ func TestInterMMETAU_ECMConnectedAfterImport(t *testing.T) {
 
 func TestImportContext_NASKeysDerivation(t *testing.T) {
 	ms10 := newMockS10()
-	ms11 := &capturingS11{}
+	ms11 := newCapturingS11()
 	srv := newS10TAUServer(ms10, NoopS6aClient{}, ms11)
 
 	const remoteAddr = "192.168.1.1:36412"

@@ -7,8 +7,27 @@ import (
 	"sync"
 	"time"
 
+	"go.uber.org/zap"
+
+	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/metrics"
 )
+
+// lcsClientTypeRootCount is the number of root values in the LCS-AP
+// LCS-Client-Type ENUMERATED (TS 29.171 lcs-ap-ies.asn1): emergency-Services,
+// value-Added-Services, pLMN-Operator-Services, lawful-Intercept-Services,
+// pLMN-Operator-broadcast-Services, pLMN-Operator-OM,
+// pLMN-Operator-Anonymous-Statistics, pLMN-Operator-Target-MS-Service-Support.
+// The Diameter SLg LCS-Client-Type AVP (TS 29.173) only defines the first 4
+// (0-3), and its numeric values are identical to these root indices, so the
+// Diameter enumerated value can be forwarded unchanged.
+const lcsClientTypeRootCount = 8
+
+func encodeLCSClientType(clientType uint32) []byte {
+	w := aper.NewBitWriter()
+	aper.EncodeEnumeratedExt(w, int(clientType), lcsClientTypeRootCount)
+	return w.Bytes()
+}
 
 var (
 	ErrUnavailable = errors.New("sls: E-SMLC unavailable")
@@ -51,6 +70,7 @@ type Provider struct {
 	timeout time.Duration
 	max     int
 	t       Transport
+	log     *zap.Logger
 	mu      sync.Mutex
 	tx      map[string]*transaction
 	next    uint32
@@ -58,29 +78,36 @@ type Provider struct {
 	relay   PositioningRelay
 }
 
-func NewProvider(timeout time.Duration, max int, t Transport) *Provider {
+func NewProvider(timeout time.Duration, max int, t Transport, l *zap.Logger) *Provider {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
 	if max < 1 {
 		max = 1
 	}
-	return &Provider{timeout: timeout, max: max, t: t, tx: map[string]*transaction{}}
+	if l == nil {
+		l = zap.NewNop()
+	}
+	return &Provider{timeout: timeout, max: max, t: t, log: l, tx: map[string]*transaction{}}
 }
-func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint32, ecgi []byte) ([]byte, error) {
+func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint32, ecgi []byte, clientType uint32) ([]byte, error) {
 	if len(ecgi) != 7 {
+		p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "invalid ECGI length"))
 		return nil, ErrUnavailable
 	}
 	if p.t == nil || !p.t.Available() {
+		p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "transport unavailable"))
 		return nil, ErrUnavailable
 	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "provider closed"))
 		return nil, ErrUnavailable
 	}
 	if len(p.tx) >= p.max {
 		p.mu.Unlock()
+		p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "transaction capacity reached"), zap.Int("max", p.max))
 		return nil, ErrCapacity
 	}
 	// EPS Generic NAS Transport carries no SLs correlation identifier. Keep one
@@ -89,6 +116,7 @@ func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint
 	for _, active := range p.tx {
 		if active.mmeUEID == mmeUEID {
 			p.mu.Unlock()
+			p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "positioning already active for this UE"))
 			return nil, ErrCapacity
 		}
 	}
@@ -109,19 +137,29 @@ func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint
 	metrics.PositioningActiveTransactions.Inc()
 	p.mu.Unlock()
 	defer p.remove(k, x)
-	w, err := Encode(PDU{Category: Initiating, Procedure: ProcedureLocationRequest, Criticality: aperReject, IEs: []IE{{IECorrelationID, aperReject, id[:], true}, {IELocationType, aperReject, []byte{0}, true}, {IEECGI, aperIgnore, append([]byte(nil), ecgi...), true}}})
+	w, err := Encode(PDU{Category: Initiating, Procedure: ProcedureLocationRequest, Criticality: aperReject, IEs: []IE{{IECorrelationID, aperReject, id[:], true}, {IELocationType, aperReject, []byte{0}, true}, {IEECGI, aperIgnore, append([]byte(nil), ecgi...), true}, {IELCSClientType, aperReject, encodeLCSClientType(clientType), true}}})
 	if err != nil {
+		p.log.Warn("sls: LCS-AP encode failed", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		return nil, err
 	}
 	if err = p.t.Send(ctx, w); err != nil {
+		p.log.Warn("sls: Location Request send failed", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		return nil, err
 	}
+	p.log.Info("sls: Location Request sent", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Uint8("routing_id", route), zap.Uint32("lcs_client_type", clientType))
 	wctx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	select {
 	case r := <-x.done:
+		if r.err != nil {
+			p.log.Warn("sls: positioning failed", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Error(r.err))
+		} else {
+			p.log.Info("sls: positioning succeeded", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Int("estimate_len", len(r.estimate)))
+		}
 		return r.estimate, r.err
 	case <-wctx.Done():
+		p.log.Warn("sls: positioning timed out", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Duration("timeout", p.timeout))
+		metrics.PositioningFailureTotal.WithLabelValues("timeout").Inc()
 		return nil, wctx.Err()
 	}
 }
@@ -186,6 +224,7 @@ func (p *Provider) HandleInbound(w []byte) error {
 		if pdu.Category != Initiating {
 			return ErrMalformed
 		}
+		p.log.Warn("sls: E-SMLC Reset received", zap.Int("active_transactions", p.activeCount()))
 		p.AssociationLost(ErrUnavailable)
 		ack, e := Encode(PDU{Category: Successful, Procedure: ProcedureReset, Criticality: aperReject})
 		if e != nil {
@@ -204,6 +243,7 @@ func (p *Provider) HandleInbound(w []byte) error {
 		if x == nil {
 			return ErrLate
 		}
+		p.log.Info("sls: Location Abort received", zap.String("key", x.key), zap.Uint32("mme_ue_id", x.mmeUEID))
 		select {
 		case x.done <- result{err: context.Canceled}:
 			return nil
@@ -239,8 +279,10 @@ func (p *Provider) HandleInbound(w []byte) error {
 			return ErrMalformed
 		}
 		if payloadType[0]&0x80 == 0 {
+			p.log.Debug("sls: downlink LPP relayed", zap.String("key", tx.key), zap.Uint32("mme_ue_id", tx.mmeUEID), zap.Int("payload_len", len(payload)))
 			return relay.SendDownlinkLPP(tx.mmeUEID, payload)
 		}
+		p.log.Debug("sls: downlink LPPa relayed", zap.String("key", tx.key), zap.Uint32("mme_ue_id", tx.mmeUEID), zap.Uint8("routing_id", tx.routingID), zap.Int("payload_len", len(payload)))
 		return relay.SendDownlinkLPPa(tx.mmeUEID, tx.routingID, payload)
 	}
 	if pdu.Procedure != ProcedureLocationRequest || (pdu.Category != Successful && pdu.Category != Unsuccessful) {
@@ -281,6 +323,11 @@ func (p *Provider) HandleInbound(w []byte) error {
 	if pdu.Category == Unsuccessful || len(estimate) == 0 {
 		r.err = ErrUnavailable
 	}
+	if r.err != nil {
+		p.log.Warn("sls: Location Response received", zap.String("key", x.key), zap.Uint32("mme_ue_id", x.mmeUEID), zap.Bool("successful", pdu.Category == Successful), zap.Bool("cause_present", cause))
+	} else {
+		p.log.Info("sls: Location Response received", zap.String("key", x.key), zap.Uint32("mme_ue_id", x.mmeUEID), zap.Bool("successful", true), zap.Int("estimate_len", len(estimate)))
+	}
 	select {
 	case x.done <- r:
 		if r.err == nil {
@@ -293,6 +340,11 @@ func (p *Provider) HandleInbound(w []byte) error {
 		return ErrLate
 	}
 }
+func (p *Provider) activeCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.tx)
+}
 func (p *Provider) AssociationLost(err error) {
 	if err == nil {
 		err = ErrUnavailable
@@ -303,6 +355,9 @@ func (p *Provider) AssociationLost(err error) {
 		all = append(all, x)
 	}
 	p.mu.Unlock()
+	if len(all) > 0 {
+		p.log.Warn("sls: association lost, aborting active transactions", zap.Int("count", len(all)), zap.Error(err))
+	}
 	for _, x := range all {
 		select {
 		case x.done <- result{err: err}:

@@ -104,7 +104,7 @@ func main() {
 		slsCtx, cancelSLs := context.WithCancel(context.Background())
 		slsCancel = cancelSLs
 		slsTransport = sls.NewSCTPTransport(cfg.SLs, log)
-		slsProvider = sls.NewProvider(cfg.SLs.RequestTimeout, cfg.SLs.MaxTransactions, slsTransport)
+		slsProvider = sls.NewProvider(cfg.SLs.RequestTimeout, cfg.SLs.MaxTransactions, slsTransport, log)
 		slsTransport.SetHandlers(func(b []byte) {
 			if err := slsProvider.HandleInbound(b); err != nil {
 				log.Warn("sls: inbound PDU rejected", zap.Error(err))

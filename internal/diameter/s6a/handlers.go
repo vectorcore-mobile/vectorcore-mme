@@ -67,7 +67,7 @@ type Handlers struct {
 	slgTx       *slgTransactions
 	pendingLRA  sync.Map // Session-Id -> chan error
 	slsProvider interface {
-		RequestPosition(context.Context, string, uint32, []byte) ([]byte, error)
+		RequestPosition(context.Context, string, uint32, []byte, uint32) ([]byte, error)
 	}
 
 	sessionSeq atomic.Uint64
@@ -160,7 +160,7 @@ func (h *Handlers) SetSLgConfig(cfg config.SLgConfig) {
 // SetSLsProvider installs the optional E-SMLC transaction boundary before
 // Diameter starts. Nil restores explicit positioning-unavailable behaviour.
 func (h *Handlers) SetSLsProvider(provider interface {
-	RequestPosition(context.Context, string, uint32, []byte) ([]byte, error)
+	RequestPosition(context.Context, string, uint32, []byte, uint32) ([]byte, error)
 }) {
 	h.slsProvider = provider
 }

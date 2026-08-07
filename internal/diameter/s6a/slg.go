@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/fiorix/go-diameter/v4/diam"
+	"go.uber.org/zap"
+
 	"github.com/vectorcore/mme/internal/diameter/slg"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -68,34 +70,41 @@ func (s *slgTransactions) Close() {
 func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 	req, protocolErr := slg.DecodePLR(m)
 	if protocolErr != nil {
-		h.writePLA(c, m, protocolErr.ResultCode, protocolErr.ExperimentalCode, protocolErr.FailedAVP)
+		h.log.Warn("slg: PLR decode failed", zap.String("session_id", findSessionID(m)), zap.String("reason", protocolErr.Reason))
+		h.writePLA(c, m, protocolErr.ResultCode, protocolErr.ExperimentalCode, protocolErr.FailedAVP, protocolErr.Reason)
 		return
 	}
+	h.log.Info("slg: PLR received",
+		zap.String("session_id", req.SessionID),
+		zap.String("origin_host", req.OriginHost),
+		zap.String("imsi", req.IMSI),
+		zap.Bool("msisdn_present", len(req.MSISDN) != 0),
+		zap.Uint32("location_type", uint32(req.LocationType)),
+	)
 	if !strings.EqualFold(req.DestinationHost, h.diameterCfg.OriginHost) || !strings.EqualFold(req.DestinationRealm, h.diameterCfg.OriginRealm) {
-		h.writePLA(c, m, diam.UnableToDeliver, 0, nil)
+		h.writePLA(c, m, diam.UnableToDeliver, 0, nil, "destination host/realm mismatch")
 		return
 	}
 	ue, result, experimental := h.resolveSLgUE(req)
 	if result != 0 || experimental != 0 {
-		h.writePLA(c, m, result, experimental, nil)
+		h.writePLA(c, m, result, experimental, nil, "UE resolution failed")
 		return
 	}
-	_ = ue
 	switch req.LocationType {
 	case slg.LocationTypeCurrent, slg.LocationTypeCurrentOrLastKnown:
 	default:
-		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil)
+		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil, "unsupported location type")
 		return
 	}
 	key := fmt.Sprintf("plr:%s:%s:%08x", req.OriginHost, req.SessionID, m.Header.EndToEndID)
 	ctx, err := h.slgTx.Begin(key, h.slgCfg.TransactionTimeout)
 	if err != nil {
-		h.writePLA(c, m, diam.TooBusy, 0, nil)
+		h.writePLA(c, m, diam.TooBusy, 0, nil, err.Error())
 		return
 	}
-	defer h.slgTx.End(key)
 	if h.slsProvider == nil {
-		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil)
+		h.slgTx.End(key)
+		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil, "no SLs provider configured")
 		return
 	}
 	ue.Lock()
@@ -106,14 +115,34 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 	ecgi[5] = byte(ue.ECGIECI >> 8)
 	ecgi[6] = byte(ue.ECGIECI)
 	ue.Unlock()
-	if estimate, err := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi); err == nil && len(estimate) != 0 {
-		answer, buildErr := slg.BuildPLAWithLocation(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, diam.Success, 0, nil, nil, estimate)
-		if buildErr == nil {
-			_, _ = answer.WriteTo(c)
-			return
+
+	// RequestPosition is a round trip to SLs that can run for seconds
+	// (up to TransactionTimeout). go-diameter dispatches each connection's
+	// messages sequentially, so blocking the handler here would also stall
+	// DWR/DWA on this shared connection and let the client-side watchdog
+	// close it out from under us. Run it off the read loop instead.
+	go func() {
+		defer h.slgTx.End(key)
+		estimate, posErr := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi, req.LCSClientType)
+		if posErr != nil {
+			h.log.Warn("slg: SLs positioning failed", zap.String("session_id", req.SessionID), zap.Error(posErr))
+		} else if len(estimate) == 0 {
+			h.log.Warn("slg: SLs positioning returned no estimate", zap.String("session_id", req.SessionID))
+		} else {
+			answer, buildErr := slg.BuildPLAWithLocation(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, diam.Success, 0, nil, nil, estimate)
+			if buildErr != nil {
+				h.log.Warn("slg: PLA build failed", zap.String("session_id", req.SessionID), zap.Error(buildErr))
+			} else {
+				if _, writeErr := answer.WriteTo(c); writeErr != nil {
+					h.log.Warn("slg: PLA write", zap.String("session_id", req.SessionID), zap.String("reason", "positioning succeeded"), zap.Uint32("result_code", diam.Success), zap.Error(writeErr))
+					return
+				}
+				h.log.Info("slg: PLA sent", zap.String("session_id", req.SessionID), zap.String("reason", "positioning succeeded"), zap.Uint32("result_code", diam.Success))
+				return
+			}
 		}
-	}
-	h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil)
+		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil, "positioning failed")
+	}()
 }
 
 func (h *Handlers) resolveSLgUE(req *slg.ProvideLocationRequest) (*uecontext.Context, uint32, uint32) {
@@ -162,11 +191,18 @@ func (h *Handlers) resolveSLgUE(req *slg.ProvideLocationRequest) (*uecontext.Con
 	return ue, 0, 0
 }
 
-func (h *Handlers) writePLA(c diam.Conn, request *diam.Message, result, experimental uint32, failed *diam.AVP) {
+func (h *Handlers) writePLA(c diam.Conn, request *diam.Message, result, experimental uint32, failed *diam.AVP, reason string) {
+	sessionID := findSessionID(request)
 	answer, err := slg.BuildPLA(request, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, result, experimental, failed)
-	if err == nil {
-		_, _ = answer.WriteTo(c)
+	if err != nil {
+		h.log.Warn("slg: PLA build failed", zap.String("session_id", sessionID), zap.String("reason", reason), zap.Error(err))
+		return
 	}
+	if _, writeErr := answer.WriteTo(c); writeErr != nil {
+		h.log.Warn("slg: PLA write", zap.String("session_id", sessionID), zap.String("reason", reason), zap.Uint32("result_code", result), zap.Uint32("experimental_result_code", experimental), zap.Error(writeErr))
+		return
+	}
+	h.log.Info("slg: PLA sent", zap.String("session_id", sessionID), zap.String("reason", reason), zap.Uint32("result_code", result), zap.Uint32("experimental_result_code", experimental))
 }
 
 // SendSLgLocationReport is the pure-Go LRR transport boundary for a future
@@ -207,6 +243,7 @@ func (h *Handlers) SendSLgLocationReport(ctx context.Context, report slg.Locatio
 	h.pendingLRA.Store(report.SessionID, answer)
 	defer h.pendingLRA.Delete(report.SessionID)
 	if _, err = m.WriteTo(selected.Connection); err != nil {
+		h.reportTransactionFailure(selected)
 		return fmt.Errorf("slg: write LRR: %w", err)
 	}
 	select {

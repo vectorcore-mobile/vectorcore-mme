@@ -818,13 +818,19 @@ func (s *Server) sendBearerResourceModificationReject(ue *uecontext.Context, pti
 
 func (s *Server) sendProtectedNAS(ue *uecontext.Context, plain []byte, name string) error {
 	mmeID := ue.MMEUES1APID
-	protected, _, err := s.protectNAS(ue, plain)
+	protected, dlCount, err := s.protectNAS(ue, plain)
 	if err != nil {
 		return err
 	}
 	if err := s.SendDownlinkNAS(mmeID, protected); err != nil {
 		return err
 	}
+	s.log.Debug("s1ap: sending protected downlink NAS",
+		zap.Uint32("mme_ue_id", mmeID),
+		zap.String("name", name),
+		zap.Uint32("nas_downlink_count", dlCount),
+		zap.String("plain_nas_hex", hex.EncodeToString(plain)),
+		zap.String("protected_nas_hex", hex.EncodeToString(protected)))
 	ue.Lock()
 	ue.DLNASCount.Increment()
 	ue.LastDownlinkNASMessage = name

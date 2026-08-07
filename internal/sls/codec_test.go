@@ -28,7 +28,7 @@ func TestDecodeRejectsMalformedAndUnknownRejectIE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := NewProvider(timeSecond, 1, &testTransport{ok: true})
+	p := NewProvider(timeSecond, 1, &testTransport{ok: true}, nil)
 	if err := p.HandleInbound(w); err == nil {
 		t.Fatal("accepted unknown reject IE")
 	}

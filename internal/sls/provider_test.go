@@ -26,10 +26,10 @@ func (t *testTransport) Send(_ context.Context, b []byte) error {
 }
 func TestProviderCorrelatesAndCleansUp(t *testing.T) {
 	tr := &testTransport{ok: true}
-	p := NewProvider(time.Second, 1, tr)
+	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1})
+		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
 		done <- e
 	}()
 	for {
@@ -57,10 +57,10 @@ func TestProviderCorrelatesAndCleansUp(t *testing.T) {
 }
 func TestProviderAssociationLossAndTimeout(t *testing.T) {
 	tr := &testTransport{ok: true}
-	p := NewProvider(time.Second, 1, tr)
+	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1})
+		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
 		done <- e
 	}()
 	for {
@@ -76,7 +76,7 @@ func TestProviderAssociationLossAndTimeout(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("want unavailable, %v", err)
 	}
-	_, err := NewProvider(time.Millisecond, 1, tr).RequestPosition(context.Background(), "timeout", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1})
+	_, err := NewProvider(time.Millisecond, 1, tr, nil).RequestPosition(context.Background(), "timeout", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want timeout %v", err)
 	}
@@ -84,7 +84,7 @@ func TestProviderAssociationLossAndTimeout(t *testing.T) {
 
 func TestProviderAcksReset(t *testing.T) {
 	tr := &testTransport{ok: true}
-	p := NewProvider(time.Second, 1, tr)
+	p := NewProvider(time.Second, 1, tr, nil)
 	w, err := Encode(PDU{Category: Initiating, Procedure: ProcedureReset, Criticality: aper.CriticalityIgnore, IEs: []IE{{ID: IELCSCause, Criticality: aper.CriticalityIgnore, Value: []byte{0}, Known: true}}})
 	if err != nil {
 		t.Fatal(err)
