@@ -76,6 +76,13 @@ type S6aClient interface {
 
 	// SendPUR triggers a Purge-UE-Request to the HSS on detach.
 	SendPUR(imsi string) error
+
+	// AbortSLgPositioning cancels any SLs positioning transaction active for
+	// mmeUEID (TS 29.171 §7.3.3 Location-Abort-Request), so a detached UE's
+	// in-flight PLR doesn't run out its full timeout with no one left to
+	// deliver the answer to. Fire-and-forget: no error path, mirrors
+	// ClearPendingLPP's shape.
+	AbortSLgPositioning(mmeUEID uint32)
 }
 
 // HandleSMSRegistrationPending records that the normal ULR is also carrying

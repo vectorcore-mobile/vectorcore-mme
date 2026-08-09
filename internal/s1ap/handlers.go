@@ -84,6 +84,7 @@ type NoopS6aClient struct{}
 func (NoopS6aClient) SendAIR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (NoopS6aClient) SendULR(_ string, _ [3]byte, _ uint32) error { return nil }
 func (NoopS6aClient) SendPUR(_ string) error                      { return nil }
+func (NoopS6aClient) AbortSLgPositioning(_ uint32)                {}
 
 // NoopS11Client is retained for unit tests. Runtime MME always starts S11.
 type NoopS11Client struct{}
@@ -247,7 +248,17 @@ type Server struct {
 	lppaSink                       LPPaSink
 	lppSink                        LPPSink
 	lppPendingMu                   sync.Mutex
-	lppPending                     map[uint32][][]byte
+	lppPending                     map[uint32][]pendingGenericNAS
+	// lppaPending mirrors lppPending's queue-and-page behavior for the
+	// LPPa/S1AP delivery path (see SendDownlinkLPPa) — a separate map since
+	// LPPa Initiation Requests are delivered over Downlink UE Associated
+	// LPPa Transport, not Generic NAS Transport, once the S1 binding is
+	// restored. Guarded by the same lppPendingMu: both queues key off the
+	// identical ECM-IDLE/paging lifecycle, so one mutex is enough and avoids
+	// a second lock-ordering concern.
+	lppaPending      map[uint32][]pendingLPPa
+	lcsNotifyMu      sync.Mutex
+	lcsNotifyPending map[uint32]chan lcsNotifyResult
 
 	transportMu sync.Mutex
 	sctpSrv     *s1sctp.Server
@@ -286,7 +297,8 @@ func NewServer(
 		emmTimersCfg:        emmTimersCfg,
 		pagingCfg:           pagingCfg,
 		operCfg:             operCfg,
-		lppPending:          make(map[uint32][][]byte),
+		lppPending:          make(map[uint32][]pendingGenericNAS),
+		lppaPending:         make(map[uint32][]pendingLPPa),
 		store:               store,
 		ueManager:           ueManager,
 		enbTracker:          enbTracker,
@@ -709,9 +721,11 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 			ue.ENBU_TEID = 0
 			ue.ENBU_IP = nil
 			ue.Unlock()
-			// The old S1 binding is gone. A pending LPP NAS PDU must not be
-			// delivered through a later, unrelated service resumption.
+			// The old S1 binding is gone. A pending LPP NAS PDU (or LPPa
+			// Initiation Request) must not be delivered through a later,
+			// unrelated service resumption.
 			s.ClearPendingLPP(mmeID)
+			s.ClearPendingLPPa(mmeID)
 			s.log.Info("s1ap: preserving UE EPS context on eNB disconnect",
 				zap.String("imsi", imsi),
 				zap.Uint32("mme_ue_id", mmeID),
@@ -741,6 +755,7 @@ func (s *Server) handleDisconnect(remoteAddr string) {
 
 		s.sendDeleteSession(ue) // idempotent: no-op if SGWC_TEID == 0
 		s.ClearPendingLPP(mmeID)
+		s.ClearPendingLPPa(mmeID)
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateDisconnected, "ENB_DISCONNECT")
 		s.ueManager.Remove(ue)
 		evicted++
@@ -781,6 +796,7 @@ func (s *Server) Shutdown(ctx context.Context) {
 		ue.StopAllTimers()
 		ue.Unlock()
 		s.ClearPendingLPP(mmeUEID)
+		s.ClearPendingLPPa(mmeUEID)
 
 		s.sendDeleteSession(ue)
 		s.ueManager.Remove(ue)

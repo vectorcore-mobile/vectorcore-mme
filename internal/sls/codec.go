@@ -9,16 +9,30 @@ import (
 )
 
 const (
-	ProcedureLocationRequest uint8  = 0
-	ProcedureReset           uint8  = 4
-	ProcedureLocationAbort   uint8  = 3
-	PPID                     uint32 = 29
-	IECorrelationID          uint16 = 2
-	IEECGI                   uint16 = 4
-	IELCSClientType          uint16 = 8
-	IELCSCause               uint16 = 11
-	IELocationEstimate       uint16 = 12
-	IELocationType           uint16 = 13
+	ProcedureLocationRequest uint8 = 0
+	// ProcedureConnectionOrientedInformation (TS 29.171 §6.2.2.1, id-Connection-
+	// Oriented-Information-Transfer = 1) carries both LPP and LPPa APDUs between
+	// the MME and E-SMLC over the same association as an ongoing Location
+	// Request, distinguished by the Payload-Type IE - not two separate
+	// procedures.
+	ProcedureConnectionOrientedInformation uint8  = 1
+	ProcedureLocationAbort                 uint8  = 3
+	ProcedureReset                         uint8  = 4
+	PPID                                   uint32 = 29
+	IECorrelationID                        uint16 = 2
+	IEECGI                                 uint16 = 4
+	IELCSClientType                        uint16 = 8
+	IELCSCause                             uint16 = 11
+	IELocationEstimate                     uint16 = 12
+	IELocationType                         uint16 = 13
+	IEUEPositioningCapability              uint16 = 20
+	IEPositioningData                      uint16 = 16
+	IEAccuracyFulfilmentIndicator          uint16 = 0
+	// IEAPDU and IEPayloadType (TS 29.171 §7.4.17/§7.4.18, id-APDU = 1,
+	// id-Payload-Type = 15) are the Connection Oriented Information message's
+	// IEs, not part of the Location Request/Response IE set above.
+	IEAPDU        uint16 = 1
+	IEPayloadType uint16 = 15
 )
 
 type Category uint8
@@ -143,7 +157,7 @@ func Encode(p PDU) ([]byte, error) {
 }
 func knownIE(id uint16) bool {
 	switch id {
-	case IECorrelationID, IEECGI, IELCSCause, IELocationEstimate, IELocationType:
+	case IECorrelationID, IEECGI, IELCSClientType, IELCSCause, IELocationEstimate, IELocationType, IEPositioningData, IEAccuracyFulfilmentIndicator:
 		return true
 	}
 	return false

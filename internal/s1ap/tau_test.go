@@ -25,12 +25,14 @@ func newTAUTestServer() *Server {
 	log, _ := zap.NewDevelopment()
 	gutiAlloc, _ := uecontext.NewGUTIAllocator("001", "01", 1, 1)
 	return &Server{
-		s11:        NoopS11Client{},
-		ueManager:  uecontext.NewManager(),
-		enbTracker: peertracker.New(),
-		store:      noopStore{},
-		log:        log,
-		gutiAlloc:  gutiAlloc,
+		s11:         NoopS11Client{},
+		ueManager:   uecontext.NewManager(),
+		enbTracker:  peertracker.New(),
+		store:       noopStore{},
+		log:         log,
+		gutiAlloc:   gutiAlloc,
+		lppPending:  make(map[uint32][]pendingGenericNAS),
+		lppaPending: make(map[uint32][]pendingLPPa),
 		nfCfg: config.NFConfig{
 			MCC:   "001",
 			MNC:   "01",

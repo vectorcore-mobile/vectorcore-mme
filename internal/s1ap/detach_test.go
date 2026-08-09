@@ -91,6 +91,35 @@ func TestInitialUEDetachNonSwitchOffDeletesSession(t *testing.T) {
 	}
 }
 
+func TestInitialUEDetachAbortsSLgPositioning(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.41:36412"
+	setupSendCapture(srv, addr)
+	srv.s11 = &mockS11{}
+	s6a := &capturingS6a{abortCalls: make(chan uint32, 1)}
+	srv.s6a = s6a
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.IMSI = "001010123456789"
+	mmeUEID := realUE.MMEUES1APID
+	realUE.Unlock()
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 3, nasPDU))
+
+	select {
+	case got := <-s6a.abortCalls:
+		if got != mmeUEID {
+			t.Fatalf("AbortSLgPositioning mmeUEID: got %d, want %d", got, mmeUEID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("AbortSLgPositioning was not called on detach")
+	}
+}
+
 func TestInitialUEDetachSwitchOffSuppressesDetachAccept(t *testing.T) {
 	srv := newTAUTestServer()
 	const addr = "10.0.0.41:36412"

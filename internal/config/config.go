@@ -325,6 +325,12 @@ type SLgConfig struct {
 	TransactionTimeout  time.Duration `yaml:"transaction_timeout"`
 	ReportTimeout       time.Duration `yaml:"report_timeout"`
 	TransactionCapacity int           `yaml:"transaction_capacity"`
+	// NotificationTimeout bounds how long handlePLR waits for the UE's
+	// response to a TS 23.271 §9.1.15 step 4 LCS location-notification
+	// before applying step 5's no-response rule. TS 24.080's own
+	// lcs-LocationNotification operation comment states "Timer T(LCSN)=
+	// 10s to 20s"; the upper bound is used as the default.
+	NotificationTimeout time.Duration `yaml:"notification_timeout"`
 }
 
 // SLsConfig controls the optional outbound E-SMLC SCTP association. PPID 29
@@ -478,7 +484,7 @@ func Load(path string) (*Config, error) {
 		SMS: SMSConfig{
 			PreferredTransport: "sgd",
 		},
-		SLg: SLgConfig{TransactionTimeout: 30 * time.Second, ReportTimeout: 30 * time.Second, TransactionCapacity: 1024},
+		SLg: SLgConfig{TransactionTimeout: 30 * time.Second, ReportTimeout: 30 * time.Second, TransactionCapacity: 1024, NotificationTimeout: 20 * time.Second},
 		SLs: SLsConfig{LocalAddress: "0.0.0.0", RemotePort: 9082, ReconnectInterval: 5 * time.Second, RequestTimeout: 10 * time.Second, MaxTransactions: 1024, MaxPDUSize: 1 << 20},
 		SBcAP: SBcAPConfig{
 			BindAddress:        "0.0.0.0",
@@ -647,8 +653,8 @@ func Load(path string) (*Config, error) {
 	if cfg.SMS.PreferredTransport != "sgd" && cfg.SMS.PreferredTransport != "sgs" {
 		return nil, fmt.Errorf("config: sms.preferred_transport must be sgd or sgs")
 	}
-	if cfg.SLg.TransactionTimeout <= 0 || cfg.SLg.ReportTimeout <= 0 || cfg.SLg.TransactionCapacity < 1 {
-		return nil, fmt.Errorf("config: slg transaction_timeout/report_timeout must be greater than 0 and transaction_capacity must be at least 1")
+	if cfg.SLg.TransactionTimeout <= 0 || cfg.SLg.ReportTimeout <= 0 || cfg.SLg.TransactionCapacity < 1 || cfg.SLg.NotificationTimeout <= 0 {
+		return nil, fmt.Errorf("config: slg transaction_timeout/report_timeout/notification_timeout must be greater than 0 and transaction_capacity must be at least 1")
 	}
 	if cfg.SLs.Enabled {
 		if net.ParseIP(cfg.SLs.LocalAddress) == nil || net.ParseIP(cfg.SLs.RemoteAddress) == nil || cfg.SLs.RemotePort < 1 || cfg.SLs.RemotePort > 65535 || cfg.SLs.LocalPort < 0 || cfg.SLs.LocalPort > 65535 || cfg.SLs.ReconnectInterval <= 0 || cfg.SLs.RequestTimeout <= 0 || cfg.SLs.MaxTransactions < 1 || cfg.SLs.MaxPDUSize < 1024 {

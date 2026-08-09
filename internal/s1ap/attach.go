@@ -628,9 +628,12 @@ func (s *Server) processEMM(ue *uecontext.Context, result *nas.DecodeResult, att
 		if result.SecHeaderType == emm.SecurityHeaderPlain {
 			return fmt.Errorf("s1ap: unprotected uplink generic NAS transport")
 		}
-		_, payload, err := emm.DecodeUplinkGenericNASTransport(result.Inner)
+		containerType, payload, err := emm.DecodeUplinkGenericNASTransport(result.Inner)
 		if err != nil {
 			return err
+		}
+		if containerType == emm.GenericMessageContainerTypeLCS {
+			return s.handleUplinkLCSNotification(mmeUEID, payload)
 		}
 		if s.lppSink == nil {
 			return fmt.Errorf("s1ap: LPP relay unavailable")
@@ -1259,6 +1262,13 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 	// Purge UE at HSS
 	if imsi != "" && s.s6a != nil {
 		s.sendPURForUE(ue)
+	}
+
+	// Cancel any in-flight SLg positioning transaction (TS 29.171 §7.3.3
+	// Location-Abort-Request) rather than let it run out its full timeout
+	// with no UE left to deliver the eventual answer to.
+	if s.s6a != nil {
+		s.s6a.AbortSLgPositioning(mmeUEID)
 	}
 
 	// Release all active PDN sessions. Detach can arrive with multiple active

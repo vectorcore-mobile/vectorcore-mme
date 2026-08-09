@@ -12,6 +12,8 @@ import (
 
 	"github.com/vectorcore/mme/internal/diameter/slg"
 	"github.com/vectorcore/mme/internal/nas/emm"
+	"github.com/vectorcore/mme/internal/nas/lcsnotify"
+	"github.com/vectorcore/mme/internal/sls"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
 
@@ -107,6 +109,15 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil, "no SLs provider configured")
 		return
 	}
+	// TS 23.271 §9.1.15 step 4: the consent/notification procedure only
+	// applies to value-added-services clients, and only when the GMLC sent
+	// a privacy-check value at all.
+	notifyGate := req.LCSClientType == slg.LCSClientTypeValueAddedServices && req.PrivacyCheck != nil
+	if notifyGate && *req.PrivacyCheck == slg.LCSPrivacyCheckNotAllowed {
+		h.slgTx.End(key)
+		h.writePLA(c, m, 0, slg.ExperimentalPositioningDenied, nil, "LCS-Privacy-Check: not allowed")
+		return
+	}
 	ue.Lock()
 	ecgi := make([]byte, 7)
 	copy(ecgi[:3], ue.ECGIPLMN[:])
@@ -120,16 +131,32 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 	// (up to TransactionTimeout). go-diameter dispatches each connection's
 	// messages sequentially, so blocking the handler here would also stall
 	// DWR/DWA on this shared connection and let the client-side watchdog
-	// close it out from under us. Run it off the read loop instead.
+	// close it out from under us. Run it off the read loop instead. The
+	// notification wait (bounded by NotificationTimeout) shares this
+	// reasoning: it is also a blocking round trip to the UE.
 	go func() {
 		defer h.slgTx.End(key)
-		estimate, posErr := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi, req.LCSClientType)
+		if notifyGate && *req.PrivacyCheck != slg.LCSPrivacyCheckAllowedWithoutNotification {
+			if !h.applyPrivacyCheckNotification(ue.MMEUES1APID, *req.PrivacyCheck, req.SessionID) {
+				h.writePLA(c, m, 0, slg.ExperimentalPositioningDenied, nil, "LCS-Privacy-Check: UE did not consent to notification")
+				return
+			}
+		}
+		posResult, posErr := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi, req.LCSClientType)
 		if posErr != nil {
 			h.log.Warn("slg: SLs positioning failed", zap.String("session_id", req.SessionID), zap.Error(posErr))
-		} else if len(estimate) == 0 {
+		} else if len(posResult.Estimate) == 0 {
 			h.log.Warn("slg: SLs positioning returned no estimate", zap.String("session_id", req.SessionID))
+		} else if gad, convErr := sls.ConvertLocationEstimateToGAD(posResult.Estimate); convErr != nil {
+			// posResult.Estimate is the LCS-AP Location-Estimate IE value, APER
+			// encoding of Geographical-Area — a different wire format from the
+			// Diameter Location-Estimate AVP's TS 23.032 compact GAD bytes.
+			// Passing it through unconverted builds a PLA that reports success
+			// but carries bytes the GMLC's GAD decoder cannot parse.
+			h.log.Warn("slg: location estimate conversion failed", zap.String("session_id", req.SessionID), zap.Error(convErr))
 		} else {
-			answer, buildErr := slg.BuildPLAWithLocation(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, diam.Success, 0, nil, nil, estimate)
+			extra := slg.PLAExtras{PositioningData: posResult.PositioningData, AccuracyFulfilmentIndicator: posResult.AccuracyFulfilmentIndicator, AccuracyFulfilmentPresent: posResult.AccuracyFulfilmentPresent}
+			answer, buildErr := slg.BuildPLAWithLocation(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, diam.Success, 0, nil, nil, gad, extra)
 			if buildErr != nil {
 				h.log.Warn("slg: PLA build failed", zap.String("session_id", req.SessionID), zap.Error(buildErr))
 			} else {
@@ -143,6 +170,52 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 		}
 		h.writePLA(c, m, 0, slg.ExperimentalPositioningFailed, nil, "positioning failed")
 	}()
+}
+
+// applyPrivacyCheckNotification sends the TS 23.271 §9.1.15 step 4 LCS
+// location-notification when privacyCheck requires it, and applies step 5's
+// no-response rule. privacyCheck must not be LCSPrivacyCheckNotAllowed
+// (handlePLR rejects that value before this is ever called) or
+// LCSPrivacyCheckAllowedWithoutNotification (handlePLR skips the call
+// entirely for that value). It reports whether positioning may proceed.
+func (h *Handlers) applyPrivacyCheckNotification(mmeUEID uint32, privacyCheck uint32, sessionID string) bool {
+	switch privacyCheck {
+	case slg.LCSPrivacyCheckAllowedWithNotification:
+		if h.lcsNotifier != nil {
+			if _, err := h.lcsNotifier.SendLocationNotification(mmeUEID, lcsnotify.NotifyLocationAllowed, false, 0); err != nil {
+				h.log.Warn("slg: LCS notification send failed", zap.String("session_id", sessionID), zap.Error(err))
+			}
+		}
+		return true
+	case slg.LCSPrivacyCheckAllowedIfNoResponse:
+		if h.lcsNotifier == nil {
+			return true // cannot notify: treated the same as no response, which this value allows
+		}
+		granted, err := h.lcsNotifier.SendLocationNotification(mmeUEID, lcsnotify.NotifyAndVerifyLocationAllowedIfNoResponse, true, h.slgCfg.NotificationTimeout)
+		if err != nil {
+			// Timeout or an undecodable response are both treated as "no
+			// response" for this value: TS 23.271 only requires an explicit
+			// denial to block positioning here.
+			h.log.Info("slg: LCS notification no usable response, proceeding", zap.String("session_id", sessionID), zap.Error(err))
+			return true
+		}
+		return granted
+	case slg.LCSPrivacyCheckRestrictedIfNoResponse:
+		if h.lcsNotifier == nil {
+			h.log.Warn("slg: LCS notification required but unavailable", zap.String("session_id", sessionID))
+			return false
+		}
+		granted, err := h.lcsNotifier.SendLocationNotification(mmeUEID, lcsnotify.NotifyAndVerifyLocationNotAllowedIfNoResponse, true, h.slgCfg.NotificationTimeout)
+		if err != nil {
+			// Timeout or an undecodable response are both treated as "no
+			// response" for this value: TS 23.271 requires an explicit grant
+			// to allow positioning here.
+			h.log.Info("slg: LCS notification no usable response, restricting", zap.String("session_id", sessionID), zap.Error(err))
+			return false
+		}
+		return granted
+	}
+	return true
 }
 
 func (h *Handlers) resolveSLgUE(req *slg.ProvideLocationRequest) (*uecontext.Context, uint32, uint32) {
@@ -203,6 +276,17 @@ func (h *Handlers) writePLA(c diam.Conn, request *diam.Message, result, experime
 		return
 	}
 	h.log.Info("slg: PLA sent", zap.String("session_id", sessionID), zap.String("reason", reason), zap.Uint32("result_code", result), zap.Uint32("experimental_result_code", experimental))
+}
+
+// AbortSLgPositioning cancels any SLs positioning transaction active for
+// mmeUEID, implementing s1ap.S6aClient for UE lifecycle events (detach,
+// superseded transaction). Fire-and-forget: nil-safe against a disabled or
+// unconfigured SLs provider, mirroring the guard already used in handlePLR.
+func (h *Handlers) AbortSLgPositioning(mmeUEID uint32) {
+	if h.slsProvider == nil {
+		return
+	}
+	h.slsProvider.AbortPosition(mmeUEID)
 }
 
 // SendSLgLocationReport is the pure-Go LRR transport boundary for a future

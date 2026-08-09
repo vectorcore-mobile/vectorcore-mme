@@ -110,6 +110,10 @@ slg:
   transaction_timeout: "30s"
   report_timeout: "30s"
   transaction_capacity: 1024
+  # Bounds how long a PLR with LCS-Privacy-Check = ALLOWED_IF_NO_RESPONSE or
+  # RESTRICTED_IF_NO_RESPONSE waits for the UE's response to the TS 23.271
+  # §9.1.15 location-notification before applying the no-response rule.
+  notification_timeout: "20s"
 
 # Roaming foundation only: this configuration is validated and available to
 # later integration, but it does not yet route AIR/ULR or create S8 sessions.

@@ -23,6 +23,8 @@ import (
 	"github.com/vectorcore/mme/internal/diameter/slg"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
+	"github.com/vectorcore/mme/internal/nas/lcsnotify"
+	"github.com/vectorcore/mme/internal/sls"
 	smsservice "github.com/vectorcore/mme/internal/sms"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -67,7 +69,16 @@ type Handlers struct {
 	slgTx       *slgTransactions
 	pendingLRA  sync.Map // Session-Id -> chan error
 	slsProvider interface {
-		RequestPosition(context.Context, string, uint32, []byte, uint32) ([]byte, error)
+		RequestPosition(context.Context, string, uint32, []byte, uint32) (sls.PositionResult, error)
+		AbortPosition(uint32)
+	}
+	// lcsNotifier sends the TS 23.271 §9.1.15 step 4 LCS location-notification
+	// over NAS (s1ap.Server implements this). Nil-safe: handlePLR treats a
+	// missing notifier as "cannot notify", failing closed for
+	// RESTRICTED_IF_NO_RESPONSE and open for ALLOWED_IF_NO_RESPONSE, matching
+	// each value's no-response rule.
+	lcsNotifier interface {
+		SendLocationNotification(mme uint32, notificationType lcsnotify.NotificationType, wait bool, timeout time.Duration) (bool, error)
 	}
 
 	sessionSeq atomic.Uint64
@@ -160,9 +171,19 @@ func (h *Handlers) SetSLgConfig(cfg config.SLgConfig) {
 // SetSLsProvider installs the optional E-SMLC transaction boundary before
 // Diameter starts. Nil restores explicit positioning-unavailable behaviour.
 func (h *Handlers) SetSLsProvider(provider interface {
-	RequestPosition(context.Context, string, uint32, []byte, uint32) ([]byte, error)
+	RequestPosition(context.Context, string, uint32, []byte, uint32) (sls.PositionResult, error)
+	AbortPosition(uint32)
 }) {
 	h.slsProvider = provider
+}
+
+// SetLCSNotifier installs the NAS transport used to send TS 23.271 §9.1.15
+// step 4 LCS location-notifications (s1ap.Server). Nil restores the
+// "notification unavailable" fallback behaviour in handlePLR.
+func (h *Handlers) SetLCSNotifier(notifier interface {
+	SendLocationNotification(mme uint32, notificationType lcsnotify.NotificationType, wait bool, timeout time.Duration) (bool, error)
+}) {
+	h.lcsNotifier = notifier
 }
 
 // ShutdownSLg deterministically cancels outstanding no-state transactions.

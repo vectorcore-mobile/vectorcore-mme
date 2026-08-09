@@ -20,8 +20,13 @@ const (
 
 	AVPSLgLocationType              uint32 = 2500
 	AVPLCSEPSClientName             uint32 = 2501
+	AVPLCSPrivacyCheck              uint32 = 2512
+	AVPAccuracyFulfilmentIndicator  uint32 = 2513
+	AVPEUTRANPositioningData        uint32 = 2516
 	AVPECGI                         uint32 = 2517
 	AVPLocationEvent                uint32 = 2518
+	AVPLCSPrivacyCheckNonSession    uint32 = 2521
+	AVPLCSPrivacyCheckSession       uint32 = 2522
 	AVPMSISDN                       uint32 = 701
 	AVPIMEI                         uint32 = 1402
 	AVPDeferredLocationType         uint32 = 2532
@@ -30,6 +35,24 @@ const (
 	AVPReportingInterval            uint32 = 2542
 	DeferredLocationTypePeriodicLDR uint32 = 1 << 4
 	maxPeriodicReportingSpan        uint32 = 8639999
+
+	// TS 29.172, clause 7.4.7 / Diameter LCS-Privacy-Check AVP (code 2512).
+	// TS 23.271 §9.1.15 step 4/5 gates whether and how the MME must notify
+	// the target UE before positioning a value-added-services LCS client.
+	LCSPrivacyCheckAllowedWithoutNotification uint32 = 0
+	LCSPrivacyCheckAllowedWithNotification    uint32 = 1
+	LCSPrivacyCheckAllowedIfNoResponse        uint32 = 2
+	LCSPrivacyCheckRestrictedIfNoResponse     uint32 = 3
+	LCSPrivacyCheckNotAllowed                 uint32 = 4
+
+	// LCS-Client-Type (base Diameter AVP 1241, TS 29.173). TS 23.271
+	// §9.1.15 step 4 only applies the privacy-check/notification procedure
+	// to ValueAddedServices; Emergency/PLMNOperator/LawfulIntercept clients
+	// skip it entirely regardless of the privacy-check value received.
+	LCSClientTypeEmergencyServices       uint32 = 0
+	LCSClientTypeValueAddedServices      uint32 = 1
+	LCSClientTypePLMNOperatorServices    uint32 = 2
+	LCSClientTypeLawfulInterceptServices uint32 = 3
 
 	// TS 29.172, clause 7.2.1. Only an explicit, supported value can be
 	// processed by the location service; unknown enumerations are rejected.
@@ -78,6 +101,11 @@ type ProvideLocationRequest struct {
 	LCSClientType        uint32
 	DeferredLocationType uint32
 	PeriodicLDR          *PeriodicLDRInfo
+	// PrivacyCheck is the decoded LCS-Privacy-Check value nested in
+	// whichever of LCS-Privacy-Check-Session/-Non-Session was present, or
+	// nil if neither AVP was sent. TS 23.271 §9.1.15 step 4 only consults
+	// it for LCSClientType == LCSClientTypeValueAddedServices.
+	PrivacyCheck *uint32
 }
 
 // PeriodicLDRInfo is a decoded, validated Release-16 periodic policy. Values
@@ -317,7 +345,67 @@ func DecodePLR(m *diam.Message) (*ProvideLocationRequest, *ProtocolError) {
 		}
 		request.PeriodicLDR = info
 	}
+	nonSession := allAVPs(m, AVPLCSPrivacyCheckNonSession, VendorID)
+	session := allAVPs(m, AVPLCSPrivacyCheckSession, VendorID)
+	if len(nonSession) > 1 || len(session) > 1 {
+		bad := nonSession
+		if len(session) > 1 {
+			bad = session
+		}
+		return nil, baseError(diam.InvalidAVPValue, "duplicate LCS-Privacy-Check AVP", bad[1])
+	}
+	if len(nonSession) == 1 && len(session) == 1 {
+		return nil, baseError(diam.InvalidAVPValue, "LCS-Privacy-Check-Session and -Non-Session both present", session[0])
+	}
+	for _, a := range m.AVP {
+		if (a.Code == AVPLCSPrivacyCheckNonSession || a.Code == AVPLCSPrivacyCheckSession) && a.VendorID != VendorID {
+			return nil, baseError(diam.InvalidAVPValue, "invalid vendor for LCS-Privacy-Check", a)
+		}
+	}
+	if len(nonSession) == 1 {
+		v, e := decodePrivacyCheck(nonSession[0])
+		if e != nil {
+			return nil, e
+		}
+		request.PrivacyCheck = &v
+	} else if len(session) == 1 {
+		v, e := decodePrivacyCheck(session[0])
+		if e != nil {
+			return nil, e
+		}
+		request.PrivacyCheck = &v
+	}
 	return request, nil
+}
+
+// decodePrivacyCheck extracts the nested LCS-Privacy-Check enum from an
+// LCS-Privacy-Check-Session or -Non-Session grouped AVP.
+func decodePrivacyCheck(a *diam.AVP) (uint32, *ProtocolError) {
+	g, ok := a.Data.(*diam.GroupedAVP)
+	if !ok {
+		return 0, baseError(diam.InvalidAVPValue, "invalid LCS-Privacy-Check grouped AVP", a)
+	}
+	var found *diam.AVP
+	for _, child := range g.AVP {
+		if child.Code != AVPLCSPrivacyCheck {
+			continue
+		}
+		if child.VendorID != VendorID {
+			return 0, baseError(diam.InvalidAVPValue, "invalid vendor for LCS-Privacy-Check", child)
+		}
+		if found != nil {
+			return 0, baseError(diam.InvalidAVPValue, "duplicate LCS-Privacy-Check", child)
+		}
+		found = child
+	}
+	if found == nil {
+		return 0, baseError(diam.MissingAVP, "missing LCS-Privacy-Check", a)
+	}
+	v, ok := found.Data.(datatype.Enumerated)
+	if !ok || uint32(v) > LCSPrivacyCheckNotAllowed {
+		return 0, baseError(diam.InvalidAVPValue, "invalid LCS-Privacy-Check", found)
+	}
+	return uint32(v), nil
 }
 
 func decodePeriodicLDR(a *diam.AVP) (*PeriodicLDRInfo, *ProtocolError) {
@@ -380,12 +468,30 @@ func BuildPLA(request *diam.Message, originHost, originRealm string, resultCode,
 // seven-octet ECGI wire coding from TS 29.274 §8.21.5, not a coordinate or
 // Location-Estimate. It is legal only on a successful answer.
 func BuildPLAWithECGI(request *diam.Message, originHost, originRealm string, resultCode, experimentalCode uint32, failed *diam.AVP, ecgi []byte) (*diam.Message, error) {
-	return BuildPLAWithLocation(request, originHost, originRealm, resultCode, experimentalCode, failed, ecgi, nil)
+	return BuildPLAWithLocation(request, originHost, originRealm, resultCode, experimentalCode, failed, ecgi, nil, PLAExtras{})
+}
+
+// PLAExtras carries optional PLA content sourced from the E-SMLC's LCS-AP
+// Location-Response (TS 29.171) that this MME can now capture and forward,
+// beyond the always-opaque ECGI/Location-Estimate.
+type PLAExtras struct {
+	// PositioningData is the raw LCS-AP Positioning-Data IE bytes, forwarded
+	// unchanged into the EUTRAN-Positioning-Data AVP: TS 29.172 states its
+	// "internal structure and encoding is defined in 3GPP TS 29.171", so the
+	// GMLC is expected to decode the same LCS-AP wire encoding directly.
+	PositioningData []byte
+	// AccuracyFulfilmentIndicator mirrors the E-SMLC's LCS-AP
+	// Accuracy-Fulfillment-Indicator IE. Its numeric values (0=fulfilled,
+	// 1=not-fulfilled) are identical to the Diameter Accuracy-Fulfilment-
+	// Indicator AVP (code 2513), so the decoded index is forwarded unchanged.
+	// AccuracyFulfilmentPresent distinguishes "not reported" from index 0.
+	AccuracyFulfilmentIndicator uint32
+	AccuracyFulfilmentPresent   bool
 }
 
 // BuildPLAWithLocation adds only provider-confirmed location output. The MME
 // treats Location-Estimate as opaque GAD data and never synthesizes it.
-func BuildPLAWithLocation(request *diam.Message, originHost, originRealm string, resultCode, experimentalCode uint32, failed *diam.AVP, ecgi, locationEstimate []byte) (*diam.Message, error) {
+func BuildPLAWithLocation(request *diam.Message, originHost, originRealm string, resultCode, experimentalCode uint32, failed *diam.AVP, ecgi, locationEstimate []byte, extra PLAExtras) (*diam.Message, error) {
 	if request == nil || originHost == "" || originRealm == "" {
 		return nil, fmt.Errorf("slg: missing PLA request or origin identity")
 	}
@@ -400,6 +506,9 @@ func BuildPLAWithLocation(request *diam.Message, originHost, originRealm string,
 	}
 	if len(locationEstimate) != 0 && (resultCode != diam.Success || experimentalCode != 0) {
 		return nil, fmt.Errorf("slg: Location-Estimate requires successful PLA")
+	}
+	if (len(extra.PositioningData) != 0 || extra.AccuracyFulfilmentPresent) && (resultCode != diam.Success || experimentalCode != 0) {
+		return nil, fmt.Errorf("slg: EUTRAN-Positioning-Data/Accuracy-Fulfilment-Indicator require successful PLA")
 	}
 	answer := request.Answer(0)
 	// Session-Id is mandatory in every answer and must be copied exactly from
@@ -428,6 +537,12 @@ func BuildPLAWithLocation(request *diam.Message, originHost, originRealm string,
 	}
 	if len(locationEstimate) != 0 {
 		answer.NewAVP(avp.LocationEstimate, avp.Mbit, 0, datatype.OctetString(append([]byte(nil), locationEstimate...)))
+	}
+	if len(extra.PositioningData) != 0 {
+		answer.NewAVP(AVPEUTRANPositioningData, avp.Vbit|avp.Mbit, VendorID, datatype.OctetString(append([]byte(nil), extra.PositioningData...)))
+	}
+	if extra.AccuracyFulfilmentPresent {
+		answer.NewAVP(AVPAccuracyFulfilmentIndicator, avp.Vbit|avp.Mbit, VendorID, datatype.Enumerated(extra.AccuracyFulfilmentIndicator))
 	}
 	if failed != nil {
 		answer.NewAVP(avp.FailedAVP, avp.Mbit, 0, &diam.GroupedAVP{AVP: []*diam.AVP{failed}})
@@ -462,6 +577,14 @@ func BuildPLR(req ProvideLocationRequest) (*diam.Message, error) {
 		m.NewAVP(AVPPeriodicLDRInformation, avp.Vbit|avp.Mbit, VendorID, &diam.GroupedAVP{AVP: []*diam.AVP{
 			diam.NewAVP(AVPReportingAmount, avp.Vbit|avp.Mbit, VendorID, datatype.Unsigned32(req.PeriodicLDR.ReportingAmount)),
 			diam.NewAVP(AVPReportingInterval, avp.Vbit|avp.Mbit, VendorID, datatype.Unsigned32(req.PeriodicLDR.ReportingIntervalSeconds)),
+		}})
+	}
+	if req.PrivacyCheck != nil {
+		if *req.PrivacyCheck > LCSPrivacyCheckNotAllowed {
+			return nil, fmt.Errorf("slg: invalid LCS-Privacy-Check")
+		}
+		m.NewAVP(AVPLCSPrivacyCheckNonSession, avp.Vbit|avp.Mbit, VendorID, &diam.GroupedAVP{AVP: []*diam.AVP{
+			diam.NewAVP(AVPLCSPrivacyCheck, avp.Vbit|avp.Mbit, VendorID, datatype.Enumerated(*req.PrivacyCheck)),
 		}})
 	}
 	m.NewAVP(avp.UserName, avp.Mbit, 0, datatype.UTF8String(req.SubscriberID))

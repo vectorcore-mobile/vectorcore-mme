@@ -178,6 +178,7 @@ func main() {
 	// Wire result callbacks
 	s6aHandlers.SetResultHandler(s1apSrv)
 	s6aHandlers.SetDetachFn(s1apSrv.HandleNetworkDetach)
+	s6aHandlers.SetLCSNotifier(s1apSrv)
 	c.SetHandler(s1apSrv)
 	if cfg.S10.Enabled {
 		if srv, ok := s10c.(*s10server.Server); ok {

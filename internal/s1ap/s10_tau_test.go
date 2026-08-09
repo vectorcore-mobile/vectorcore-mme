@@ -76,7 +76,8 @@ type capturingS6a struct {
 		imsi    string
 		mmeUEID uint32
 	}
-	err error
+	abortCalls chan uint32
+	err        error
 }
 
 func (c *capturingS6a) SendAIR(_ string, _ [3]byte, _ uint32) error { return nil }
@@ -88,6 +89,12 @@ func (c *capturingS6a) SendULR(imsi string, _ [3]byte, mmeUEID uint32) error {
 	return c.err
 }
 func (c *capturingS6a) SendPUR(_ string) error { return nil }
+func (c *capturingS6a) AbortSLgPositioning(mmeUEID uint32) {
+	select {
+	case c.abortCalls <- mmeUEID:
+	default:
+	}
+}
 
 // ── Mock S11 (capturing MBR) ──────────────────────────────────────────────────
 
