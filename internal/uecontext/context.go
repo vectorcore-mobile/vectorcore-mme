@@ -671,6 +671,18 @@ func (c *Context) SetECMState(s emm.ECMState) {
 	c.UpdatedAt = time.Now()
 }
 
+// LPPSupported reports whether the UE's most recently received UE Network
+// Capability indicated support for LPP (TS 24.301 §9.9.3.34, octet 7 bit 4).
+// It returns false if no UE network capability has been received yet or it
+// fails to decode.
+func (c *Context) LPPSupported() bool {
+	cap, err := emm.DecodeUENetworkCapability(c.UENetworkCapability)
+	if err != nil {
+		return false
+	}
+	return cap.LPP
+}
+
 // StoreAuthChallenge stores the AKA vectors for the pending authentication.
 func (c *Context) StoreAuthChallenge(rand, xres, autn, kasme []byte) {
 	c.RAND = rand

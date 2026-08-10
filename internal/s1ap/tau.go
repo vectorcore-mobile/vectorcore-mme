@@ -202,6 +202,9 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 		if emmTAI := taiFromIE(tai); emmTAI != nil {
 			ue.TAI = emmTAI
 		}
+		if tauReq.UENetworkCapability != nil {
+			ue.UENetworkCapability = tauReq.UENetworkCapability
+		}
 		mmeUEID := ue.MMEUES1APID
 		newBindingGeneration := ue.S1BindingGeneration
 		ue.Unlock()
@@ -257,6 +260,9 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	ue.IdleTAUReleaseAfterComplete = false
 	if emmTAI := taiFromIE(tai); emmTAI != nil {
 		ue.TAI = emmTAI
+	}
+	if tauReq.UENetworkCapability != nil {
+		ue.UENetworkCapability = tauReq.UENetworkCapability
 	}
 	ue.SetEMMState(emm.StateTrackingAreaUpdating)
 	ue.SetECMState(emm.ECMConnected)
@@ -339,6 +345,9 @@ func (s *Server) processTrackingAreaUpdate(ue *uecontext.Context, inner []byte, 
 
 	ue.Lock()
 	ue.SetEMMState(emm.StateTrackingAreaUpdating)
+	if tauReq.UENetworkCapability != nil {
+		ue.UENetworkCapability = tauReq.UENetworkCapability
+	}
 	if ue.S1ReleasePending {
 		oldGeneration := ue.S1BindingGeneration
 		ue.S1BindingGeneration++

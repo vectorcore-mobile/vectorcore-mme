@@ -30,7 +30,7 @@ func TestProviderCorrelatesAndCleansUp(t *testing.T) {
 	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
+		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, true)
 		done <- e
 	}()
 	for {
@@ -61,7 +61,7 @@ func TestProviderCapturesPositioningDataAndAccuracyIndicator(t *testing.T) {
 	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan PositionResult, 1)
 	go func() {
-		r, _ := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
+		r, _ := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, true)
 		done <- r
 	}()
 	for {
@@ -98,12 +98,58 @@ func TestProviderCapturesPositioningDataAndAccuracyIndicator(t *testing.T) {
 	}
 }
 
+func TestRequestPositionEncodesLPPSupport(t *testing.T) {
+	for _, lppSupport := range []bool{true, false} {
+		t.Run(map[bool]string{true: "supported", false: "unsupported"}[lppSupport], func(t *testing.T) {
+			tr := &testTransport{ok: true}
+			p := NewProvider(time.Second, 1, tr, nil)
+			done := make(chan error, 1)
+			go func() {
+				_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, lppSupport)
+				done <- e
+			}()
+			for {
+				tr.mu.Lock()
+				n := len(tr.sent)
+				tr.mu.Unlock()
+				if n > 0 {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			tr.mu.Lock()
+			sent := append([]byte(nil), tr.sent[0]...)
+			tr.mu.Unlock()
+			pdu, err := Decode(sent)
+			if err != nil {
+				t.Fatalf("decode Location Request: %v", err)
+			}
+			var gotIE *IE
+			for i := range pdu.IEs {
+				if pdu.IEs[i].ID == IEUEPositioningCapability {
+					gotIE = &pdu.IEs[i]
+					break
+				}
+			}
+			if gotIE == nil {
+				t.Fatal("Location Request missing UE-Positioning-Capability IE")
+			}
+			want := encodeUEPositioningCapability(lppSupport)
+			if !bytes.Equal(gotIE.Value, want) {
+				t.Errorf("UE-Positioning-Capability: got %x, want %x", gotIE.Value, want)
+			}
+			p.AbortPosition(1)
+			<-done
+		})
+	}
+}
+
 func TestAbortPositionCancelsWaiterAndSendsLocationAbort(t *testing.T) {
 	tr := &testTransport{ok: true}
 	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, e := p.RequestPosition(context.Background(), "plr", 42, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
+		_, e := p.RequestPosition(context.Background(), "plr", 42, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, true)
 		done <- e
 	}()
 	for {
@@ -148,7 +194,7 @@ func TestProviderAssociationLossAndTimeout(t *testing.T) {
 	p := NewProvider(time.Second, 1, tr, nil)
 	done := make(chan error, 1)
 	go func() {
-		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
+		_, e := p.RequestPosition(context.Background(), "plr", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, true)
 		done <- e
 	}()
 	for {
@@ -164,7 +210,7 @@ func TestProviderAssociationLossAndTimeout(t *testing.T) {
 	if err := <-done; !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("want unavailable, %v", err)
 	}
-	_, err := NewProvider(time.Millisecond, 1, tr, nil).RequestPosition(context.Background(), "timeout", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0)
+	_, err := NewProvider(time.Millisecond, 1, tr, nil).RequestPosition(context.Background(), "timeout", 1, []byte{0, 0xf1, 0x10, 0, 0, 0, 1}, 0, true)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want timeout %v", err)
 	}

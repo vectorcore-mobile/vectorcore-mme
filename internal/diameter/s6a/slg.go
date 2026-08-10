@@ -125,6 +125,7 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 	ecgi[4] = byte(ue.ECGIECI >> 16)
 	ecgi[5] = byte(ue.ECGIECI >> 8)
 	ecgi[6] = byte(ue.ECGIECI)
+	lppSupport := ue.LPPSupported()
 	ue.Unlock()
 
 	// RequestPosition is a round trip to SLs that can run for seconds
@@ -142,7 +143,7 @@ func (h *Handlers) handlePLR(c diam.Conn, m *diam.Message) {
 				return
 			}
 		}
-		posResult, posErr := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi, req.LCSClientType)
+		posResult, posErr := h.slsProvider.RequestPosition(ctx, key, ue.MMEUES1APID, ecgi, req.LCSClientType, lppSupport)
 		if posErr != nil {
 			h.log.Warn("slg: SLs positioning failed", zap.String("session_id", req.SessionID), zap.Error(posErr))
 		} else if len(posResult.Estimate) == 0 {

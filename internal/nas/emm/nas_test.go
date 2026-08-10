@@ -267,6 +267,31 @@ func TestAttachRejectIMEINotAccepted(t *testing.T) {
 	}
 }
 
+func TestDecodeUENetworkCapability_LPP(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "short IE (EEA/EIA only) defaults LPP false", in: "f070", want: false},
+		{name: "octet 7 present, LPP bit set", in: "f070000008", want: true},
+		{name: "octet 7 present, LPP bit clear", in: "f070000000", want: false},
+		{name: "octet 7 present, LPP bit set among others", in: "f0700000ff", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cap, err := emm.DecodeUENetworkCapability(mustHex(t, tt.in))
+			if err != nil {
+				t.Fatalf("DecodeUENetworkCapability: %v", err)
+			}
+			if cap.LPP != tt.want {
+				t.Fatalf("LPP: got %v, want %v", cap.LPP, tt.want)
+			}
+		})
+	}
+}
+
 func TestReplayedUESecurityCapabilityFromUENetworkCapability(t *testing.T) {
 	tests := []struct {
 		name string

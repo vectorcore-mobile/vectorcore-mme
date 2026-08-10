@@ -157,9 +157,13 @@ func EPSMobileIdentityIMSI(imsi string) []byte {
 type UENetworkCapability struct {
 	EIA [8]bool // EPS integrity algorithms 0-7
 	EEA [8]bool // EPS encryption algorithms 0-7
+	LPP bool    // LTE Positioning Protocol support (TS 24.301 §9.9.3.34, octet 7 bit 4)
 }
 
-// DecodeUENetworkCapability decodes UE network capability IE.
+// DecodeUENetworkCapability decodes UE network capability IE. Octets beyond
+// EEA/EIA (octet 5 onward) are optional per TS 24.301 §9.9.3.34: a UE may
+// omit trailing octets whose bits are all 0, so any capability bit not
+// present in data defaults to false rather than being an error.
 func DecodeUENetworkCapability(data []byte) (UENetworkCapability, error) {
 	if len(data) < 2 {
 		return UENetworkCapability{}, fmt.Errorf("emm: UE network capability too short: %d", len(data))
@@ -168,6 +172,9 @@ func DecodeUENetworkCapability(data []byte) (UENetworkCapability, error) {
 	for i := 0; i < 8; i++ {
 		cap.EEA[i] = (data[0]>>(7-i))&1 == 1
 		cap.EIA[i] = (data[1]>>(7-i))&1 == 1
+	}
+	if len(data) >= 5 {
+		cap.LPP = data[4]&0x08 != 0 // octet 7 bit 4
 	}
 	return cap, nil
 }

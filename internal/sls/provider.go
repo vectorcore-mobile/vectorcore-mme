@@ -43,9 +43,8 @@ func encodeLCSClientType(clientType uint32) []byte {
 // pattern in internal/s1ap/pdu/procedure_body.go's EncodeProcedureIEContainer)
 // followed directly by the lPP field.
 //
-// The MME has no per-UE signal for LPP support today; EPS Rel-9+ devices
-// that participate in control-plane LCS at all overwhelmingly support LPP,
-// so this is sent unconditionally true rather than left unsent.
+// lppSupport reflects the UE's own LPP capability bit (TS 24.301 §9.9.3.34,
+// octet 7 bit 4 of the UE Network Capability IE), via Context.LPPSupported.
 func encodeUEPositioningCapability(lppSupport bool) []byte {
 	w := aper.NewBitWriter()
 	w.WriteBit(0) // UE-Positioning-Capability SEQUENCE extension marker: no extensions
@@ -132,7 +131,7 @@ func NewProvider(timeout time.Duration, max int, t Transport, l *zap.Logger) *Pr
 	}
 	return &Provider{timeout: timeout, max: max, t: t, log: l, tx: map[string]*transaction{}}
 }
-func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint32, ecgi []byte, clientType uint32) (PositionResult, error) {
+func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint32, ecgi []byte, clientType uint32, lppSupport bool) (PositionResult, error) {
 	if len(ecgi) != 7 {
 		p.log.Warn("sls: RequestPosition rejected", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", "invalid ECGI length"))
 		return PositionResult{}, ErrUnavailable
@@ -179,7 +178,7 @@ func (p *Provider) RequestPosition(ctx context.Context, key string, mmeUEID uint
 	metrics.PositioningActiveTransactions.Inc()
 	p.mu.Unlock()
 	defer p.remove(k, x)
-	w, err := Encode(PDU{Category: Initiating, Procedure: ProcedureLocationRequest, Criticality: aperReject, IEs: []IE{{IECorrelationID, aperReject, id[:], true}, {IELocationType, aperReject, []byte{0}, true}, {IEECGI, aperIgnore, append([]byte(nil), ecgi...), true}, {IELCSClientType, aperReject, encodeLCSClientType(clientType), true}, {IEUEPositioningCapability, aperReject, encodeUEPositioningCapability(true), true}}})
+	w, err := Encode(PDU{Category: Initiating, Procedure: ProcedureLocationRequest, Criticality: aperReject, IEs: []IE{{IECorrelationID, aperReject, id[:], true}, {IELocationType, aperReject, []byte{0}, true}, {IEECGI, aperIgnore, append([]byte(nil), ecgi...), true}, {IELCSClientType, aperReject, encodeLCSClientType(clientType), true}, {IEUEPositioningCapability, aperReject, encodeUEPositioningCapability(lppSupport), true}}})
 	if err != nil {
 		p.log.Warn("sls: LCS-AP encode failed", zap.String("key", key), zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 		return PositionResult{}, err
