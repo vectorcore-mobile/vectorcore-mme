@@ -69,6 +69,64 @@ func TestHandleULAResultWithSubscriberProfileRejectsAttachWhenPolicyIncomplete(t
 	}
 }
 
+func TestHandleULAResultWithSubscriberProfileRejectsAttachWhenWBEUTRANRestricted(t *testing.T) {
+	mock := &capturingCSRS11{}
+	srv := newTestServer(mock)
+	const remoteAddr = "10.0.0.30:36412"
+	ch := registerTestENBWithChan(srv, remoteAddr)
+
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.Lock()
+	ue.AttachStep = uecontext.AttachStepWaitingULA
+	mmeUEID := ue.MMEUES1APID
+	ue.Unlock()
+
+	profile := &gateway.SubscriberProfile{
+		DefaultContextID: 1,
+		APNs: map[string]gateway.APNConfiguration{
+			"internet": {
+				ContextIdentifier:    1,
+				ServiceSelection:     "internet",
+				PDNType:              gtpv2.PDNTypeIPv4,
+				QCI:                  9,
+				ARPPriority:          8,
+				APNAMBRDown:          512,
+				APNAMBRUp:            384,
+				PreemptionCapability: false,
+			},
+		},
+		UEAMBRDown:            256,
+		UEAMBRUp:              1024,
+		AccessRestrictionData: gateway.AccessRestrictWBEUTRAN,
+	}
+
+	srv.HandleULAResultWithSubscriberProfile(mmeUEID, "15551234567", profile, nil)
+
+	if len(mock.csrCalls) != 0 {
+		t.Fatalf("CSR calls got %d, want 0", len(mock.csrCalls))
+	}
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no Attach Reject sent")
+	}
+	gotNAS := decodeDownlinkNASFromRawPDU(t, raw)
+	if got, want := gotNAS[0], uint8(emm.PDEPSMobilityMgmt); got != want {
+		t.Fatalf("NAS PD got %#x, want %#x", got, want)
+	}
+	if got, want := gotNAS[1], uint8(emm.MsgAttachReject); got != want {
+		t.Fatalf("NAS msg type got %#x, want %#x", got, want)
+	}
+	if got, want := gotNAS[2], uint8(emm.CauseEPSServicesNotAllowed); got != want {
+		t.Fatalf("EMM cause got %#x, want %#x", got, want)
+	}
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); ok {
+		t.Fatal("UE still present after attach reject")
+	}
+}
+
 func TestProcessESM_PDNConnectivityRequestRejectsIncompletePolicy(t *testing.T) {
 	srv := newTAUTestServer()
 	const remoteAddr = "10.0.0.31:36412"

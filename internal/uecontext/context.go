@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/plmn"
@@ -317,13 +318,14 @@ type Context struct {
 	ECGIPLMN [3]byte
 	ECGIECI  uint32 // 28-bit E-UTRAN Cell Identifier
 
-	// Subscription data (from HSS via S6a ULR/ULA)
-	MSISDN               string
-	APN                  string
-	UEAMBRDown           uint32
-	UEAMBRUp             uint32
-	SubscriberAPNs       []string
-	SubscriberAPNConfigs map[string]SubscriberAPNConfig
+	// Subscription data (from HSS via S6a ULR/ULA, and kept current via IDR)
+	MSISDN                string
+	APN                   string
+	UEAMBRDown            uint32
+	UEAMBRUp              uint32
+	SubscriberAPNs        []string
+	SubscriberAPNConfigs  map[string]SubscriberAPNConfig
+	AccessRestrictionData gateway.AccessRestrictionData
 
 	LastReleaseCause string
 
@@ -681,6 +683,12 @@ func (c *Context) LPPSupported() bool {
 		return false
 	}
 	return cap.LPP
+}
+
+// LTEAccessRestricted reports whether the HSS has barred this subscriber from
+// (wideband) E-UTRAN via Access-Restriction-Data bit 4 (TS 29.272 §7.3.31).
+func (c *Context) LTEAccessRestricted() bool {
+	return c.AccessRestrictionData.WBEUTRANNotAllowed()
 }
 
 // StoreAuthChallenge stores the AKA vectors for the pending authentication.

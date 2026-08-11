@@ -230,12 +230,24 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 				s.ueManager.Remove(ue)
 				return
 			}
+			if profile.AccessRestrictionData.WBEUTRANNotAllowed() {
+				s10Addr := ue.S10OldMMEAddr
+				s10TEID := ue.S10OldMMETEID
+				ue.Unlock()
+				log.Warn("s1ap: WB-E-UTRAN access restricted by HSS, rejecting inter-MME TAU")
+				metrics.InterMMETAUTotal.WithLabelValues("wb_eutran_restricted").Inc()
+				s.sendTAUReject(mmeUEID, emm.CauseEPSServicesNotAllowed)
+				_ = s.s10.SendContextAcknowledge(s10Addr, s10TEID, gtpv2.CauseRequestDenied)
+				s.ueManager.Remove(ue)
+				return
+			}
 			ue.MSISDN = msisdn
 			ue.APN = apn
 			ue.UEAMBRDown = profile.UEAMBRDown
 			ue.UEAMBRUp = profile.UEAMBRUp
 			ue.SubscriberAPNs = subscribedAPNs
 			ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
+			ue.AccessRestrictionData = profile.AccessRestrictionData
 		}
 		s10Addr := ue.S10OldMMEAddr
 		s10TEID := ue.S10OldMMETEID
@@ -271,9 +283,22 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	ue.UEAMBRUp = profile.UEAMBRUp
 	ue.SubscriberAPNs = subscribedAPNs
 	ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
+	ue.AccessRestrictionData = profile.AccessRestrictionData
 
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID
+	if ue.LTEAccessRestricted() {
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: WB-E-UTRAN access restricted by HSS, rejecting attach",
+			zap.String("imsi", imsi))
+		metrics.NASProceduresTotal.WithLabelValues("Attach", "wb_eutran_restricted").Inc()
+		rejectPDU := emm.EncodeAttachReject(emm.CauseEPSServicesNotAllowed)
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+		s.ueManager.Remove(ue)
+		return
+	}
 	if missing := validateDefaultSubscriberPolicy(profile); len(missing) != 0 {
 		enbAddr := ue.ENBGlobalID
 		enbUEID := ue.ENBS1APID

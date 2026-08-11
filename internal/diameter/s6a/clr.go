@@ -6,6 +6,7 @@ import (
 	"github.com/fiorix/go-diameter/v4/diam/datatype"
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/nas/emm"
 )
@@ -69,12 +70,16 @@ func (h *Handlers) handleCLR(c diam.Conn, m *diam.Message) {
 
 // handleIDR processes an Insert-Subscriber-Data-Request from the HSS.
 func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
+	type SubscriptionData struct {
+		AccessRestrictionData uint32 `avp:"Access-Restriction-Data"`
+	}
 	type IDR struct {
 		SessionID        string                    `avp:"Session-Id"`
 		AuthSessionState int32                     `avp:"Auth-Session-State"`
 		OriginHost       datatype.DiameterIdentity `avp:"Origin-Host"`
 		OriginRealm      datatype.DiameterIdentity `avp:"Origin-Realm"`
 		UserName         string                    `avp:"User-Name"`
+		SubscriptionData SubscriptionData          `avp:"Subscription-Data"`
 	}
 
 	var idr IDR
@@ -83,7 +88,9 @@ func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
 		return
 	}
 
-	h.log.Info("s6a: IDR received", zap.String("imsi", idr.UserName))
+	h.log.Info("s6a: IDR received",
+		zap.String("imsi", idr.UserName),
+		zap.Uint32("access_restriction_data", idr.SubscriptionData.AccessRestrictionData))
 	metrics.S6aRequestsTotal.WithLabelValues("IDR", "received").Inc()
 
 	// Send Insert-Subscriber-Data-Answer
@@ -96,4 +103,35 @@ func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
 		h.log.Warn("s6a: IDA write error", zap.Error(err))
 	}
 	metrics.S6aRequestsTotal.WithLabelValues("IDA", "sent").Inc()
+
+	// TS 29.272 §3.2: on receiving Access-Restriction-Data, the MME shall
+	// replace stored information rather than merge it. If the attached UE is
+	// now WB-E-UTRAN-restricted, it may no longer remain on E-UTRAN.
+	if idr.UserName == "" {
+		return
+	}
+	restriction := gateway.AccessRestrictionData(idr.SubscriptionData.AccessRestrictionData)
+	ue, ok := h.ueManager.GetByIMSI(idr.UserName)
+	if !ok {
+		return
+	}
+	ue.Lock()
+	ue.AccessRestrictionData = restriction
+	mmeUEID := ue.MMEUES1APID
+	wasRegistered := ue.EMMState == emm.StateRegistered
+	restricted := ue.LTEAccessRestricted()
+	ue.Unlock()
+	if !restricted {
+		return
+	}
+	h.log.Info("s6a: IDR: UE now WB-E-UTRAN restricted, triggering detach",
+		zap.String("imsi", idr.UserName),
+		zap.Uint32("mme_ue_id", mmeUEID))
+	if h.detachFn != nil {
+		h.detachFn(ue)
+	}
+	h.ueManager.Remove(ue)
+	if wasRegistered {
+		metrics.AttachedUEs.Dec()
+	}
 }
