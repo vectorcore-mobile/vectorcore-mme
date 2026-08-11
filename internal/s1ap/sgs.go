@@ -69,8 +69,14 @@ func (s *Server) maybeSendSGsLocationUpdateRequest(ue *uecontext.Context, combin
 	imeisv := ue.IMEISV
 	notIdle := ue.SGsState == uecontext.SGsUEAssociated || ue.SGsState == uecontext.SGsUELAUpdateRequested
 	mmeUEID := ue.MMEUES1APID
+	psOnly := ue.PSOnlySubscription()
 	ue.Unlock()
 	if imsi == "" || tai == nil || notIdle {
+		return
+	}
+	if psOnly {
+		// TS 23.272 Annex C.8.1: for a PS-only subscription (Network-Access-Mode
+		// = ONLY_PACKET) the MME shall not establish any SGs association.
 		return
 	}
 

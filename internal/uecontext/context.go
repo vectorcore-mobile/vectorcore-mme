@@ -326,6 +326,7 @@ type Context struct {
 	SubscriberAPNs        []string
 	SubscriberAPNConfigs  map[string]SubscriberAPNConfig
 	AccessRestrictionData gateway.AccessRestrictionData
+	NetworkAccessMode     gateway.NetworkAccessMode
 
 	LastReleaseCause string
 
@@ -701,6 +702,14 @@ func (c *Context) DCNRSupported() bool {
 // (wideband) E-UTRAN via Access-Restriction-Data bit 4 (TS 29.272 §7.3.31).
 func (c *Context) LTEAccessRestricted() bool {
 	return c.AccessRestrictionData.WBEUTRANNotAllowed()
+}
+
+// PSOnlySubscription reports whether the HSS provisioned this subscriber
+// with no CS subscription at all (TS 29.272 Network-Access-Mode =
+// ONLY_PACKET). Per TS 23.272 Annex C.8.1 the MME shall not establish any
+// SGs association for such a subscriber.
+func (c *Context) PSOnlySubscription() bool {
+	return c.NetworkAccessMode.PSOnly()
 }
 
 // StoreAuthChallenge stores the AKA vectors for the pending authentication.

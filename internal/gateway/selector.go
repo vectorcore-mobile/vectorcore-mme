@@ -79,6 +79,7 @@ type SubscriberProfile struct {
 	UEAMBRDown            uint32
 	UEAMBRUp              uint32
 	AccessRestrictionData AccessRestrictionData
+	NetworkAccessMode     NetworkAccessMode
 }
 
 func (p *SubscriberProfile) DefaultAPNConfiguration() *APNConfiguration {

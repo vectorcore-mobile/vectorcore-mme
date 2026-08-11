@@ -248,6 +248,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			ue.SubscriberAPNs = subscribedAPNs
 			ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 			ue.AccessRestrictionData = profile.AccessRestrictionData
+			ue.NetworkAccessMode = profile.NetworkAccessMode
 		}
 		s10Addr := ue.S10OldMMEAddr
 		s10TEID := ue.S10OldMMETEID
@@ -284,6 +285,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	ue.SubscriberAPNs = subscribedAPNs
 	ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 	ue.AccessRestrictionData = profile.AccessRestrictionData
+	ue.NetworkAccessMode = profile.NetworkAccessMode
 
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID

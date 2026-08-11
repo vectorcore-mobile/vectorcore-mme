@@ -162,6 +162,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		AMBR                    AMBR                 `avp:"AMBR"`
 		APNConfigurationProfile APNProfile           `avp:"APN-Configuration-Profile"`
 		AccessRestrictionData   uint32               `avp:"Access-Restriction-Data"`
+		NetworkAccessMode       int32                `avp:"Network-Access-Mode"`
 	}
 	type experimentalResult struct {
 		ExperimentalResultCode uint32 `avp:"Experimental-Result-Code"`
@@ -222,6 +223,7 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		UEAMBRDown:            ula.SubscriptionData.AMBR.MaxRequestedBandwidthDL,
 		UEAMBRUp:              ula.SubscriptionData.AMBR.MaxRequestedBandwidthUL,
 		AccessRestrictionData: gateway.AccessRestrictionData(ula.SubscriptionData.AccessRestrictionData),
+		NetworkAccessMode:     gateway.NetworkAccessMode(ula.SubscriptionData.NetworkAccessMode),
 	}
 	for _, selected := range ula.SubscriptionData.APNConfigurationProfile.APNConfiguration {
 		cfg := gateway.APNConfiguration{
@@ -264,7 +266,8 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		zap.Uint32("ue_ambr_ul", profile.UEAMBRUp),
 		zap.String("apn", apn),
 		zap.Strings("subscribed_apns", apns),
-		zap.Uint32("access_restriction_data", uint32(profile.AccessRestrictionData)))
+		zap.Uint32("access_restriction_data", uint32(profile.AccessRestrictionData)),
+		zap.Int32("network_access_mode", int32(profile.NetworkAccessMode)))
 	for _, apnName := range apns {
 		cfg, ok := profile.APNs[apnName]
 		if !ok {

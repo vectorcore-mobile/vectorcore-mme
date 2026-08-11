@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/sgsap"
 	"github.com/vectorcore/mme/internal/uecontext"
@@ -173,6 +174,46 @@ func TestMaybeSendSGsLocationUpdateRequest_SkipsWhenSGsDisabled(t *testing.T) {
 	fake.mu.Unlock()
 	if req != nil {
 		t.Fatalf("expected no LU request when SGs is disabled, got %+v", req)
+	}
+}
+
+func TestMaybeSendSGsLocationUpdateRequest_SkipsWhenPSOnly(t *testing.T) {
+	srv, fake := sgsTestServer()
+	ue := srv.ueManager.Allocate()
+	ue.IMSI = "001010123456789"
+	ue.TAI = &emm.TAI{PLMN: [3]byte{0x00, 0x10, 0x01}, TAC: 1}
+	ue.NetworkAccessMode = gateway.NAMOnlyPacket
+
+	srv.maybeSendSGsLocationUpdateRequest(ue, true, false, sgsap.EPSLocationUpdateTypeIMSIAttach)
+
+	fake.mu.Lock()
+	req := fake.lastLURequest
+	fake.mu.Unlock()
+	if req != nil {
+		t.Fatalf("expected no LU request for a PS-only subscription, got %+v", req)
+	}
+	ue.Lock()
+	state := ue.SGsState
+	ue.Unlock()
+	if state != uecontext.SGsUENull {
+		t.Fatalf("UE SGs state = %v, want SGsUENull", state)
+	}
+}
+
+func TestMaybeSendSGsLocationUpdateRequest_SendsWhenPacketAndCircuit(t *testing.T) {
+	srv, fake := sgsTestServer()
+	ue := srv.ueManager.Allocate()
+	ue.IMSI = "001010123456789"
+	ue.TAI = &emm.TAI{PLMN: [3]byte{0x00, 0x10, 0x01}, TAC: 1}
+	ue.NetworkAccessMode = gateway.NAMPacketAndCircuit
+
+	srv.maybeSendSGsLocationUpdateRequest(ue, true, false, sgsap.EPSLocationUpdateTypeIMSIAttach)
+
+	fake.mu.Lock()
+	req := fake.lastLURequest
+	fake.mu.Unlock()
+	if req == nil {
+		t.Fatal("expected a Location Update Request for a PACKET_AND_CIRCUIT subscription")
 	}
 }
 
