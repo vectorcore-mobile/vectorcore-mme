@@ -318,6 +318,24 @@ func EncodeAttachReject(cause uint8) []byte {
 	}
 }
 
+// EncodeAttachRejectWithESMContainer encodes a NAS Attach Reject combined
+// with an ESM message container (TS 24.301 Table 8.2.3.1: optional IE
+// 0x78, TLV-E). Used when the attach is rejected for a reason that also
+// carries ESM-level detail — e.g. EMM cause #19 "ESM failure" combined
+// with a PDN Connectivity Reject when the HSS operator-determined-bars
+// the subscriber (TS 24.301 §5.5.1.2.5).
+func EncodeAttachRejectWithESMContainer(cause uint8, esmContainer []byte) []byte {
+	b := EncodeAttachReject(cause)
+	if len(esmContainer) == 0 {
+		return b
+	}
+	b = append(b, 0x78)
+	esmLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(esmLen, uint16(len(esmContainer)))
+	b = append(b, esmLen...)
+	return append(b, esmContainer...)
+}
+
 const (
 	taiListTypeOnePLMNNonConsecutive uint8 = 0
 	taiListTypeOnePLMNConsecutive    uint8 = 1

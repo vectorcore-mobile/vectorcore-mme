@@ -168,6 +168,7 @@ const (
 	CauseNetworkFailure                   uint8 = 0x11
 	CauseCSDomainNotAvailable             uint8 = 0x12
 	CauseCSFallbackCallEstNotAllowed      uint8 = CauseCSDomainNotAvailable
+	CauseESMFailure                       uint8 = 0x13
 	CauseMACFailure                       uint8 = 0x14
 	CauseSynchFailure                     uint8 = 0x15
 	CauseCongestion                       uint8 = 0x16
@@ -217,6 +218,8 @@ func CauseName(cause uint8) string {
 		return "Network failure"
 	case CauseCSFallbackCallEstNotAllowed:
 		return "CS domain not available"
+	case CauseESMFailure:
+		return "ESM failure"
 	case CauseMACFailure:
 		return "MAC failure"
 	case CauseSynchFailure:

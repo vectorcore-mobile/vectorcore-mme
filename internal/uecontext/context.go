@@ -319,14 +319,21 @@ type Context struct {
 	ECGIECI  uint32 // 28-bit E-UTRAN Cell Identifier
 
 	// Subscription data (from HSS via S6a ULR/ULA, and kept current via IDR)
-	MSISDN                string
-	APN                   string
-	UEAMBRDown            uint32
-	UEAMBRUp              uint32
-	SubscriberAPNs        []string
-	SubscriberAPNConfigs  map[string]SubscriberAPNConfig
-	AccessRestrictionData gateway.AccessRestrictionData
-	NetworkAccessMode     gateway.NetworkAccessMode
+	MSISDN                          string
+	APN                             string
+	UEAMBRDown                      uint32
+	UEAMBRUp                        uint32
+	SubscriberAPNs                  []string
+	SubscriberAPNConfigs            map[string]SubscriberAPNConfig
+	AccessRestrictionData           gateway.AccessRestrictionData
+	NetworkAccessMode               gateway.NetworkAccessMode
+	SubscribedPeriodicRAUTAUTimer   uint32
+	SubscriberStatus                gateway.SubscriberStatus
+	OperatorDeterminedBarring       gateway.OperatorDeterminedBarring
+	RATFrequencySelectionPriorityID uint32
+	SubscriberAPNOIReplacement      string
+	MPSPriority                     gateway.MPSPriority
+	RegionalSubscriptionZoneCodes   [][]byte
 
 	LastReleaseCause string
 
@@ -702,6 +709,12 @@ func (c *Context) DCNRSupported() bool {
 // (wideband) E-UTRAN via Access-Restriction-Data bit 4 (TS 29.272 §7.3.31).
 func (c *Context) LTEAccessRestricted() bool {
 	return c.AccessRestrictionData.WBEUTRANNotAllowed()
+}
+
+// Barred reports whether the HSS has withdrawn service from this subscriber
+// (TS 29.272 Subscriber-Status = OPERATOR_DETERMINED_BARRING).
+func (c *Context) Barred() bool {
+	return c.SubscriberStatus.Barred()
 }
 
 // PSOnlySubscription reports whether the HSS provisioned this subscriber

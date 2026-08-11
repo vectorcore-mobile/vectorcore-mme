@@ -828,6 +828,7 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 	sgsPendingPaging := ue.SGsPendingPaging
 	accessRestriction := ue.AccessRestrictionData
 	servingTAI := ue.TAI
+	ratFrequencySelectionPriorityID := ue.RATFrequencySelectionPriorityID
 	kenbSource := "stored_snapshot"
 	if len(kenb) == 0 {
 		var err error
@@ -911,6 +912,16 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 				ID:          pdu.IEHandoverRestrictionList,
 				Criticality: aper.CriticalityIgnore,
 				Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
+			})
+		}
+		// Subscriber Profile ID for RAT/Frequency priority (TS 36.413
+		// §9.2.1.39): forwards the HSS-subscribed value verbatim to drive the
+		// eNB's idle-mode camp priority / inter-RAT handover decisions.
+		if ratFrequencySelectionPriorityID > 0 {
+			ieList = append(ieList, pdu.ProtocolIE{
+				ID:          pdu.IESubscriberProfileIDforRFP,
+				Criticality: aper.CriticalityIgnore,
+				Value:       ies.EncodeSubscriberProfileIDforRFP(uint16(ratFrequencySelectionPriorityID)),
 			})
 		}
 	}

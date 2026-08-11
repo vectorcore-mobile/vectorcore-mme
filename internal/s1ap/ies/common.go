@@ -20,6 +20,27 @@ func EncodeMMEUEApID(id uint32) []byte {
 	return w.Bytes()
 }
 
+// EncodeSubscriberProfileIDforRFP encodes the Subscriber Profile ID for
+// RAT/Frequency priority IE (TS 36.413 §9.2.1.39): SubscriberProfileIDforRFP
+// ::= INTEGER (1..256). The range's upper bound (256) doesn't fit uint8,
+// hence uint16.
+func EncodeSubscriberProfileIDforRFP(v uint16) []byte {
+	w := aper.NewBitWriter()
+	_ = aper.EncodeConstrainedWholeNumber(w, int64(v), 1, 256)
+	return w.Bytes()
+}
+
+// DecodeSubscriberProfileIDforRFP decodes the value encoded by
+// EncodeSubscriberProfileIDforRFP.
+func DecodeSubscriberProfileIDforRFP(data []byte) (uint16, error) {
+	r := aper.NewBitReader(data)
+	v, err := aper.DecodeConstrainedWholeNumber(r, 1, 256)
+	if err != nil {
+		return 0, fmt.Errorf("ies: SubscriberProfileIDforRFP: %w", err)
+	}
+	return uint16(v), nil
+}
+
 // DecodeMMEUEApID decodes a MME-UE-S1AP-ID.
 func DecodeMMEUEApID(data []byte) (uint32, error) {
 	v, err := decodeExactConstrainedWholeNumber(data, 0, 4294967295)

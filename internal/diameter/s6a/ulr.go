@@ -158,11 +158,18 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		APNConfiguration             []APNConfig `avp:"APN-Configuration"`
 	}
 	type SubscriptionData struct {
-		MSISDN                  datatype.OctetString `avp:"MSISDN"`
-		AMBR                    AMBR                 `avp:"AMBR"`
-		APNConfigurationProfile APNProfile           `avp:"APN-Configuration-Profile"`
-		AccessRestrictionData   uint32               `avp:"Access-Restriction-Data"`
-		NetworkAccessMode       int32                `avp:"Network-Access-Mode"`
+		MSISDN                          datatype.OctetString   `avp:"MSISDN"`
+		AMBR                            AMBR                   `avp:"AMBR"`
+		APNConfigurationProfile         APNProfile             `avp:"APN-Configuration-Profile"`
+		AccessRestrictionData           uint32                 `avp:"Access-Restriction-Data"`
+		NetworkAccessMode               int32                  `avp:"Network-Access-Mode"`
+		SubscribedPeriodicRAUTAUTimer   uint32                 `avp:"Subscribed-Periodic-RAU-TAU-Timer"`
+		SubscriberStatus                int32                  `avp:"Subscriber-Status"`
+		OperatorDeterminedBarring       uint32                 `avp:"Operator-Determined-Barring"`
+		RATFrequencySelectionPriorityID uint32                 `avp:"RAT-Frequency-Selection-Priority-ID"`
+		APNOIReplacement                string                 `avp:"APN-OI-Replacement"`
+		MPSPriority                     uint32                 `avp:"MPS-Priority"`
+		RegionalSubscriptionZoneCode    []datatype.OctetString `avp:"Regional-Subscription-Zone-Code"`
 	}
 	type experimentalResult struct {
 		ExperimentalResultCode uint32 `avp:"Experimental-Result-Code"`
@@ -217,13 +224,25 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 	// Decode MSISDN (BCD-encoded OctetString)
 	msisdn := decodeMSISDN([]byte(ula.SubscriptionData.MSISDN))
 
+	regionalZoneCodes := make([][]byte, 0, len(ula.SubscriptionData.RegionalSubscriptionZoneCode))
+	for _, zc := range ula.SubscriptionData.RegionalSubscriptionZoneCode {
+		regionalZoneCodes = append(regionalZoneCodes, []byte(zc))
+	}
+
 	profile := &gateway.SubscriberProfile{
-		DefaultContextID:      ula.SubscriptionData.APNConfigurationProfile.ContextIdentifier,
-		APNs:                  make(map[string]gateway.APNConfiguration),
-		UEAMBRDown:            ula.SubscriptionData.AMBR.MaxRequestedBandwidthDL,
-		UEAMBRUp:              ula.SubscriptionData.AMBR.MaxRequestedBandwidthUL,
-		AccessRestrictionData: gateway.AccessRestrictionData(ula.SubscriptionData.AccessRestrictionData),
-		NetworkAccessMode:     gateway.NetworkAccessMode(ula.SubscriptionData.NetworkAccessMode),
+		DefaultContextID:                ula.SubscriptionData.APNConfigurationProfile.ContextIdentifier,
+		APNs:                            make(map[string]gateway.APNConfiguration),
+		UEAMBRDown:                      ula.SubscriptionData.AMBR.MaxRequestedBandwidthDL,
+		UEAMBRUp:                        ula.SubscriptionData.AMBR.MaxRequestedBandwidthUL,
+		AccessRestrictionData:           gateway.AccessRestrictionData(ula.SubscriptionData.AccessRestrictionData),
+		NetworkAccessMode:               gateway.NetworkAccessMode(ula.SubscriptionData.NetworkAccessMode),
+		SubscribedPeriodicRAUTAUTimer:   ula.SubscriptionData.SubscribedPeriodicRAUTAUTimer,
+		SubscriberStatus:                gateway.SubscriberStatus(ula.SubscriptionData.SubscriberStatus),
+		OperatorDeterminedBarring:       gateway.OperatorDeterminedBarring(ula.SubscriptionData.OperatorDeterminedBarring),
+		RATFrequencySelectionPriorityID: ula.SubscriptionData.RATFrequencySelectionPriorityID,
+		APNOIReplacement:                ula.SubscriptionData.APNOIReplacement,
+		MPSPriority:                     gateway.MPSPriority(ula.SubscriptionData.MPSPriority),
+		RegionalSubscriptionZoneCodes:   regionalZoneCodes,
 	}
 	for _, selected := range ula.SubscriptionData.APNConfigurationProfile.APNConfiguration {
 		cfg := gateway.APNConfiguration{
@@ -267,7 +286,14 @@ func (h *Handlers) handleULA(c diam.Conn, m *diam.Message) {
 		zap.String("apn", apn),
 		zap.Strings("subscribed_apns", apns),
 		zap.Uint32("access_restriction_data", uint32(profile.AccessRestrictionData)),
-		zap.Int32("network_access_mode", int32(profile.NetworkAccessMode)))
+		zap.Int32("network_access_mode", int32(profile.NetworkAccessMode)),
+		zap.Uint32("subscribed_periodic_rau_tau_timer", profile.SubscribedPeriodicRAUTAUTimer),
+		zap.Int32("subscriber_status", int32(profile.SubscriberStatus)),
+		zap.Uint32("operator_determined_barring", uint32(profile.OperatorDeterminedBarring)),
+		zap.Uint32("rat_frequency_selection_priority_id", profile.RATFrequencySelectionPriorityID),
+		zap.String("apn_oi_replacement", profile.APNOIReplacement),
+		zap.Uint32("mps_priority", uint32(profile.MPSPriority)),
+		zap.Int("regional_subscription_zone_code_count", len(profile.RegionalSubscriptionZoneCodes)))
 	for _, apnName := range apns {
 		cfg, ok := profile.APNs[apnName]
 		if !ok {

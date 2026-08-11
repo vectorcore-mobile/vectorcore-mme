@@ -725,7 +725,7 @@ func (s *Server) buildTAUAcceptNAS(ue *uecontext.Context, log *zap.Logger, opts 
 		taiList = []emm.TAI{*tai}
 	}
 
-	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+	t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 	if timerErr != nil {
 		return nil, fmt.Errorf("sendTAUAccept: timers: %w", timerErr)
 	}
@@ -889,7 +889,7 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 		taiList = []emm.TAI{*tai}
 	}
 
-	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+	t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 	if timerErr != nil {
 		return fmt.Errorf("sendTAUAccept: timers: %w", timerErr)
 	}

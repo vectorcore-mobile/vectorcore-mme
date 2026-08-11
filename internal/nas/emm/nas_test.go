@@ -267,6 +267,23 @@ func TestAttachRejectIMEINotAccepted(t *testing.T) {
 	}
 }
 
+func TestEncodeAttachRejectWithESMContainer(t *testing.T) {
+	esmReject := []byte{0x02, 0x05, 0xd1, 0x08} // arbitrary stand-in ESM PDU
+	got := emm.EncodeAttachRejectWithESMContainer(emm.CauseESMFailure, esmReject)
+	want := []byte{0x07, emm.MsgAttachReject, emm.CauseESMFailure, 0x78, 0x00, 0x04, 0x02, 0x05, 0xd1, 0x08}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
+func TestEncodeAttachRejectWithESMContainer_EmptyContainerDegradesToBareReject(t *testing.T) {
+	got := emm.EncodeAttachRejectWithESMContainer(emm.CauseEPSServicesNotAllowed, nil)
+	want := []byte{0x07, emm.MsgAttachReject, emm.CauseEPSServicesNotAllowed}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
 func TestDecodeUENetworkCapability_LPP(t *testing.T) {
 	tests := []struct {
 		name string

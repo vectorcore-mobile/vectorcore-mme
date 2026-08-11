@@ -74,12 +74,19 @@ type PGWRequest struct {
 }
 
 type SubscriberProfile struct {
-	DefaultContextID      uint32
-	APNs                  map[string]APNConfiguration
-	UEAMBRDown            uint32
-	UEAMBRUp              uint32
-	AccessRestrictionData AccessRestrictionData
-	NetworkAccessMode     NetworkAccessMode
+	DefaultContextID                uint32
+	APNs                            map[string]APNConfiguration
+	UEAMBRDown                      uint32
+	UEAMBRUp                        uint32
+	AccessRestrictionData           AccessRestrictionData
+	NetworkAccessMode               NetworkAccessMode
+	SubscribedPeriodicRAUTAUTimer   uint32
+	SubscriberStatus                SubscriberStatus
+	OperatorDeterminedBarring       OperatorDeterminedBarring
+	RATFrequencySelectionPriorityID uint32
+	APNOIReplacement                string
+	MPSPriority                     MPSPriority
+	RegionalSubscriptionZoneCodes   [][]byte
 }
 
 func (p *SubscriberProfile) DefaultAPNConfiguration() *APNConfiguration {

@@ -71,7 +71,8 @@ func (h *Handlers) handleCLR(c diam.Conn, m *diam.Message) {
 // handleIDR processes an Insert-Subscriber-Data-Request from the HSS.
 func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
 	type SubscriptionData struct {
-		AccessRestrictionData uint32 `avp:"Access-Restriction-Data"`
+		AccessRestrictionData        uint32                 `avp:"Access-Restriction-Data"`
+		RegionalSubscriptionZoneCode []datatype.OctetString `avp:"Regional-Subscription-Zone-Code"`
 	}
 	type IDR struct {
 		SessionID        string                    `avp:"Session-Id"`
@@ -115,8 +116,15 @@ func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
 	if !ok {
 		return
 	}
+	regionalZoneCodes := make([][]byte, 0, len(idr.SubscriptionData.RegionalSubscriptionZoneCode))
+	for _, zc := range idr.SubscriptionData.RegionalSubscriptionZoneCode {
+		regionalZoneCodes = append(regionalZoneCodes, []byte(zc))
+	}
 	ue.Lock()
 	ue.AccessRestrictionData = restriction
+	// Regional-Subscription-Zone-Code: stored only, no enforcement (see
+	// docs — no standardized zone-code-to-TAC mapping exists to act on it).
+	ue.RegionalSubscriptionZoneCodes = regionalZoneCodes
 	mmeUEID := ue.MMEUES1APID
 	wasRegistered := ue.EMMState == emm.StateRegistered
 	restricted := ue.LTEAccessRestricted()

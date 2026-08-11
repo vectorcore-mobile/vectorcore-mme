@@ -102,6 +102,7 @@ const (
 	IEGUMMEIList                                uint16 = 154
 	IERelativeMMECapacity                       uint16 = 87
 	IEServedGUMMEIs                             uint16 = 105
+	IESubscriberProfileIDforRFP                 uint16 = 106 // Subscriber Profile ID for RAT/Frequency priority (TS 36.413 §9.2.1.39)
 	IEUESecurityCapabilities                    uint16 = 107
 	IESecurityContext                           uint16 = 119
 	IERRCEstablishmentCause                     uint16 = 134

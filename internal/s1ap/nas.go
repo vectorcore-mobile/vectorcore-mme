@@ -249,6 +249,11 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 			ue.AccessRestrictionData = profile.AccessRestrictionData
 			ue.NetworkAccessMode = profile.NetworkAccessMode
+			ue.SubscribedPeriodicRAUTAUTimer = profile.SubscribedPeriodicRAUTAUTimer
+			ue.RATFrequencySelectionPriorityID = profile.RATFrequencySelectionPriorityID
+			ue.SubscriberAPNOIReplacement = profile.APNOIReplacement
+			ue.MPSPriority = profile.MPSPriority
+			ue.RegionalSubscriptionZoneCodes = profile.RegionalSubscriptionZoneCodes
 		}
 		s10Addr := ue.S10OldMMEAddr
 		s10TEID := ue.S10OldMMETEID
@@ -286,9 +291,30 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 	ue.SubscriberAPNConfigs = cloneSubscriberAPNConfigs(profile)
 	ue.AccessRestrictionData = profile.AccessRestrictionData
 	ue.NetworkAccessMode = profile.NetworkAccessMode
+	ue.SubscribedPeriodicRAUTAUTimer = profile.SubscribedPeriodicRAUTAUTimer
+	ue.SubscriberStatus = profile.SubscriberStatus
+	ue.OperatorDeterminedBarring = profile.OperatorDeterminedBarring
+	ue.RATFrequencySelectionPriorityID = profile.RATFrequencySelectionPriorityID
+	ue.SubscriberAPNOIReplacement = profile.APNOIReplacement
+	ue.MPSPriority = profile.MPSPriority
+	ue.RegionalSubscriptionZoneCodes = profile.RegionalSubscriptionZoneCodes
 
 	imsi := ue.IMSI
 	mmeID := ue.MMEUES1APID
+	if ue.Barred() {
+		pti := ue.PDNRequestPTI
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: subscriber operator-determined-barred, rejecting attach",
+			zap.String("imsi", imsi))
+		metrics.NASProceduresTotal.WithLabelValues("Attach", "operator_determined_barring").Inc()
+		esmReject := esm.EncodePDNConnectivityReject(pti, esm.ESMCauseOperatorDetermined)
+		rejectPDU := emm.EncodeAttachRejectWithESMContainer(emm.CauseESMFailure, esmReject)
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+		s.ueManager.Remove(ue)
+		return
+	}
 	if ue.LTEAccessRestricted() {
 		enbAddr := ue.ENBGlobalID
 		enbUEID := ue.ENBS1APID
@@ -366,7 +392,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		}
 		attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 		featureSupport := s.epsNetworkFeatureSupport(ue)
-		t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+		t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 		if timerErr != nil {
 			log.Error("s1ap: failed to derive Attach Accept timers", zap.Error(timerErr))
 			s.sendDeleteSession(ue)
@@ -709,7 +735,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	}
 	attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 	featureSupport := s.epsNetworkFeatureSupport(ue)
-	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
+	t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 	if timerErr != nil {
 		log.Error("s1ap: failed to derive Attach Accept timers", zap.Error(timerErr))
 		s.sendDeleteSession(ue)
@@ -1352,7 +1378,7 @@ func encodeFeatureSupportForLog(support *emm.EPSNetworkFeatureSupport) []byte {
 	return emm.EncodeEPSNetworkFeatureSupport(*support)
 }
 
-func (s *Server) nasEMMTimers() (t3412 uint8, t3402 *uint8, t3423 *uint8, err error) {
+func (s *Server) nasEMMTimers(ue *uecontext.Context) (t3412 uint8, t3402 *uint8, t3423 *uint8, err error) {
 	timers := s.nasCfg.Timers
 	if timers.T3412 <= 0 {
 		timers.T3402 = nastimer.DefaultT3402
@@ -1360,7 +1386,24 @@ func (s *Server) nasEMMTimers() (t3412 uint8, t3402 *uint8, t3423 *uint8, err er
 		timers.T3412 = nastimer.DefaultT3412
 		timers.T3423 = nastimer.DefaultT3423
 	}
-	t3412, err = nastimer.EncodeGPRSTimer(timers.T3412)
+	// TS 29.272 §5.2.1.1: for a non-roaming subscriber, if the HSS sent
+	// Subscribed-Periodic-RAU-TAU-Timer, the MME shall allocate that value
+	// as the UE's periodic TAU timer instead of the locally configured one.
+	ue.Lock()
+	isRoaming := ue.Roaming.IsRoaming
+	subscribedT3412 := ue.SubscribedPeriodicRAUTAUTimer
+	ue.Unlock()
+	if !isRoaming && subscribedT3412 > 0 {
+		if encoded, encErr := nastimer.EncodeGPRSTimer(int(subscribedT3412)); encErr == nil {
+			t3412 = encoded
+		} else {
+			s.log.Warn("s1ap: HSS-subscribed T3412 value not encodable, falling back to configured default",
+				zap.Uint32("subscribed_seconds", subscribedT3412), zap.Error(encErr))
+			t3412, err = nastimer.EncodeGPRSTimer(timers.T3412)
+		}
+	} else {
+		t3412, err = nastimer.EncodeGPRSTimer(timers.T3412)
+	}
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("t3412: %w", err)
 	}

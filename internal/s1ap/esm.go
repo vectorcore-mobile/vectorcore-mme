@@ -42,6 +42,18 @@ func canonicalizeRequestedAPN(requestedAPN string, ue *uecontext.Context) (canon
 	return requestedAPN, uecontext.SubscriberAPNConfig{}, false
 }
 
+// effectiveAPNOIReplacement resolves the APN-OI-Replacement domain to use
+// for PGW discovery. Per TS 29.272 §7.3.32, the per-APN value "has higher
+// priority than UE level APN-OI-Replacement" — the UE-level one (from
+// Subscription-Data directly, not nested in APN-Configuration) is a
+// fallback used only when the selected APN has none of its own.
+func effectiveAPNOIReplacement(perAPN, subscriberLevel string) string {
+	if perAPN != "" {
+		return perAPN
+	}
+	return subscriberLevel
+}
+
 // negotiatedPDNTypeCause derives the optional ESM negotiation cause from all
 // inputs to the PDN-type decision. Subscriber and network types use the 3GPP
 // PDN-type values (IPv4=1, IPv6=2, IPv4v6=3); PAA is authoritative for the
@@ -291,6 +303,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 	mmeID := ue.MMEUES1APID
 	imsi := ue.IMSI
 	msisdn := ue.MSISDN
+	subscriberAPNOIReplacement := ue.SubscriberAPNOIReplacement
 	roamingState := ue.Roaming
 	subscribedAPNs := append([]string(nil), ue.SubscriberAPNs...)
 	ecgieci := ue.ECGIECI
@@ -353,6 +366,8 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseInsufficientResources, log)
 	}
 
+	effectiveAPNOIReplacement := effectiveAPNOIReplacement(apnCfg.APNOIReplacement, subscriberAPNOIReplacement)
+
 	localTEID := s11teid.AllocateTEID()
 	plmn := s.buildPLMN()
 	if roamingState.IsRoaming {
@@ -380,7 +395,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 			MIPHomeAgentAddress: apnCfg.MIPHomeAgentAddress,
 			MIPHomeAgentHost:    apnCfg.MIPHomeAgentHost,
 			PDNGWAllocationType: apnCfg.PDNGWAllocationType,
-			APNOIReplacement:    apnCfg.APNOIReplacement,
+			APNOIReplacement:    effectiveAPNOIReplacement,
 		}
 		iface := gateway.LogicalInterfaceS5
 		if roamingState.IsRoaming {
@@ -389,7 +404,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 			}
 			iface = gateway.LogicalInterfaceS8
 		}
-		pgwSel, err := s.gatewaySel.SelectPGWFor(selCtx, gateway.PGWRequest{APN: requestedAPN, HPLMN: roamingState.HPLMN, ServingPLMN: roamingState.ServingPLMN, ServingTAC: ulitac, Interface: iface, APNConfig: &gtwCfg, APNOIReplacement: apnCfg.APNOIReplacement})
+		pgwSel, err := s.gatewaySel.SelectPGWFor(selCtx, gateway.PGWRequest{APN: requestedAPN, HPLMN: roamingState.HPLMN, ServingPLMN: roamingState.ServingPLMN, ServingTAC: ulitac, Interface: iface, APNConfig: &gtwCfg, APNOIReplacement: effectiveAPNOIReplacement})
 		if err != nil {
 			log.Warn("s1ap: PGW selection failed for PDN request", zap.Error(err))
 			return s.sendESMReject(ue, req.ProcedureTransactionID, esm.ESMCauseMissingOrUnknownAPN, log)
@@ -422,7 +437,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		State:                   "csr-sent",
 	}
 	if roamingState.IsRoaming {
-		pdn.LogicalPGWInterface, pdn.PGWHPLMN, pdn.APNOIReplacement = uecontext.LogicalPGWInterfaceS8, roamingState.HPLMN, apnCfg.APNOIReplacement
+		pdn.LogicalPGWInterface, pdn.PGWHPLMN, pdn.APNOIReplacement = uecontext.LogicalPGWInterfaceS8, roamingState.HPLMN, effectiveAPNOIReplacement
 	} else {
 		pdn.LogicalPGWInterface = uecontext.LogicalPGWInterfaceS5
 	}
