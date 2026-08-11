@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
@@ -78,6 +79,8 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 	encAlg := ue.EncAlg
 	apn := ue.APN
 	apnCfg, haveAPNCfg := subscriberAPNConfigForResumeLocked(ue, ue.APN)
+	accessRestriction := ue.AccessRestrictionData
+	servingTAI := ue.TAI
 	ue.Unlock()
 
 	if emmState != emm.StateRegistered {
@@ -186,7 +189,7 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 		SGWU_TEID:               sgwuTEID,
 		SGWU_IP:                 sgwuIP,
 	}
-	s.sendHandoverRequest(targetAddr, mmeUEID, b, effectiveAMBR.Downlink, effectiveAMBR.Uplink, nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg)
+	s.sendHandoverRequest(targetAddr, mmeUEID, b, effectiveAMBR.Downlink, effectiveAMBR.Uplink, nh, ncc, causeBytes, srcToTgtBytes, ueNetCap, intAlg, encAlg, accessRestriction, servingTAI)
 }
 
 // handleHandoverRequestAck handles S1AP Handover Request Acknowledge from the target eNB.
@@ -327,6 +330,157 @@ func (s *Server) handleHandoverRequestFailure(remoteAddr string, p *pdu.PDU, ieL
 
 	s.sendHandoverPrepFailure(srcAddr, mmeUEID, srcENBUEID,
 		ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkHOCancelled))
+}
+
+// handleHandoverCancel handles S1AP Handover Cancel from the source eNB
+// (TS 23.401 §5.5.1.2.4). The source eNB can cancel at any point between
+// sending Handover Required and the UE completing the move, i.e. while the
+// UE context is in HOStatePreparing or HOStateExecuting. The MME tears down
+// whatever it has set up so far (releasing the target eNB's UE context if a
+// Handover Request was already sent) and acknowledges the cancellation.
+func (s *Server) handleHandoverCancel(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
+	var mmeUEID uint32
+	var enbUEID uint32
+	var causeBytes []byte
+
+	for _, ie := range ieList {
+		switch ie.ID {
+		case pdu.IEMMEUES1APID:
+			mmeUEID, _ = ies.DecodeMMEUEApID(ie.Value)
+		case pdu.IEENBS1APID:
+			enbUEID, _ = ies.DecodeENBUEApID(ie.Value)
+		case pdu.IECause:
+			causeBytes = ie.Value
+		}
+	}
+
+	log := s.log.With(
+		zap.String("remote", remoteAddr),
+		zap.String("procedure", "HandoverCancel"),
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.Uint32("enb_ue_id", enbUEID),
+	)
+
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		log.Warn("s1ap: HandoverCancel: UE not found")
+		return
+	}
+
+	ue.Lock()
+	hoState := ue.HOState
+	srcAddr := ue.HOSrcENBAddr
+	tgtAddr := ue.HOTargetENBAddr
+	tgtENBUEID := ue.HOTargetENBUEID
+	ue.Unlock()
+
+	if hoState != uecontext.HOStatePreparing && hoState != uecontext.HOStateExecuting {
+		log.Warn("s1ap: HandoverCancel: UE not in an active handover", zap.Uint8("ho_state", uint8(hoState)))
+		return
+	}
+	if remoteAddr != srcAddr {
+		log.Warn("s1ap: HandoverCancel: unexpected sender", zap.String("ue_src_enb_addr", srcAddr))
+		return
+	}
+
+	log.Info("s1ap: HandoverCancel: tearing down handover", zap.String("cause_hex", fmt.Sprintf("%x", causeBytes)))
+	metrics.HandoverTotal.WithLabelValues("preparation", "cancelled").Inc()
+
+	ue.Lock()
+	ue.StopTimer("T_HO_PREP")
+	ue.StopTimer("T_HO_EXEC")
+	ue.HOState = uecontext.HOStateNone
+	ue.HOSrcENBAddr = ""
+	ue.HOSrcENBS1APID = 0
+	ue.HOTargetENBAddr = ""
+	ue.HOTargetENBUEID = 0
+	ue.HOTargetENBU_TEID = 0
+	ue.HOTargetENBU_IP = nil
+	ue.HOSrcToTgtContainer = nil
+	ue.Unlock()
+
+	if tgtAddr != "" {
+		s.sendUEContextReleaseCommandCause(tgtAddr, mmeUEID, tgtENBUEID,
+			ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkHOCancelled)
+	}
+
+	s.sendHandoverCancelAcknowledge(remoteAddr, mmeUEID, enbUEID)
+}
+
+// sendHandoverCancelAcknowledge sends S1AP Handover Cancel Acknowledge to the source eNB.
+func (s *Server) sendHandoverCancelAcknowledge(enbAddr string, mmeUEID, enbUEID uint32) {
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
+	}
+	msg := pdu.BuildSuccessfulOutcome(pdu.ProcHandoverCancel, aper.CriticalityIgnore, ieList)
+	s.sendToAddr(enbAddr, msg)
+	metrics.S1APMessagesTotal.WithLabelValues("HandoverCancelAcknowledge", "outbound", "sent").Inc()
+}
+
+// handleENBStatusTransfer handles S1AP eNB Status Transfer from the source
+// eNB (TS 23.401 §5.5.1.2.2 step 10, TS 36.413 §9.1.5.13). It carries the
+// PDCP/HFN status for E-RABs needing PDCP status preservation as an opaque,
+// eNB-generated transparent container — the MME never parses it, only
+// relays it to the target eNB as MME Status Transfer. The source eNB may
+// omit sending this entirely if no E-RAB needs PDCP status preservation,
+// so its absence is normal, not an error.
+func (s *Server) handleENBStatusTransfer(remoteAddr string, p *pdu.PDU, ieList []pdu.ProtocolIE) {
+	var mmeUEID uint32
+	var container []byte
+
+	for _, ie := range ieList {
+		switch ie.ID {
+		case pdu.IEMMEUES1APID:
+			mmeUEID, _ = ies.DecodeMMEUEApID(ie.Value)
+		case pdu.IEENBStatusTransferTransparentContainer:
+			container = ie.Value
+		}
+	}
+
+	log := s.log.With(
+		zap.String("remote", remoteAddr),
+		zap.String("procedure", "ENBStatusTransfer"),
+		zap.Uint32("mme_ue_id", mmeUEID),
+	)
+
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		log.Warn("s1ap: ENBStatusTransfer: UE not found")
+		return
+	}
+
+	ue.Lock()
+	srcAddr := ue.HOSrcENBAddr
+	tgtAddr := ue.HOTargetENBAddr
+	tgtENBUEID := ue.HOTargetENBUEID
+	ue.Unlock()
+
+	if remoteAddr != srcAddr {
+		log.Warn("s1ap: ENBStatusTransfer: unexpected sender", zap.String("ue_src_enb_addr", srcAddr))
+		return
+	}
+	if tgtAddr == "" {
+		log.Warn("s1ap: ENBStatusTransfer: no target eNB known for this UE")
+		return
+	}
+
+	log.Info("s1ap: ENBStatusTransfer: relaying to target as MMEStatusTransfer")
+	s.sendMMEStatusTransfer(tgtAddr, mmeUEID, tgtENBUEID, container)
+}
+
+// sendMMEStatusTransfer sends S1AP MME Status Transfer to the target eNB,
+// relaying the PDCP/HFN transparent container received from the source eNB
+// unmodified.
+func (s *Server) sendMMEStatusTransfer(enbAddr string, mmeUEID, enbUEID uint32, container []byte) {
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbUEID)},
+		{ID: pdu.IEENBStatusTransferTransparentContainer, Criticality: aper.CriticalityReject, Value: container},
+	}
+	msg := pdu.BuildInitiatingMessage(pdu.ProcMMEStatusTransfer, aper.CriticalityReject, ieList)
+	s.sendToAddr(enbAddr, msg)
+	metrics.S1APMessagesTotal.WithLabelValues("MMEStatusTransfer", "outbound", "sent").Inc()
 }
 
 // handleHandoverNotify handles S1AP Handover Notify from the target eNB.
@@ -697,6 +851,8 @@ func (s *Server) sendHandoverRequest(
 	srcToTgt []byte,
 	ueNetCap []byte,
 	intAlg, encAlg uint8,
+	accessRestriction gateway.AccessRestrictionData,
+	servingTAI *emm.TAI,
 ) {
 	if causeBytes == nil {
 		causeBytes = ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)
@@ -724,6 +880,17 @@ func (s *Server) sendHandoverRequest(
 		{ID: pdu.IESourceToTargetTransparentContainer, Criticality: aper.CriticalityReject, Value: srcToTgt},
 		{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: ies.EncodeUESecurityCapabilities(encAlgsByte, intAlgsByte)},
 		{ID: pdu.IESecurityContext, Criticality: aper.CriticalityReject, Value: secCtxValue},
+	}
+	// Handover Restriction List (TS 36.413 §9.2.1.22): carry the HSS's
+	// NR-as-secondary-RAT-in-E-UTRAN restriction to the target eNB so it
+	// doesn't add an NR SCG for a UE that's moving under an active
+	// restriction.
+	if servingTAI != nil && accessRestriction.NRAsSecondaryRATInEUTRANNotAllowed() {
+		ieList = append(ieList, pdu.ProtocolIE{
+			ID:          pdu.IEHandoverRestrictionList,
+			Criticality: aper.CriticalityIgnore,
+			Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
+		})
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcHandoverResourceAllocation, aper.CriticalityReject, ieList)
 	s.sendToAddr(targetAddr, msg)

@@ -196,3 +196,74 @@ func TestInitialContextSetupOmitsHandoverRestrictionListWhenNotRestricted(t *tes
 		}
 	}
 }
+
+func TestSendDownlinkNASIncludesHandoverRestrictionListWhenNRRestricted(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.16:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010208
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.TAI = tai
+	ue.AccessRestrictionData = gateway.AccessRestrictNRAsSecondaryRATInEUTRAN
+
+	nasPDU := emm.EncodeIdentityRequest(emm.IdentityTypeIMSI)
+	if err := srv.SendDownlinkNAS(ue.MMEUES1APID, nasPDU); err != nil {
+		t.Fatalf("SendDownlinkNAS: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	var got []byte
+	found := false
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			got = ie.Value
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Downlink NAS Transport missing Handover Restriction List IE")
+	}
+	gotPLMN, nrRestricted, err := ies.DecodeHandoverRestrictionList(got)
+	if err != nil {
+		t.Fatalf("DecodeHandoverRestrictionList: %v", err)
+	}
+	if gotPLMN != tai.PLMN {
+		t.Fatalf("servingPLMN got %x, want %x", gotPLMN, tai.PLMN)
+	}
+	if !nrRestricted {
+		t.Fatal("nrRestricted got false, want true")
+	}
+}
+
+func TestSendDownlinkNASOmitsHandoverRestrictionListWhenNotRestricted(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.17:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 0x010209
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.TAI = tai
+
+	nasPDU := emm.EncodeIdentityRequest(emm.IdentityTypeIMSI)
+	if err := srv.SendDownlinkNAS(ue.MMEUES1APID, nasPDU); err != nil {
+		t.Fatalf("SendDownlinkNAS: %v", err)
+	}
+	msg := readCapturedPDU(t, ch)
+	ieList, err := pdu.DecodeIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			t.Fatal("Downlink NAS Transport unexpectedly includes Handover Restriction List IE")
+		}
+	}
+}

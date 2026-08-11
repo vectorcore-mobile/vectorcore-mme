@@ -766,6 +766,8 @@ func (s *Server) SendDownlinkNAS(mmeUEID uint32, nasPDU []byte) error {
 	enbS1APID := ue.ENBS1APID
 	bindingGeneration := ue.S1BindingGeneration
 	bindingState := ue.S1BindingState
+	accessRestriction := ue.AccessRestrictionData
+	servingTAI := ue.TAI
 	ue.Unlock()
 	if enbAddr == "" {
 		return fmt.Errorf("s1ap: UE %d has no active S1 binding remote=%q enb_ue_id=%d state=%s generation=%d",
@@ -776,6 +778,19 @@ func (s *Server) SendDownlinkNAS(mmeUEID uint32, nasPDU []byte) error {
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(enbS1APID)},
 		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject, Value: ies.EncodeNASPDU(nasPDU)},
+	}
+	// Handover Restriction List (TS 36.413 §9.2.1.22): opportunistically
+	// refresh the eNB's NR-as-secondary-RAT-in-E-UTRAN restriction state on
+	// every downlink NAS message, covering mid-session HSS updates (e.g.
+	// via IDR) without a dedicated push procedure — the IE is optional,
+	// criticality ignore, and idempotent (the eNB just overwrites its
+	// stored restriction on receipt).
+	if servingTAI != nil && accessRestriction.NRAsSecondaryRATInEUTRANNotAllowed() {
+		ieList = append(ieList, pdu.ProtocolIE{
+			ID:          pdu.IEHandoverRestrictionList,
+			Criticality: aper.CriticalityIgnore,
+			Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
+		})
 	}
 	msg := pdu.BuildInitiatingMessage(pdu.ProcDownlinkNASTransport, aper.CriticalityIgnore, ieList)
 	return s.sendToAddr(enbAddr, msg)

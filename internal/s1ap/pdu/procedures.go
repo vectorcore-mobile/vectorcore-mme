@@ -134,6 +134,7 @@ const (
 	IELPPaPDU                                   uint16 = 147
 	IERoutingID                                 uint16 = 148
 	IEHandoverRestrictionList                   uint16 = 41 // Handover Restriction List (TS 36.413 §9.2.1.22; Initial Context Setup Request, optional)
+	IEENBStatusTransferTransparentContainer     uint16 = 90 // eNB Status Transfer Transparent Container (eNB/MME Status Transfer, PDCP SN/HFN relay)
 
 	// S1 Handover IEs (TS 36.413 Annex A)
 	IEERABToBeSetupListHOReq             uint16 = 53  // HandoverRequest: E-RAB list outer

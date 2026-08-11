@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/s1ap/ies"
@@ -846,6 +847,284 @@ func encodeMMEUEID(mmeUEID uint32) []byte {
 	out[0] = byte(len(raw))
 	copy(out[1:], raw)
 	return out
+}
+
+// ── Handover Cancel ──────────────────────────────────────────────────────────
+
+func buildHOCancelIEs(mmeUEID, srcENBUEID uint32) []pdu.ProtocolIE {
+	cause := ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified)
+	return []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBUEID)},
+		{ID: pdu.IECause, Criticality: aper.CriticalityIgnore, Value: cause},
+	}
+}
+
+func TestHandoverCancel_DuringPreparing(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv, srcCh, tgtCh := setupTwoENBServer(mock)
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	targetID := buildTargetIDBytes(tgtGlobalID)
+	reqIEs := buildHORequiredIEs(mmeID, srcENBID, targetID)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+	if _, ok := waitMsg(tgtCh, 200*time.Millisecond); !ok {
+		t.Fatal("expected HO Request to target")
+	}
+
+	ue.Lock()
+	if ue.HOState != uecontext.HOStatePreparing {
+		t.Fatalf("expected HOStatePreparing, got %d", ue.HOState)
+	}
+	ue.Unlock()
+
+	srv.handleHandoverCancel(srcAddr, &pdu.PDU{}, buildHOCancelIEs(mmeID, srcENBID))
+
+	// Target should receive UE Context Release for the aborted prep.
+	raw, ok := waitMsg(tgtCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected UE Context Release to target after cancel")
+	}
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	if p.ProcedureCode != pdu.ProcUEContextRelease {
+		t.Errorf("expected UE Context Release (proc %d), got proc=%d", pdu.ProcUEContextRelease, p.ProcedureCode)
+	}
+
+	// Source should receive Handover Cancel Acknowledge.
+	raw, ok = waitMsg(srcCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected Handover Cancel Acknowledge to source")
+	}
+	p, err = pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	if p.Type != pdu.PDUTypeSuccessfulOutcome || p.ProcedureCode != pdu.ProcHandoverCancel {
+		t.Errorf("expected HandoverCancelAcknowledge, got type=%d proc=%d", p.Type, p.ProcedureCode)
+	}
+
+	ue.Lock()
+	gotState := ue.HOState
+	gotTgtAddr := ue.HOTargetENBAddr
+	ue.Unlock()
+	if gotState != uecontext.HOStateNone {
+		t.Errorf("HOState: got %d, want HOStateNone", gotState)
+	}
+	if gotTgtAddr != "" {
+		t.Errorf("HOTargetENBAddr: got %q, want empty", gotTgtAddr)
+	}
+}
+
+func TestHandoverCancel_DuringExecuting(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv, srcCh, tgtCh := setupTwoENBServer(mock)
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	targetID := buildTargetIDBytes(tgtGlobalID)
+	reqIEs := buildHORequiredIEs(mmeID, srcENBID, targetID)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+	if _, ok := waitMsg(tgtCh, 200*time.Millisecond); !ok {
+		t.Fatal("expected HO Request to target")
+	}
+
+	ackIEs := buildHORequestAckIEs(mmeID, tgtENBID, 5, 0xBEEF0002, net.ParseIP("10.20.30.60").To4())
+	srv.handleHandoverRequestAck(tgtAddr, &pdu.PDU{}, ackIEs)
+	if _, ok := waitMsg(srcCh, 200*time.Millisecond); !ok {
+		t.Fatal("expected HO Command to source")
+	}
+
+	ue.Lock()
+	if ue.HOState != uecontext.HOStateExecuting {
+		t.Fatalf("expected HOStateExecuting, got %d", ue.HOState)
+	}
+	ue.Unlock()
+
+	srv.handleHandoverCancel(srcAddr, &pdu.PDU{}, buildHOCancelIEs(mmeID, srcENBID))
+
+	raw, ok := waitMsg(tgtCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected UE Context Release to target after cancel")
+	}
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	if p.ProcedureCode != pdu.ProcUEContextRelease {
+		t.Errorf("expected UE Context Release (proc %d), got proc=%d", pdu.ProcUEContextRelease, p.ProcedureCode)
+	}
+
+	raw, ok = waitMsg(srcCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected Handover Cancel Acknowledge to source")
+	}
+	p, err = pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	if p.Type != pdu.PDUTypeSuccessfulOutcome || p.ProcedureCode != pdu.ProcHandoverCancel {
+		t.Errorf("expected HandoverCancelAcknowledge, got type=%d proc=%d", p.Type, p.ProcedureCode)
+	}
+
+	ue.Lock()
+	gotState := ue.HOState
+	ue.Unlock()
+	if gotState != uecontext.HOStateNone {
+		t.Errorf("HOState: got %d, want HOStateNone", gotState)
+	}
+}
+
+// ── eNB Status Transfer / MME Status Transfer relay ─────────────────────────
+
+func buildENBStatusTransferIEs(mmeUEID uint32, container []byte) []pdu.ProtocolIE {
+	return []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(srcENBID)},
+		{ID: pdu.IEENBStatusTransferTransparentContainer, Criticality: aper.CriticalityReject, Value: container},
+	}
+}
+
+func TestENBStatusTransfer_RelaysToTargetAsMMEStatusTransfer(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv, _, tgtCh := setupTwoENBServer(mock)
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	targetID := buildTargetIDBytes(tgtGlobalID)
+	reqIEs := buildHORequiredIEs(mmeID, srcENBID, targetID)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+	if _, ok := waitMsg(tgtCh, 200*time.Millisecond); !ok {
+		t.Fatal("expected HO Request to target")
+	}
+
+	ackIEs := buildHORequestAckIEs(mmeID, tgtENBID, 5, 0xBEEF0003, net.ParseIP("10.20.30.70").To4())
+	srv.handleHandoverRequestAck(tgtAddr, &pdu.PDU{}, ackIEs)
+
+	container := []byte{0x11, 0x22, 0x33, 0x44}
+	srv.handleENBStatusTransfer(srcAddr, &pdu.PDU{}, buildENBStatusTransferIEs(mmeID, container))
+
+	raw, ok := waitMsg(tgtCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected MME Status Transfer to target")
+	}
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	if p.Type != pdu.PDUTypeInitiatingMessage || p.ProcedureCode != pdu.ProcMMEStatusTransfer {
+		t.Fatalf("expected MMEStatusTransfer, got type=%d proc=%d", p.Type, p.ProcedureCode)
+	}
+	gotIEs, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	var gotContainer []byte
+	var gotENBUEID uint32
+	for _, ie := range gotIEs {
+		switch ie.ID {
+		case pdu.IEENBStatusTransferTransparentContainer:
+			gotContainer = ie.Value
+		case pdu.IEENBS1APID:
+			gotENBUEID, _ = ies.DecodeENBUEApID(ie.Value)
+		}
+	}
+	if !bytes.Equal(gotContainer, container) {
+		t.Fatalf("relayed container got %x, want %x", gotContainer, container)
+	}
+	if gotENBUEID != tgtENBID {
+		t.Fatalf("relayed eNB-UE-S1AP-ID got %d, want %d (target's own ID)", gotENBUEID, tgtENBID)
+	}
+}
+
+// ── HandoverRestrictionList propagation ─────────────────────────────────────
+
+func TestHandoverRequestIncludesHandoverRestrictionListWhenNRRestricted(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv, _, tgtCh := setupTwoENBServer(mock)
+	ue := makeHOUE(srv)
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.Lock()
+	ue.TAI = tai
+	ue.AccessRestrictionData = gateway.AccessRestrictNRAsSecondaryRATInEUTRAN
+	ue.Unlock()
+
+	targetID := buildTargetIDBytes(tgtGlobalID)
+	reqIEs := buildHORequiredIEs(ue.MMEUES1APID, srcENBID, targetID)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+
+	raw, ok := waitMsg(tgtCh, 300*time.Millisecond)
+	if !ok {
+		t.Fatal("expected HO Request to target")
+	}
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	ieList, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	var got []byte
+	found := false
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			got = ie.Value
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("HO Request missing Handover Restriction List IE")
+	}
+	gotPLMN, nrRestricted, err := ies.DecodeHandoverRestrictionList(got)
+	if err != nil {
+		t.Fatalf("DecodeHandoverRestrictionList: %v", err)
+	}
+	if gotPLMN != tai.PLMN {
+		t.Fatalf("servingPLMN got %x, want %x", gotPLMN, tai.PLMN)
+	}
+	if !nrRestricted {
+		t.Fatal("nrRestricted got false, want true")
+	}
+}
+
+func TestHandoverRequestOmitsHandoverRestrictionListWhenNotRestricted(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv, _, tgtCh := setupTwoENBServer(mock)
+	ue := makeHOUE(srv)
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.Lock()
+	ue.TAI = tai
+	ue.Unlock()
+
+	targetID := buildTargetIDBytes(tgtGlobalID)
+	reqIEs := buildHORequiredIEs(ue.MMEUES1APID, srcENBID, targetID)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+
+	raw, ok := waitMsg(tgtCh, 300*time.Millisecond)
+	if !ok {
+		t.Fatal("expected HO Request to target")
+	}
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	ieList, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			t.Fatal("HO Request unexpectedly includes Handover Restriction List IE")
+		}
+	}
 }
 
 // ── shared test error sentinel ────────────────────────────────────────────────

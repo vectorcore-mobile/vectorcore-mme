@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
@@ -265,6 +266,101 @@ func TestPathSwitch_S11Success(t *testing.T) {
 	}
 	if got := mock.reqs[0].Bearers[0]; got.EBI != 5 || got.ENBU_TEID != newTEID || !got.ENBU_IP.Equal(newIP) {
 		t.Errorf("MBR bearer: got %+v", got)
+	}
+}
+
+func TestPathSwitch_IncludesHandoverRestrictionListWhenNRRestricted(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv := newPathSwitchTestServer(mock)
+	const addr = "10.20.0.5:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := makeConnectedUEWithBearer(srv, addr)
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.Lock()
+	ue.TAI = tai
+	ue.AccessRestrictionData = gateway.AccessRestrictNRAsSecondaryRATInEUTRAN
+	ue.Unlock()
+	mmeID := ue.MMEUES1APID
+
+	ieList := buildPathSwitchIEList(mmeID, 300, 5, 0x99887766, net.ParseIP("10.1.2.99").To4())
+	srv.handlePathSwitchRequest(addr, &pdu.PDU{ProcedureCode: pdu.ProcPathSwitchRequest}, ieList)
+
+	var ackPDU []byte
+	select {
+	case ackPDU = <-ch:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("no Ack PDU received after successful Path Switch")
+	}
+	p, err := pdu.Decode(ackPDU)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	gotIEs, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	var got []byte
+	found := false
+	for _, ie := range gotIEs {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			got = ie.Value
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("Path Switch Ack missing Handover Restriction List IE")
+	}
+	gotPLMN, nrRestricted, err := ies.DecodeHandoverRestrictionList(got)
+	if err != nil {
+		t.Fatalf("DecodeHandoverRestrictionList: %v", err)
+	}
+	if gotPLMN != tai.PLMN {
+		t.Fatalf("servingPLMN got %x, want %x", gotPLMN, tai.PLMN)
+	}
+	if !nrRestricted {
+		t.Fatal("nrRestricted got false, want true")
+	}
+}
+
+func TestPathSwitch_OmitsHandoverRestrictionListWhenNotRestricted(t *testing.T) {
+	mock := newMBRMock(nil)
+	srv := newPathSwitchTestServer(mock)
+	const addr = "10.20.0.6:36412"
+	ch := setupSendCapture(srv, addr)
+
+	ue := makeConnectedUEWithBearer(srv, addr)
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.Lock()
+	ue.TAI = tai
+	ue.Unlock()
+	mmeID := ue.MMEUES1APID
+
+	ieList := buildPathSwitchIEList(mmeID, 300, 5, 0x99887766, net.ParseIP("10.1.2.99").To4())
+	srv.handlePathSwitchRequest(addr, &pdu.PDU{ProcedureCode: pdu.ProcPathSwitchRequest}, ieList)
+
+	var ackPDU []byte
+	select {
+	case ackPDU = <-ch:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("no Ack PDU received after successful Path Switch")
+	}
+	p, err := pdu.Decode(ackPDU)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	gotIEs, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("DecodeIEContainer: %v", err)
+	}
+	for _, ie := range gotIEs {
+		if ie.ID == pdu.IEHandoverRestrictionList {
+			t.Fatal("Path Switch Ack unexpectedly includes Handover Restriction List IE")
+		}
 	}
 }
 

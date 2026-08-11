@@ -598,6 +598,10 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handleHandoverRequired(remoteAddr, p, ies)
 	case pdu.ProcHandoverNotification:
 		s.handleHandoverNotify(remoteAddr, p, ies)
+	case pdu.ProcHandoverCancel:
+		s.handleHandoverCancel(remoteAddr, p, ies)
+	case pdu.ProcENBStatusTransfer:
+		s.handleENBStatusTransfer(remoteAddr, p, ies)
 	case pdu.ProcPWSRestartIndication:
 		s.handlePWSForward(p.ProcedureCode, ies)
 	case pdu.ProcPWSFailureIndication:

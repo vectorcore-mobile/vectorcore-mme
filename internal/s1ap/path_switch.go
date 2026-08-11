@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
@@ -145,6 +146,8 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		// Snapshot for Ack.
 		ackNH := currentNH
 		ackNCC := currentNCC
+		accessRestriction := ue.AccessRestrictionData
+		servingTAI := ue.TAI
 		ue.Unlock()
 
 		log.Info("s1ap: PathSwitch: success, sending Ack",
@@ -152,7 +155,7 @@ func (s *Server) handlePathSwitchRequest(remoteAddr string, p *pdu.PDU, ieList [
 		metrics.PathSwitchTotal.WithLabelValues("success").Inc()
 
 		secCtxValue := encodeSecurityContextIE(ackNH, ackNCC)
-		s.sendPathSwitchAck(remoteAddr, mmeUEID, enbUEID, secCtxValue)
+		s.sendPathSwitchAck(remoteAddr, mmeUEID, enbUEID, secCtxValue, accessRestriction, servingTAI)
 
 		s.persistUERecoverySnapshot(ue, models.RecoveryStateActiveSnapshot, "ESTABLISHED")
 	}()
@@ -354,11 +357,21 @@ func encodeSecurityContextIE(nh []byte, ncc uint8) []byte {
 }
 
 // sendPathSwitchAck sends S1AP Path Switch Request Acknowledge to the target eNB.
-func (s *Server) sendPathSwitchAck(enbAddr string, mmeUEID, enbUEID uint32, secCtxValue []byte) {
+func (s *Server) sendPathSwitchAck(enbAddr string, mmeUEID, enbUEID uint32, secCtxValue []byte, accessRestriction gateway.AccessRestrictionData, servingTAI *emm.TAI) {
 	ieList := []pdu.ProtocolIE{
 		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
 		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
 		{ID: pdu.IESecurityContext, Criticality: aper.CriticalityReject, Value: secCtxValue},
+	}
+	// Handover Restriction List (TS 36.413 §9.2.1.22): the target eNB just
+	// took over this UE via X2; make sure it also learns the HSS's
+	// NR-as-secondary-RAT-in-E-UTRAN restriction.
+	if servingTAI != nil && accessRestriction.NRAsSecondaryRATInEUTRANNotAllowed() {
+		ieList = append(ieList, pdu.ProtocolIE{
+			ID:          pdu.IEHandoverRestrictionList,
+			Criticality: aper.CriticalityIgnore,
+			Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
+		})
 	}
 	msg := pdu.BuildSuccessfulOutcome(pdu.ProcPathSwitchRequest, aper.CriticalityReject, ieList)
 	s.sendToAddr(enbAddr, msg)
