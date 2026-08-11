@@ -292,6 +292,48 @@ func TestDecodeUENetworkCapability_LPP(t *testing.T) {
 	}
 }
 
+func TestDecodeUENetworkCapability_DCNR(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "short IE (EEA/EIA only) defaults DCNR false", in: "f070", want: false},
+		{name: "octet 8 present but not octet 9 defaults DCNR false", in: "f07000000800", want: false},
+		{name: "octet 9 present, DCNR bit set", in: "f0700000000010", want: true},
+		{name: "octet 9 present, DCNR bit clear", in: "f0700000000000", want: false},
+		{name: "octet 9 present, DCNR bit set among others", in: "f07000000000ff", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cap, err := emm.DecodeUENetworkCapability(mustHex(t, tt.in))
+			if err != nil {
+				t.Fatalf("DecodeUENetworkCapability: %v", err)
+			}
+			if cap.DCNR != tt.want {
+				t.Fatalf("DCNR: got %v, want %v", cap.DCNR, tt.want)
+			}
+		})
+	}
+}
+
+func TestEncodeEPSNetworkFeatureSupport_RestrictDCNR(t *testing.T) {
+	got := emm.EncodeEPSNetworkFeatureSupport(emm.EPSNetworkFeatureSupport{RestrictDCNR: true})
+	want := []byte{0x64, 0x02, 0x00, 0x20}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
+func TestEncodeEPSNetworkFeatureSupport_NoRestrictDCNRStaysOneOctet(t *testing.T) {
+	got := emm.EncodeEPSNetworkFeatureSupport(emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true})
+	want := []byte{0x64, 0x01, 0x01}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("got %x, want %x", got, want)
+	}
+}
+
 func TestReplayedUESecurityCapabilityFromUENetworkCapability(t *testing.T) {
 	tests := []struct {
 		name string

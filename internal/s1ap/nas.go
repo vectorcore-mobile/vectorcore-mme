@@ -363,7 +363,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			taiList = []emm.TAI{*tai}
 		}
 		attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
-		featureSupport := s.epsNetworkFeatureSupport()
+		featureSupport := s.epsNetworkFeatureSupport(ue)
 		t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 		if timerErr != nil {
 			log.Error("s1ap: failed to derive Attach Accept timers", zap.Error(timerErr))
@@ -706,7 +706,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		taiList = []emm.TAI{*tai}
 	}
 	attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
-	featureSupport := s.epsNetworkFeatureSupport()
+	featureSupport := s.epsNetworkFeatureSupport(ue)
 	t3412, t3402, t3423, timerErr := s.nasEMMTimers()
 	if timerErr != nil {
 		log.Error("s1ap: failed to derive Attach Accept timers", zap.Error(timerErr))
@@ -1325,11 +1325,22 @@ func (s *Server) attachAcceptRegistration(ue *uecontext.Context, attachType uint
 	return emm.AttachTypeEPSOnly, nil, nil, nil
 }
 
-func (s *Server) epsNetworkFeatureSupport() *emm.EPSNetworkFeatureSupport {
-	if !s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS {
+// epsNetworkFeatureSupport builds the EPS Network Feature Support IE for
+// Attach/TAU Accept. RestrictDCNR is only set when the UE itself declared
+// DCNR support (TS 24.301 §9.9.3.12A: "If the UE indicates support for dual
+// connectivity with NR... and the MME decides to restrict... the MME shall
+// set the RestrictDCNR bit"), gated on the HSS's Access-Restriction-Data
+// bit 8 (NR as secondary RAT in E-UTRAN not allowed).
+func (s *Server) epsNetworkFeatureSupport(ue *uecontext.Context) *emm.EPSNetworkFeatureSupport {
+	imsVoPS := s.nasCfg.EPSNetworkFeatureSupport.IMSVoiceOverPS
+	restrictDCNR := !ue.LTEAccessRestricted() && ue.DCNRSupported() && ue.AccessRestrictionData.NRAsSecondaryRATInEUTRANNotAllowed()
+	if !imsVoPS && !restrictDCNR {
 		return nil
 	}
-	return &emm.EPSNetworkFeatureSupport{IMSVoiceOverPSSessionInS1Mode: true}
+	return &emm.EPSNetworkFeatureSupport{
+		IMSVoiceOverPSSessionInS1Mode: imsVoPS,
+		RestrictDCNR:                  restrictDCNR,
+	}
 }
 
 func encodeFeatureSupportForLog(support *emm.EPSNetworkFeatureSupport) []byte {

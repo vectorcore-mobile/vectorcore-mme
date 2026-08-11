@@ -811,6 +811,8 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 	kenb := append([]byte(nil), ue.KeNB...)
 	kenbULNASCount := ue.KeNBULCount
 	sgsPendingPaging := ue.SGsPendingPaging
+	accessRestriction := ue.AccessRestrictionData
+	servingTAI := ue.TAI
 	kenbSource := "stored_snapshot"
 	if len(kenb) == 0 {
 		var err error
@@ -883,6 +885,17 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 				ID:          pdu.IECSFallbackIndicator,
 				Criticality: aper.CriticalityIgnore,
 				Value:       ies.EncodeCSFallbackIndicator(),
+			})
+		}
+		// Handover Restriction List (TS 36.413 §9.2.1.22): conveys the HSS's
+		// NR-as-secondary-RAT-in-E-UTRAN restriction (Access-Restriction-Data
+		// bit 8) to the eNB, independent of what the UE declared over NAS —
+		// the eNB may discover NR capability out-of-band via RRC regardless.
+		if servingTAI != nil && accessRestriction.NRAsSecondaryRATInEUTRANNotAllowed() {
+			ieList = append(ieList, pdu.ProtocolIE{
+				ID:          pdu.IEHandoverRestrictionList,
+				Criticality: aper.CriticalityIgnore,
+				Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
 			})
 		}
 	}

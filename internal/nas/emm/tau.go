@@ -465,6 +465,9 @@ func DecodeTAUAccept(data []byte) (*TAUAccept, error) {
 			out.EPSNetworkFeatureSupport = &EPSNetworkFeatureSupport{
 				IMSVoiceOverPSSessionInS1Mode: data[offset]&0x01 != 0,
 			}
+			if l >= 2 {
+				out.EPSNetworkFeatureSupport.RestrictDCNR = data[offset+1]&0x20 != 0
+			}
 			offset += l
 		default:
 			return nil, fmt.Errorf("emm: TAU Accept unsupported IEI 0x%02x at offset %d", iei, offset-1)

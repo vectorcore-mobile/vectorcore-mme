@@ -685,6 +685,18 @@ func (c *Context) LPPSupported() bool {
 	return cap.LPP
 }
 
+// DCNRSupported reports whether the UE declared support for dual
+// connectivity with NR (EN-DC) in its UE Network Capability (TS 24.301
+// §9.9.3.34, octet 9 bit 5). Returns false if no capability has been
+// received yet or it fails to decode.
+func (c *Context) DCNRSupported() bool {
+	cap, err := emm.DecodeUENetworkCapability(c.UENetworkCapability)
+	if err != nil {
+		return false
+	}
+	return cap.DCNR
+}
+
 // LTEAccessRestricted reports whether the HSS has barred this subscriber from
 // (wideband) E-UTRAN via Access-Restriction-Data bit 4 (TS 29.272 §7.3.31).
 func (c *Context) LTEAccessRestricted() bool {

@@ -96,16 +96,24 @@ func DecodeMSIdentityTMSI(v []byte) (uint32, error) {
 // EPSNetworkFeatureSupport represents TS 24.301 §9.9.3.12A.
 type EPSNetworkFeatureSupport struct {
 	IMSVoiceOverPSSessionInS1Mode bool
+	RestrictDCNR                  bool // Restrict use of dual connectivity with NR (octet 4 bit 6)
 }
 
-// EncodeEPSNetworkFeatureSupport encodes IEI 0x64. The first feature octet uses
-// bit 1 for IMS voice over PS session in S1 mode; spare bits remain zero.
+// EncodeEPSNetworkFeatureSupport encodes IEI 0x64. Octet 3 bit 1 carries IMS
+// voice over PS session in S1 mode; other octet 3 bits remain zero. Octet 4
+// is omitted unless RestrictDCNR is set, per TS 24.301 §9.9.3.12A ("If the
+// network does not include octet 4... the UE shall interpret this as...
+// coded as zero").
 func EncodeEPSNetworkFeatureSupport(s EPSNetworkFeatureSupport) []byte {
-	value := byte(0)
+	octet3 := byte(0)
 	if s.IMSVoiceOverPSSessionInS1Mode {
-		value |= 0x01
+		octet3 |= 0x01
 	}
-	return []byte{0x64, 0x01, value}
+	if !s.RestrictDCNR {
+		return []byte{0x64, 0x01, octet3}
+	}
+	octet4 := byte(0x20) // bit 6: RestrictDCNR
+	return []byte{0x64, 0x02, octet3, octet4}
 }
 
 // Encode returns the 5-byte TAI encoding.
@@ -155,9 +163,10 @@ func EPSMobileIdentityIMSI(imsi string) []byte {
 
 // UENetworkCapability represents UE security capabilities.
 type UENetworkCapability struct {
-	EIA [8]bool // EPS integrity algorithms 0-7
-	EEA [8]bool // EPS encryption algorithms 0-7
-	LPP bool    // LTE Positioning Protocol support (TS 24.301 §9.9.3.34, octet 7 bit 4)
+	EIA  [8]bool // EPS integrity algorithms 0-7
+	EEA  [8]bool // EPS encryption algorithms 0-7
+	LPP  bool    // LTE Positioning Protocol support (TS 24.301 §9.9.3.34, octet 7 bit 4)
+	DCNR bool    // Dual connectivity with NR supported (TS 24.301 §9.9.3.34, octet 9 bit 5)
 }
 
 // DecodeUENetworkCapability decodes UE network capability IE. Octets beyond
@@ -175,6 +184,9 @@ func DecodeUENetworkCapability(data []byte) (UENetworkCapability, error) {
 	}
 	if len(data) >= 5 {
 		cap.LPP = data[4]&0x08 != 0 // octet 7 bit 4
+	}
+	if len(data) >= 7 {
+		cap.DCNR = data[6]&0x10 != 0 // octet 9 bit 5
 	}
 	return cap, nil
 }
