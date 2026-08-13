@@ -883,13 +883,6 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 			{ID: pdu.IEUESecurityCapabilities, Criticality: aper.CriticalityReject, Value: secCapValue},
 			{ID: pdu.IESecurityKey, Criticality: aper.CriticalityReject, Value: ies.EncodeSecurityKey(kenb)},
 		}
-		if len(ueRadioCapability) > 0 {
-			ieList = append(ieList, pdu.ProtocolIE{
-				ID:          pdu.IEUERadioCapability,
-				Criticality: aper.CriticalityIgnore,
-				Value:       ies.EncodeUERadioCapability(ueRadioCapability),
-			})
-		}
 		// CS Fallback Indicator (TS 36.413 §9.2.3.21): this ICS is resuming a
 		// NAS signalling connection the UE established in answer to a VLR
 		// CS-call page (SGsAP-PAGING-REQUEST, service indicator = CS call).
@@ -907,11 +900,22 @@ func (s *Server) SendInitialContextSetupWithBearers(mmeUEID uint32, nasPDU []byt
 		// NR-as-secondary-RAT-in-E-UTRAN restriction (Access-Restriction-Data
 		// bit 8) to the eNB, independent of what the UE declared over NAS —
 		// the eNB may discover NR capability out-of-band via RRC regardless.
+		// Appended before UERadioCapability to match the IE order declared
+		// for InitialContextSetupRequestIEs in TS 36.413 §9.3.3 — some eNB
+		// S1AP stacks (observed: Nokia) reject the message when optional IEs
+		// arrive out of that order.
 		if servingTAI != nil && accessRestriction.NRAsSecondaryRATInEUTRANNotAllowed() {
 			ieList = append(ieList, pdu.ProtocolIE{
 				ID:          pdu.IEHandoverRestrictionList,
 				Criticality: aper.CriticalityIgnore,
 				Value:       ies.EncodeHandoverRestrictionList(servingTAI.PLMN, true),
+			})
+		}
+		if len(ueRadioCapability) > 0 {
+			ieList = append(ieList, pdu.ProtocolIE{
+				ID:          pdu.IEUERadioCapability,
+				Criticality: aper.CriticalityIgnore,
+				Value:       ies.EncodeUERadioCapability(ueRadioCapability),
 			})
 		}
 		// Subscriber Profile ID for RAT/Frequency priority (TS 36.413
