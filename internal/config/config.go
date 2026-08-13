@@ -209,10 +209,19 @@ type NFConfig struct {
 	TAIList             []TAIItem `yaml:"tai_list"`
 }
 
+// TAIRatNBIoT marks a TAIItem.RAT as NB-IoT-designated. Per 3GPP TS 23.401
+// (RAT determination for CIoT), a Tracking Area never mixes WB-E-UTRAN and
+// NB-IoT cells, so the MME determines a UE's NB-IoT/WB-E-UTRAN RAT from the
+// TAI it attaches under. Any other value (including empty/unset) means
+// ordinary terrestrial WB-E-UTRAN.
+const TAIRatNBIoT = "nbiot"
+
 type TAIItem struct {
 	MCC string `yaml:"mcc"`
 	MNC string `yaml:"mnc"`
 	TAC uint16 `yaml:"tac"`
+	// RAT designates this TA's access technology; see TAIRatNBIoT.
+	RAT string `yaml:"rat"`
 }
 
 type S1APConfig struct {

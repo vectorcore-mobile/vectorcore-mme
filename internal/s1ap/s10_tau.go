@@ -180,7 +180,14 @@ func (s *Server) importContextAndContinueTAU(tempUE *uecontext.Context, tai *ies
 	tempUE.S10OldMMEAddr = oldMMEAddr
 	tempUE.S10OldMMETEID = resp.SenderFTEID.TEID
 
-	// Update TAI.
+	// Update TAI. IsNBIoT must be set here too (not just in
+	// applyS1APLocationToUELocked) — this inter-MME TAU import path sets TAI
+	// directly rather than going through that helper, and the new-MME's own
+	// NB-IoT/LTE-M restriction checks in HandleULAResultWithSubscriberProfile
+	// depend on it.
+	if tai != nil {
+		tempUE.IsNBIoT = s.isNBIoTTAI(tai.MCC, tai.MNC, tai.TAC)
+	}
 	if emmTAI := taiFromIE(tai); emmTAI != nil {
 		tempUE.TAI = emmTAI
 	}

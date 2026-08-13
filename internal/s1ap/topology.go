@@ -24,6 +24,20 @@ func (s *Server) servesTAI(mcc, mnc string, tac uint16) bool {
 	return false
 }
 
+// isNBIoTTAI reports whether the given TAI is configured as NB-IoT-designated
+// (config.TAIItem.RAT == config.TAIRatNBIoT). Per TS 23.401, a Tracking Area
+// never mixes WB-E-UTRAN and NB-IoT cells, so this is how the MME determines
+// a UE's RAT from the TAI in its Initial UE Message — see
+// applyS1APLocationToUELocked, which sets ue.IsNBIoT from this.
+func (s *Server) isNBIoTTAI(mcc, mnc string, tac uint16) bool {
+	for _, served := range s.nfCfg.TAIList {
+		if served.MCC == mcc && served.MNC == mnc && served.TAC == tac {
+			return served.RAT == config.TAIRatNBIoT
+		}
+	}
+	return false
+}
+
 // acceptedSupportedTAs returns the served intersection without changing the
 // eNB's advertised topology.  A network-sharing eNB can have a Global eNB ID
 // PLMN different from a Broadcast PLMN; admission is therefore based only on

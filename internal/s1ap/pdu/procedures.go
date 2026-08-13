@@ -134,8 +134,9 @@ const (
 	IEERABToBeReleasedListBearerModConf         uint16 = 210
 	IELPPaPDU                                   uint16 = 147
 	IERoutingID                                 uint16 = 148
-	IEHandoverRestrictionList                   uint16 = 41 // Handover Restriction List (TS 36.413 §9.2.1.22; Initial Context Setup Request, optional)
-	IEENBStatusTransferTransparentContainer     uint16 = 90 // eNB Status Transfer Transparent Container (eNB/MME Status Transfer, PDCP SN/HFN relay)
+	IEHandoverRestrictionList                   uint16 = 41  // Handover Restriction List (TS 36.413 §9.2.1.22; Initial Context Setup Request, optional)
+	IEENBStatusTransferTransparentContainer     uint16 = 90  // eNB Status Transfer Transparent Container (eNB/MME Status Transfer, PDCP SN/HFN relay)
+	IELTEMIndication                            uint16 = 272 // LTE-M Indication (TS 36.413 §9.2.1.135; UE Capability Info Indication, optional)
 
 	// S1 Handover IEs (TS 36.413 Annex A)
 	IEERABToBeSetupListHOReq             uint16 = 53  // HandoverRequest: E-RAB list outer

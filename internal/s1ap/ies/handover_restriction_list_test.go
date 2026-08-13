@@ -10,7 +10,18 @@ import (
 func TestEncodeHandoverRestrictionListWithNRRestriction(t *testing.T) {
 	plmn := [3]byte{0x00, 0xf1, 0x10}
 	got := ies.EncodeHandoverRestrictionList(plmn, true)
-	want := []byte{0x04, 0x00, 0xf1, 0x10, 0x07, 0x00, 0x01, 0x01, 0x05, 0x40, 0x01, 0x00}
+	// Verified against an independent reference PER encoder (pycrate's
+	// compiled 3GPP S1AP ASN.1 module — not this package's own codec) and,
+	// separately, confirmed to decode cleanly under Wireshark's S1AP
+	// dissector. Two earlier versions of this test asserted different, wrong
+	// byte sequences that matched real encoder bugs (an off-by-one
+	// length-determinant lower bound, and — the more serious one — an
+	// erroneous extra open-type wrapper around the whole iE-Extensions
+	// SEQUENCE OF) rather than the actual wire format a spec-correct S1AP
+	// peer expects. This package's own round-trip test alone never caught
+	// either bug, since both sides of the round trip shared the same
+	// mistake — see handover_restriction_list.go.
+	want := []byte{0x04, 0x00, 0xf1, 0x10, 0x00, 0x00, 0x01, 0x05, 0x40, 0x01, 0x00}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("EncodeHandoverRestrictionList got %x, want %x", got, want)
 	}

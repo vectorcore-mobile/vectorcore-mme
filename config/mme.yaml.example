@@ -21,6 +21,15 @@ nf:
     # - mcc: "311"
     #   mnc: "435"
     #   tac: 10
+    # Mark a TAC as NB-IoT-designated with `rat: nbiot` (default is ordinary
+    # terrestrial WB-E-UTRAN). Per TS 23.401, a Tracking Area never mixes
+    # WB-E-UTRAN and NB-IoT cells, so this is how the MME determines a UE's
+    # RAT from the TAI in its Initial UE Message, for Access-Restriction-Data
+    # bit 6 (NB-IoT Not Allowed) enforcement.
+    # - mcc: "001"
+    #   mnc: "01"
+    #   tac: 20
+    #   rat: nbiot
 
 # Interface between MME and eNodeBs
 s1ap:

@@ -12,6 +12,7 @@ import (
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
 	"github.com/vectorcore/mme/internal/peertracker"
@@ -555,6 +556,92 @@ func TestHandleIdleTAUMessage_KnownGUTI_Plain(t *testing.T) {
 	}
 	if enbUEID != 2002 {
 		t.Errorf("ENBS1APID: got %d, want 2002", enbUEID)
+	}
+}
+
+// TestHandleIdleTAUMessage_RejectsWhenNBIoTRestricted covers the same-MME TAU
+// enforcement gap: a subscriber barred from NB-IoT (Access-Restriction-Data
+// bit 6) must not be able to keep — or move onto — an NB-IoT-designated TAC
+// via TAU, per TS 23.401 §4.3.5.7 (Attach and TAU are named side by side as
+// Access Restriction enforcement points).
+func TestHandleIdleTAUMessage_RejectsWhenNBIoTRestricted(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.nfCfg.TAIList = []config.TAIItem{
+		{MCC: "001", MNC: "01", TAC: 1, RAT: config.TAIRatNBIoT},
+	}
+	const remoteAddr = "10.0.0.3:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.IMSI = "001010000000002"
+	realUE.AccessRestrictionData = gateway.AccessRestrictNBIoT
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 2003
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	tai := &ies.TAI{MCC: "001", MNC: "01", TAC: 1}
+	nasPDU := buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti)
+	srv.handleIdleTAUMessage(tempUE, tai, nasPDU)
+
+	var raw []byte
+	select {
+	case raw = <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no TAU Reject sent")
+	}
+	gotNAS := decodeDownlinkNASFromRawPDU(t, raw)
+	if got, want := gotNAS[1], uint8(emm.MsgTrackingAreaUpdateReject); got != want {
+		t.Fatalf("NAS msg type got %#x, want %#x", got, want)
+	}
+	if got, want := gotNAS[2], uint8(emm.CauseEPSServicesNotAllowed); got != want {
+		t.Fatalf("EMM cause got %#x, want %#x", got, want)
+	}
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
+		t.Fatal("UE still present after NB-IoT-restricted TAU reject")
+	}
+}
+
+// TestHandleIdleTAUMessage_AllowsNBIoTRestrictedOffNBIoTTAC confirms the same
+// subscriber is not rejected when the TAU's TAI is an ordinary WB-E-UTRAN TAC
+// — bit 6 only blocks NB-IoT access, not this subscriber's TAU in general.
+func TestHandleIdleTAUMessage_AllowsNBIoTRestrictedOffNBIoTTAC(t *testing.T) {
+	srv := newTAUTestServer()
+	// No RAT set: TAC 1 is ordinary WB-E-UTRAN.
+	srv.nfCfg.TAIList = []config.TAIItem{
+		{MCC: "001", MNC: "01", TAC: 1},
+	}
+	const remoteAddr = "10.0.0.3:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+
+	realUE, guti := makeRegisteredUEWithNullKeys(srv, remoteAddr)
+	realUE.Lock()
+	realUE.IMSI = "001010000000003"
+	realUE.AccessRestrictionData = gateway.AccessRestrictNBIoT
+	realUE.Unlock()
+
+	tempUE := srv.ueManager.Allocate()
+	tempUE.Lock()
+	tempUE.ENBS1APID = 2004
+	tempUE.ENBGlobalID = remoteAddr
+	tempUE.Unlock()
+
+	tai := &ies.TAI{MCC: "001", MNC: "01", TAC: 1}
+	nasPDU := buildPlainTAUNASPDU(emm.EPSUpdateTypePeriodic, guti)
+	srv.handleIdleTAUMessage(tempUE, tai, nasPDU)
+
+	select {
+	case <-ch:
+		// TAU Accept (or other DL NAS) sent — TAU proceeded normally.
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("no PDU sent — TAU should have proceeded off an NB-IoT TAC")
+	}
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); !ok {
+		t.Fatal("UE removed despite not being on an NB-IoT TAC")
 	}
 }
 

@@ -313,6 +313,25 @@ type Context struct {
 
 	// Last known TAI
 	TAI *emm.TAI
+	// IsNBIoT reports whether TAI is configured as NB-IoT-designated (TS
+	// 23.401: a Tracking Area never mixes WB-E-UTRAN and NB-IoT cells). Set
+	// alongside TAI in applyS1APLocationToUELocked; used to gate
+	// Access-Restriction-Data bit 6 (NB-IoT Not Allowed) enforcement.
+	IsNBIoT bool
+	// LTEMIndicated reports whether the eNB has signalled the LTE-M
+	// Indication IE (TS 36.413 §9.2.1.135) for this UE, i.e. it indicated
+	// Category M1/M2. Unlike IsNBIoT, this is not known at Initial UE Message
+	// time — it only arrives via a later UE Capability Info Indication
+	// message, so callers must not assume it is populated at attach time.
+	LTEMIndicated bool
+	// UECapabilityReported reports whether a UE Capability Info Indication
+	// message has been received at all for this UE. The LTE-M Indication IE
+	// is presence-based with no corresponding "not LTE-M" signal (TS 36.413
+	// §9.2.1.135), so LTEMIndicated==false is ambiguous between "confirmed
+	// not LTE-M" and "not yet reported" on its own. Only once
+	// UECapabilityReported is true does LTEMIndicated==false become positive
+	// evidence — see WBEUTRANExceptLTEMNotAllowed enforcement.
+	UECapabilityReported bool
 
 	// ECGI from Initial UE Message (for ULI IE in GTPv2 CSR)
 	ECGIPLMN [3]byte
@@ -709,6 +728,35 @@ func (c *Context) DCNRSupported() bool {
 // (wideband) E-UTRAN via Access-Restriction-Data bit 4 (TS 29.272 §7.3.31).
 func (c *Context) LTEAccessRestricted() bool {
 	return c.AccessRestrictionData.WBEUTRANNotAllowed()
+}
+
+// NBIoTAccessRestricted reports whether this UE is attaching via an
+// NB-IoT-designated TAI (IsNBIoT, set from config per TS 23.401) while the
+// HSS has barred NB-IoT via Access-Restriction-Data bit 6 (TS 29.272
+// §7.3.31). IsNBIoT is always known by the time this is evaluated — TAI
+// arrives in the Initial UE Message, before NAS attach processing.
+func (c *Context) NBIoTAccessRestricted() bool {
+	return c.IsNBIoT && c.AccessRestrictionData.NBIoTNotAllowed()
+}
+
+// LTEMAccessRestricted reports whether this UE has been confirmed as LTE-M
+// (LTEMIndicated, from the eNB's TS 36.413 §9.2.1.135 LTE-M Indication IE)
+// while the HSS has barred LTE-M via Access-Restriction-Data bit 11. Safe to
+// call before LTEMIndicated is known: it defaults to false, so this simply
+// reports no violation until positive evidence of LTE-M arrives.
+func (c *Context) LTEMAccessRestricted() bool {
+	return c.LTEMIndicated && c.AccessRestrictionData.LTEMNotAllowed()
+}
+
+// WBEUTRANExceptLTEMAccessRestricted reports whether this UE has been
+// confirmed as NOT LTE-M while the HSS requires LTE-M-only WB-E-UTRAN access
+// via Access-Restriction-Data bit 12. Unlike LTEMAccessRestricted, "not
+// LTE-M" cannot be assumed from a zero value — the LTE-M Indication IE has no
+// negative counterpart (see UECapabilityReported) — so this only reports a
+// violation once a UE Capability Info Indication has actually been received
+// without it.
+func (c *Context) WBEUTRANExceptLTEMAccessRestricted() bool {
+	return c.UECapabilityReported && !c.LTEMIndicated && c.AccessRestrictionData.WBEUTRANExceptLTEMNotAllowed()
 }
 
 // Barred reports whether the HSS has withdrawn service from this subscriber

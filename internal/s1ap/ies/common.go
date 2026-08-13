@@ -763,6 +763,28 @@ func EncodeCSFallbackIndicator() []byte {
 	return w.Bytes()
 }
 
+// EncodeLTEMIndication encodes the LTE-M Indication IE (TS 36.413 §9.2.1.135,
+// ProtocolIE-ID 272): LTE-M-Indication ::= ENUMERATED { lTE-M, ... }. Only
+// used by tests — production MME code never sends this IE, only decodes it
+// (see DecodeLTEMIndication); the eNB is the one that observes UE Category.
+func EncodeLTEMIndication() []byte {
+	w := aper.NewBitWriter()
+	aper.EncodeEnumeratedExt(w, 0, 1) // root value 0 of 1 ("lTE-M")
+	return w.Bytes()
+}
+
+// DecodeLTEMIndication decodes the LTE-M Indication IE (TS 36.413 §9.2.1.135).
+// Like NRrestrictioninEPSasSecondaryRAT (see handover_restriction_list.go),
+// this is an extensible ENUMERATED with exactly one root value: any
+// successfully-decoded value (root or future extension addition) means the
+// eNB is reporting LTE-M — decoding is really just validating the bytes are
+// well-formed, since the IE's mere presence in the message is the signal.
+func DecodeLTEMIndication(data []byte) error {
+	r := aper.NewBitReader(data)
+	_, err := aper.DecodeEnumeratedExt(r, 1)
+	return err
+}
+
 // EncodeRelativeMMECapacity encodes RelativeMMECapacity INTEGER (0..255).
 func EncodeRelativeMMECapacity(v uint8) []byte {
 	w := aper.NewBitWriter()

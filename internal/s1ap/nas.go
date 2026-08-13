@@ -241,6 +241,49 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 				s.ueManager.Remove(ue)
 				return
 			}
+			// NB-IoT / LTE-M restrictions (TS 29.272 §7.3.31 bits 6/11/12) must be
+			// enforced on TAU exactly like WB-E-UTRAN above: TS 23.401 §4.3.5.7
+			// names Attach and TAU side by side (clauses 5.3.2.1 / 5.3.3.1-2) as
+			// the points where Access Restriction is signalled/enforced, and
+			// explicitly calls out TAU as where a restriction can be freshly
+			// obtained from the HSS (e.g. after inter-RAT handover) — so a
+			// restriction that blocks a fresh Attach must not be bypassable via
+			// inter-MME TAU. ue.IsNBIoT/LTEMIndicated/UECapabilityReported reflect
+			// this UE's imported context, independent of profile (the HSS
+			// subscription data being validated here).
+			if ue.IsNBIoT && profile.AccessRestrictionData.NBIoTNotAllowed() {
+				s10Addr := ue.S10OldMMEAddr
+				s10TEID := ue.S10OldMMETEID
+				ue.Unlock()
+				log.Warn("s1ap: NB-IoT access restricted by HSS, rejecting inter-MME TAU")
+				metrics.InterMMETAUTotal.WithLabelValues("nbiot_restricted").Inc()
+				s.sendTAUReject(mmeUEID, emm.CauseEPSServicesNotAllowed)
+				_ = s.s10.SendContextAcknowledge(s10Addr, s10TEID, gtpv2.CauseRequestDenied)
+				s.ueManager.Remove(ue)
+				return
+			}
+			if ue.LTEMIndicated && profile.AccessRestrictionData.LTEMNotAllowed() {
+				s10Addr := ue.S10OldMMEAddr
+				s10TEID := ue.S10OldMMETEID
+				ue.Unlock()
+				log.Warn("s1ap: LTE-M access restricted by HSS, rejecting inter-MME TAU")
+				metrics.InterMMETAUTotal.WithLabelValues("ltem_restricted").Inc()
+				s.sendTAUReject(mmeUEID, emm.CauseEPSServicesNotAllowed)
+				_ = s.s10.SendContextAcknowledge(s10Addr, s10TEID, gtpv2.CauseRequestDenied)
+				s.ueManager.Remove(ue)
+				return
+			}
+			if ue.UECapabilityReported && !ue.LTEMIndicated && profile.AccessRestrictionData.WBEUTRANExceptLTEMNotAllowed() {
+				s10Addr := ue.S10OldMMEAddr
+				s10TEID := ue.S10OldMMETEID
+				ue.Unlock()
+				log.Warn("s1ap: WB-E-UTRAN-except-LTE-M access restricted by HSS, rejecting inter-MME TAU")
+				metrics.InterMMETAUTotal.WithLabelValues("wb_eutran_except_ltem_restricted").Inc()
+				s.sendTAUReject(mmeUEID, emm.CauseEPSServicesNotAllowed)
+				_ = s.s10.SendContextAcknowledge(s10Addr, s10TEID, gtpv2.CauseRequestDenied)
+				s.ueManager.Remove(ue)
+				return
+			}
 			ue.MSISDN = msisdn
 			ue.APN = apn
 			ue.UEAMBRDown = profile.UEAMBRDown
@@ -322,6 +365,47 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		log.Warn("s1ap: WB-E-UTRAN access restricted by HSS, rejecting attach",
 			zap.String("imsi", imsi))
 		metrics.NASProceduresTotal.WithLabelValues("Attach", "wb_eutran_restricted").Inc()
+		rejectPDU := emm.EncodeAttachReject(emm.CauseEPSServicesNotAllowed)
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+		s.ueManager.Remove(ue)
+		return
+	}
+	if ue.NBIoTAccessRestricted() {
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: NB-IoT access restricted by HSS, rejecting attach",
+			zap.String("imsi", imsi))
+		metrics.NASProceduresTotal.WithLabelValues("Attach", "nbiot_restricted").Inc()
+		rejectPDU := emm.EncodeAttachReject(emm.CauseEPSServicesNotAllowed)
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+		s.ueManager.Remove(ue)
+		return
+	}
+	// LTE-M (bit 11) / WB-E-UTRAN-Except-LTE-M (bit 12): usually not yet
+	// known at this point (LTE-M status arrives later via UE Capability Info
+	// Indication — see enforceLTEMAccessRestriction), so these only fire here
+	// when the UE context already carries evidence from earlier in its
+	// lifetime (e.g. TAU / re-attach without a fresh context).
+	if ue.LTEMAccessRestricted() {
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: LTE-M access restricted by HSS, rejecting attach",
+			zap.String("imsi", imsi))
+		metrics.NASProceduresTotal.WithLabelValues("Attach", "ltem_restricted").Inc()
+		rejectPDU := emm.EncodeAttachReject(emm.CauseEPSServicesNotAllowed)
+		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
+		s.ueManager.Remove(ue)
+		return
+	}
+	if ue.WBEUTRANExceptLTEMAccessRestricted() {
+		enbAddr := ue.ENBGlobalID
+		enbUEID := ue.ENBS1APID
+		ue.Unlock()
+		log.Warn("s1ap: WB-E-UTRAN-except-LTE-M access restricted by HSS, rejecting attach",
+			zap.String("imsi", imsi))
+		metrics.NASProceduresTotal.WithLabelValues("Attach", "wb_eutran_except_ltem_restricted").Inc()
 		rejectPDU := emm.EncodeAttachReject(emm.CauseEPSServicesNotAllowed)
 		s.sendDownlinkNASTransport(enbAddr, mmeID, enbUEID, rejectPDU)
 		s.ueManager.Remove(ue)

@@ -201,6 +201,7 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 		ue.S1ReleasePending = false
 		if emmTAI := taiFromIE(tai); emmTAI != nil {
 			ue.TAI = emmTAI
+			ue.IsNBIoT = s.isNBIoTTAI(tai.MCC, tai.MNC, tai.TAC)
 		}
 		if tauReq.UENetworkCapability != nil {
 			ue.UENetworkCapability = tauReq.UENetworkCapability
@@ -260,6 +261,7 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	ue.IdleTAUReleaseAfterComplete = false
 	if emmTAI := taiFromIE(tai); emmTAI != nil {
 		ue.TAI = emmTAI
+		ue.IsNBIoT = s.isNBIoTTAI(tai.MCC, tai.MNC, tai.TAC)
 	}
 	if tauReq.UENetworkCapability != nil {
 		ue.UENetworkCapability = tauReq.UENetworkCapability
@@ -269,6 +271,11 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	mmeUEID := ue.MMEUES1APID
 	newBindingGeneration := ue.S1BindingGeneration
 	ue.Unlock()
+
+	if s.rejectTAUIfAccessRestricted(ue, log) {
+		return
+	}
+
 	if obsoleteRelease {
 		log.Info("nas: idle TAU replacement binding old release sent",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Uint32("old_enb_ue_id", oldENBUEID), zap.String("old_enb_addr", oldENBAddr),
@@ -1261,4 +1268,35 @@ func (s *Server) sendTAUReject(mmeUEID uint32, cause uint8) {
 			zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
 	}
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "reject").Inc()
+}
+
+// rejectTAUIfAccessRestricted checks Access-Restriction-Data (WB-E-UTRAN,
+// NB-IoT, LTE-M, WB-E-UTRAN-Except-LTE-M) against ue's current TAI/LTE-M
+// state and, if violated, sends a TAU Reject and removes the UE context.
+// Returns true if the TAU was rejected — callers must return immediately.
+//
+// This mirrors the equivalent checks already applied on fresh Attach
+// (HandleULAResultWithSubscriberProfile in nas.go) and inter-MME TAU
+// (importContextAndContinueTAU / HandleULAResultWithSubscriberProfile's
+// inter-MME-TAU branch): TS 23.401 §4.3.5.7 names Attach and TAU side by
+// side (clauses 5.3.2.1 / 5.3.3.1-2) as Access Restriction enforcement
+// points, so a same-MME TAU — e.g. onto a newly NB-IoT-designated TAC, or
+// after an HSS-pushed restriction the subscriber's cached context hasn't
+// been re-validated against yet — must not bypass a restriction that would
+// block a fresh Attach.
+func (s *Server) rejectTAUIfAccessRestricted(ue *uecontext.Context, log *zap.Logger) bool {
+	ue.Lock()
+	mmeUEID := ue.MMEUES1APID
+	restricted := ue.LTEAccessRestricted() || ue.NBIoTAccessRestricted() ||
+		ue.LTEMAccessRestricted() || ue.WBEUTRANExceptLTEMAccessRestricted()
+	ue.Unlock()
+	if !restricted {
+		return false
+	}
+	log.Warn("nas: idle TAU: access restricted by HSS, rejecting",
+		zap.Uint32("mme_ue_id", mmeUEID))
+	metrics.NASProceduresTotal.WithLabelValues("TAU", "access_restricted").Inc()
+	s.sendTAUReject(mmeUEID, emm.CauseEPSServicesNotAllowed)
+	s.ueManager.Remove(ue)
+	return true
 }

@@ -77,3 +77,31 @@ func TestS1SetupAdmissionUsesCompletePLMNAndTAC(t *testing.T) {
 		t.Fatalf("stored topology advertised=%+v accepted=%+v", enb.SupportedTAs, enb.AcceptedTAs)
 	}
 }
+
+func TestIsNBIoTTAI(t *testing.T) {
+	srv := newTAUTestServer()
+	srv.nfCfg.TAIList = []config.TAIItem{
+		{MCC: "001", MNC: "01", TAC: 1}, // ordinary WB-E-UTRAN (RAT unset)
+		{MCC: "001", MNC: "01", TAC: 20, RAT: config.TAIRatNBIoT},
+	}
+
+	cases := []struct {
+		name string
+		mcc  string
+		mnc  string
+		tac  uint16
+		want bool
+	}{
+		{"configured WB-E-UTRAN TAC", "001", "01", 1, false},
+		{"configured NB-IoT TAC", "001", "01", 20, true},
+		{"unconfigured TAC", "001", "01", 99, false},
+		{"unconfigured PLMN", "999", "99", 20, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := srv.isNBIoTTAI(tc.mcc, tc.mnc, tc.tac); got != tc.want {
+				t.Fatalf("isNBIoTTAI(%s,%s,%d) = %v, want %v", tc.mcc, tc.mnc, tc.tac, got, tc.want)
+			}
+		})
+	}
+}

@@ -2,7 +2,7 @@ package gateway
 
 // AccessRestrictionData mirrors the S6a Access-Restriction-Data AVP (code 1426,
 // 3GPP TS 29.272 §7.3.31): a bitmask where each set bit denotes a RAT the
-// subscriber is barred from using. Bits 10+ (Rel-17+ NTN/satellite variants)
+// subscriber is barred from using. Bits 13+ (Rel-17+ NTN/satellite variants)
 // are intentionally not named here; the raw value still round-trips through
 // this type if they're ever needed.
 type AccessRestrictionData uint32
@@ -18,6 +18,9 @@ const (
 	AccessRestrictEnhancedCoverage                 AccessRestrictionData = 1 << 7
 	AccessRestrictNRAsSecondaryRATInEUTRAN         AccessRestrictionData = 1 << 8
 	AccessRestrictUnlicensedSpectrumAsSecondaryRAT AccessRestrictionData = 1 << 9
+	AccessRestrictNRIn5GS                          AccessRestrictionData = 1 << 10
+	AccessRestrictLTEM                             AccessRestrictionData = 1 << 11
+	AccessRestrictWBEUTRANExceptLTEM               AccessRestrictionData = 1 << 12
 )
 
 // UTRANNotAllowed reports bit 0.
@@ -60,4 +63,23 @@ func (a AccessRestrictionData) NRAsSecondaryRATInEUTRANNotAllowed() bool {
 // UnlicensedSpectrumAsSecondaryRATNotAllowed reports bit 9.
 func (a AccessRestrictionData) UnlicensedSpectrumAsSecondaryRATNotAllowed() bool {
 	return a&AccessRestrictUnlicensedSpectrumAsSecondaryRAT != 0
+}
+
+// NRIn5GSNotAllowed reports bit 10.
+func (a AccessRestrictionData) NRIn5GSNotAllowed() bool {
+	return a&AccessRestrictNRIn5GS != 0
+}
+
+// LTEMNotAllowed reports bit 11 — the subscriber may not use LTE-M (Category
+// M1/M2). Independent of WBEUTRANNotAllowed (bit 4): per TS 29.272 §7.3.31
+// NOTE 2, bits 11/12 are only meaningful when bit 4 is not set.
+func (a AccessRestrictionData) LTEMNotAllowed() bool {
+	return a&AccessRestrictLTEM != 0
+}
+
+// WBEUTRANExceptLTEMNotAllowed reports bit 12 — ordinary (non-Cat-M)
+// WB-E-UTRAN is barred, but LTE-M remains permitted. Supports an
+// LTE-M-only EPS subscriber policy without a proprietary flag.
+func (a AccessRestrictionData) WBEUTRANExceptLTEMNotAllowed() bool {
+	return a&AccessRestrictWBEUTRANExceptLTEM != 0
 }

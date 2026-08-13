@@ -38,12 +38,26 @@ func EncodeHandoverRestrictionList(servingPLMN [3]byte, nrRestricted bool) []byt
 	w.AlignToByte()
 	w.WriteOctets(servingPLMN[:])
 	if nrRestricted {
-		ext := aper.NewBitWriter()
-		_ = aper.EncodeConstrainedWholeNumber(ext, 1, 0, 65535) // extension count = 1
-		_ = aper.EncodeConstrainedWholeNumber(ext, int64(extIDNRRestrictionInEPSAsSecondaryRAT), 0, 65535)
-		aper.EncodeCriticality(ext, aper.CriticalityIgnore)
-		aper.WriteOpenType(ext, encodeNRRestrictedEnum())
-		aper.WriteOpenType(w, ext.Bytes())
+		// iE-Extensions is a normal (root, non-extension) OPTIONAL field of
+		// HandoverRestrictionList's own SEQUENCE — its type,
+		// ProtocolExtensionContainer, is an ordinary SEQUENCE (SIZE(1..65535))
+		// OF, and per X.691 §19-21 that encodes directly as a length
+		// determinant followed by its elements. It must NOT be wrapped in an
+		// additional open-type length prefix: only the *unknown-at-compile-time*
+		// extensionValue field inside each ProtocolExtensionField is an open
+		// type. Verified against an independent reference PER encoder
+		// (pycrate's compiled 3GPP S1AP ASN.1 module) — the earlier version of
+		// this function added a spurious extra open-type wrapper here, which
+		// corrupted every subsequent byte for any real ASN.1 PER decoder even
+		// though this package's own round-trip test (sharing the same bug on
+		// both sides) didn't catch it.
+		//
+		// ProtocolExtensionContainer's length-determinant lower bound is 1
+		// (SIZE(1..65535)), not 0.
+		_ = aper.EncodeConstrainedWholeNumber(w, 1, 1, 65535) // extension count = 1
+		_ = aper.EncodeConstrainedWholeNumber(w, int64(extIDNRRestrictionInEPSAsSecondaryRAT), 0, 65535)
+		aper.EncodeCriticality(w, aper.CriticalityIgnore)
+		aper.WriteOpenType(w, encodeNRRestrictedEnum())
 	}
 	return w.Bytes()
 }
@@ -77,24 +91,22 @@ func DecodeHandoverRestrictionList(data []byte) (servingPLMN [3]byte, nrRestrict
 	if optPresent[4] == 0 {
 		return servingPLMN, false, nil
 	}
-	extData, err := aper.ReadOpenType(r)
-	if err != nil {
-		return servingPLMN, false, fmt.Errorf("ies: HandoverRestrictionList iE-Extensions: %w", err)
-	}
-	ext := aper.NewBitReader(extData)
-	count, err := aper.DecodeConstrainedWholeNumber(ext, 0, 65535)
+	// iE-Extensions (ProtocolExtensionContainer) is a normal SEQUENCE OF
+	// field, not an open type — read its length determinant and elements
+	// directly from r, mirroring EncodeHandoverRestrictionList.
+	count, err := aper.DecodeConstrainedWholeNumber(r, 1, 65535)
 	if err != nil {
 		return servingPLMN, false, fmt.Errorf("ies: HandoverRestrictionList extension count: %w", err)
 	}
 	for i := 0; i < int(count); i++ {
-		id, err := aper.DecodeConstrainedWholeNumber(ext, 0, 65535)
+		id, err := aper.DecodeConstrainedWholeNumber(r, 0, 65535)
 		if err != nil {
 			return servingPLMN, false, fmt.Errorf("ies: HandoverRestrictionList extension[%d] id: %w", i, err)
 		}
-		if _, err := aper.DecodeCriticality(ext); err != nil {
+		if _, err := aper.DecodeCriticality(r); err != nil {
 			return servingPLMN, false, fmt.Errorf("ies: HandoverRestrictionList extension[%d] criticality: %w", i, err)
 		}
-		val, err := aper.ReadOpenType(ext)
+		val, err := aper.ReadOpenType(r)
 		if err != nil {
 			return servingPLMN, false, fmt.Errorf("ies: HandoverRestrictionList extension[%d] value: %w", i, err)
 		}

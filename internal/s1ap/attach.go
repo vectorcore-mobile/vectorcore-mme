@@ -38,9 +38,10 @@ func shouldDeferAttachEMMInformation(ue *uecontext.Context) bool {
 	return false
 }
 
-func applyS1APLocationToUELocked(ue *uecontext.Context, tai *ies.TAI, ecgi *ies.ECGI) {
+func (s *Server) applyS1APLocationToUELocked(ue *uecontext.Context, tai *ies.TAI, ecgi *ies.ECGI) {
 	if tai != nil {
 		ue.TAI = emmTAIFromS1AP(tai)
+		ue.IsNBIoT = s.isNBIoTTAI(tai.MCC, tai.MNC, tai.TAC)
 		// Preserve the selected S1AP TAI PLMN in its typed, explicit-MNC-length
 		// form. ue.TAI uses NAS wire ordering and is not re-decoded for roaming.
 		if serving, err := plmn.New(tai.MCC, tai.MNC); err == nil {
@@ -207,7 +208,7 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.ENBGlobalID = remoteAddr
 	ue.S1BindingGeneration++
 	ue.S1BindingState = uecontext.S1BindingActive
-	applyS1APLocationToUELocked(ue, tai, ecgi)
+	s.applyS1APLocationToUELocked(ue, tai, ecgi)
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
 
@@ -487,7 +488,7 @@ func (s *Server) handleUplinkNASTransport(remoteAddr string, p *pdu.PDU, ieList 
 	}
 
 	ue.Lock()
-	applyS1APLocationToUELocked(ue, tai, ecgi)
+	s.applyS1APLocationToUELocked(ue, tai, ecgi)
 	ue.Unlock()
 
 	metrics.S1APMessagesTotal.WithLabelValues("UplinkNASTransport", "inbound", "ok").Inc()

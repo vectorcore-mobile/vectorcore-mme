@@ -559,6 +559,82 @@ func TestInterMMETAU_ULRFailed(t *testing.T) {
 	}
 }
 
+// TestInterMMETAU_RejectsWhenNBIoTRestricted verifies that Access-Restriction-Data
+// bit 6 is enforced during inter-MME TAU, not just fresh Attach — per TS 23.401
+// §4.3.5.7, which names Attach and TAU side by side as enforcement points for
+// Access Restriction, a subscriber barred from NB-IoT must not be able to
+// bypass that restriction by moving to a new MME via TAU while still on an
+// NB-IoT-designated TAC.
+func TestInterMMETAU_RejectsWhenNBIoTRestricted(t *testing.T) {
+	ms10 := newMockS10()
+	ms11 := newCapturingS11()
+	s6a := &capturingS6a{
+		ulrCalls: make(chan struct {
+			imsi    string
+			mmeUEID uint32
+		}, 1),
+	}
+	srv := newS10TAUServer(ms10, s6a, ms11)
+	srv.nfCfg.TAIList = []config.TAIItem{
+		{MCC: "001", MNC: "01", TAC: 1, RAT: config.TAIRatNBIoT},
+	}
+
+	const remoteAddr = "192.168.0.7:36412"
+	tempUE := addTempUE(srv, remoteAddr, 1007)
+
+	guti := &emm.GUTI{MMEC: 2}
+	tai := &s1apies.TAI{MCC: "001", MNC: "01", TAC: 1}
+
+	go srv.handleInterMMETAU(tempUE, guti, "10.0.0.2:2124", tai, []byte{0x07, 0x48})
+
+	<-ms10.reqCh
+	ms10.respCh <- s10pkg.ContextResult{Resp: sampleContextResponse()}
+
+	var ulrCall struct {
+		imsi    string
+		mmeUEID uint32
+	}
+	select {
+	case ulrCall = <-s6a.ulrCalls:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ULR not sent within timeout")
+	}
+
+	srv.HandleULAResultWithSubscriberProfile(ulrCall.mmeUEID, "4915123456789", &gateway.SubscriberProfile{
+		DefaultContextID: 1,
+		APNs: map[string]gateway.APNConfiguration{
+			"internet": {
+				ContextIdentifier:    1,
+				ServiceSelection:     "internet",
+				PDNType:              gtpv2.PDNTypeIPv4,
+				QCI:                  9,
+				ARPPriority:          8,
+				APNAMBRUp:            384,
+				APNAMBRDown:          512,
+				PreemptionCapability: false,
+			},
+		},
+		UEAMBRUp:              1024,
+		UEAMBRDown:            2048,
+		AccessRestrictionData: gateway.AccessRestrictNBIoT,
+	}, nil)
+
+	select {
+	case ack := <-ms10.ackCh:
+		if ack.cause != gtpv2.CauseRequestDenied {
+			t.Errorf("CTX-Ack cause: got %d, want denied (%d)", ack.cause, gtpv2.CauseRequestDenied)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("CTX-Ack not sent after NB-IoT-restricted ULA")
+	}
+
+	select {
+	case <-ms11.mbrCalls:
+		t.Fatal("MBR sent despite NB-IoT restriction — TAU should have been rejected")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 // ── HandleContextRequest (old MME role) ───────────────────────────────────────
 
 func buildOldMMEServer() (*Server, *uecontext.Context, *emm.GUTI) {

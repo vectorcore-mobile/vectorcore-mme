@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/asn1/aper"
+	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/nas/security"
@@ -232,6 +233,73 @@ func TestHandleUECapabilityInfoIndicationFindsUEByENBIDWhenMMEIDZero(t *testing.
 	}
 }
 
+// TestHandleUECapabilityInfoIndicationDetachesWhenLTEMRestricted covers the
+// reactive-detach path in enforceLTEMAccessRestriction: LTE-M status is only
+// known once this message arrives, potentially after the UE is already
+// attached, so a bit-11 violation discovered here must force the UE off
+// rather than being silently ignored.
+func TestHandleUECapabilityInfoIndicationDetachesWhenLTEMRestricted(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.10:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 3
+	ue.Lock()
+	ue.AccessRestrictionData = gateway.AccessRestrictLTEM
+	mmeUEID := ue.MMEUES1APID
+	ue.Unlock()
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(ue.ENBS1APID)},
+		{ID: pdu.IEUERadioCapability, Criticality: aper.CriticalityIgnore, Value: ies.EncodeUERadioCapability([]byte{0x01})},
+		{ID: pdu.IELTEMIndication, Criticality: aper.CriticalityIgnore, Value: ies.EncodeLTEMIndication()},
+	}
+	raw := pdu.BuildInitiatingMessage(pdu.ProcUECapabilityInfoIndication, aper.CriticalityIgnore, ieList)
+	srv.handleMessage(remoteAddr, raw)
+
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); ok {
+		t.Fatal("UE still present after LTE-M-restricted detach")
+	}
+	select {
+	case msg := <-ch:
+		t.Fatalf("unexpected downlink message on detach (no explicit NAS Detach Request sent by this path): %x", msg)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestHandleUECapabilityInfoIndicationDoesNotDetachWhenLTEMIndicatedButUnrestricted
+// confirms LTEMIndicated is still recorded, and no restriction fires, when
+// Access-Restriction-Data doesn't bar LTE-M.
+func TestHandleUECapabilityInfoIndicationDoesNotDetachWhenLTEMIndicatedButUnrestricted(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.10:36412"
+	setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, true)
+	ue.ENBS1APID = 4
+	mmeUEID := ue.MMEUES1APID
+
+	ieList := []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject, Value: ies.EncodeENBUEApID(ue.ENBS1APID)},
+		{ID: pdu.IEUERadioCapability, Criticality: aper.CriticalityIgnore, Value: ies.EncodeUERadioCapability([]byte{0x01})},
+		{ID: pdu.IELTEMIndication, Criticality: aper.CriticalityIgnore, Value: ies.EncodeLTEMIndication()},
+	}
+	raw := pdu.BuildInitiatingMessage(pdu.ProcUECapabilityInfoIndication, aper.CriticalityIgnore, ieList)
+	srv.handleMessage(remoteAddr, raw)
+
+	stillThere, ok := srv.ueManager.GetByMMEID(mmeUEID)
+	if !ok {
+		t.Fatal("UE removed despite no Access-Restriction-Data bar on LTE-M")
+	}
+	stillThere.Lock()
+	lteM, reported := stillThere.LTEMIndicated, stillThere.UECapabilityReported
+	stillThere.Unlock()
+	if !lteM || !reported {
+		t.Fatalf("LTEMIndicated=%v UECapabilityReported=%v, want both true", lteM, reported)
+	}
+}
+
 func TestHandleUEContextReleaseRequestResolvesMMEIDBeforeCommand(t *testing.T) {
 	srv := newTAUTestServer()
 	const remoteAddr = "192.0.2.10:36412"
@@ -383,7 +451,7 @@ func TestHandleCSRResultAttachAcceptUsesNASPLMNEncodingForTAIList(t *testing.T) 
 	ch := setupSendCapture(srv, remoteAddr)
 	ue := allocateTestUE(srv, remoteAddr, 0, false)
 	ue.ENBS1APID = 1
-	applyS1APLocationToUELocked(ue, &ies.TAI{MCC: "311", MNC: "435", TAC: 1}, nil)
+	srv.applyS1APLocationToUELocked(ue, &ies.TAI{MCC: "311", MNC: "435", TAC: 1}, nil)
 	ue.Lock()
 	ue.KASME = make([]byte, 32)
 	ue.KNASint = make([]byte, 16)
