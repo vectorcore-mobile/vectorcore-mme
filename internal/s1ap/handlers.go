@@ -529,6 +529,8 @@ func s1apProcedureName(code uint8) string {
 		return "HandoverCancel"
 	case pdu.ProcERABReleaseIndication:
 		return "ERABReleaseIndication"
+	case pdu.ProcSecondaryRATDataUsageReport:
+		return "SecondaryRATDataUsageReport"
 	default:
 		return "unknown"
 	}
@@ -606,6 +608,8 @@ func (s *Server) dispatchInitiating(remoteAddr string, p *pdu.PDU) {
 		s.handlePWSForward(p.ProcedureCode, ies)
 	case pdu.ProcPWSFailureIndication:
 		s.handlePWSForward(p.ProcedureCode, ies)
+	case pdu.ProcSecondaryRATDataUsageReport:
+		s.handleSecondaryRATDataUsageReport(remoteAddr, ies)
 	default:
 		s.log.Warn("s1ap: unhandled initiating procedure",
 			zap.Uint8("code", p.ProcedureCode),

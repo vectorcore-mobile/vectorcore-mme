@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -125,6 +126,21 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// authorizedPeer resolves the configured peer name for a CBC's remote host.
+// SCTP associations may be multi-homed: conn.RemoteAddr().String() then
+// joins every bound address with "/" (e.g. "127.0.0.1/10.0.0.5/172.17.0.1"),
+// which never equals a single configured peer address even when one of the
+// bound addresses is authorized. Accept the association if any one of them
+// matches.
+func authorizedPeer(authorized map[string]string, host string) (string, bool) {
+	for _, candidate := range strings.Split(host, "/") {
+		if peer, ok := authorized[candidate]; ok {
+			return peer, true
+		}
+	}
+	return "", false
+}
+
 func (s *Server) handleConnection(conn *sctp.SCTPConn) {
 	// SCTPRead exposes PPID through ancillary data only when DATA_IO events
 	// are enabled. Without this subscription the Go SCTP adapter returns nil
@@ -139,7 +155,7 @@ func (s *Server) handleConnection(conn *sctp.SCTPConn) {
 	if err != nil {
 		host = remote
 	}
-	peer, allowed := s.authorized[host]
+	peer, allowed := authorizedPeer(s.authorized, host)
 	if !allowed {
 		s.log.Warn("sbcap: rejected unauthorized CBC association", zap.String("remote", remote))
 		_ = conn.Close()

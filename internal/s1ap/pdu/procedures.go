@@ -55,6 +55,11 @@ const (
 	ProcPWSRestartIndication                 uint8 = 49
 	ProcERABModificationIndication           uint8 = 50
 	ProcPWSFailureIndication                 uint8 = 51
+	// ProcSecondaryRATDataUsageReport is a Rel-15 EN-DC addition (class 2,
+	// no response). Currently decoded and logged only; the reported NR
+	// secondary-RAT data volumes are not yet relayed to the P-GW for
+	// charging (see docs/VectorCore_MME_Development_Notes.md §3.7).
+	ProcSecondaryRATDataUsageReport uint8 = 52
 )
 
 // S1AP IE identifiers (3GPP TS 36.413 Annex A).
