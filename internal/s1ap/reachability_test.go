@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/nas/emm"
 	"github.com/vectorcore/mme/internal/uecontext"
 )
@@ -68,4 +69,118 @@ func TestImplicitDetachCleanupTimeoutFinalizesStuckPDN(t *testing.T) {
 	if _, ok := s.ueManager.GetByMMEID(ue.MMEUES1APID); ok {
 		t.Fatal("UE remained after implicit-detach cleanup timeout")
 	}
+}
+
+// ── RestoreReachability tests ───────────────────────────────────────────────
+
+func TestRestoreReachability_NoopWhenNotPersistent(t *testing.T) {
+	s := newReachabilityTestServer()
+	s.recoveryPersistent = false
+	ue := s.ueManager.Allocate()
+	ue.IMSI = "001010000000010"
+	rec := models.UERecoveryRecord{IMSI: ue.IMSI, MobileReachableDeadline: futureTime(time.Hour)}
+
+	s.RestoreReachability(ue, rec)
+
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.MobileReachableTimerActive {
+		t.Fatal("RestoreReachability armed a timer while recovery persistence is disabled")
+	}
+}
+
+func TestRestoreReachability_ArmsMobileReachableFromFutureDeadline(t *testing.T) {
+	s := newReachabilityTestServer()
+	s.recoveryPersistent = true
+	ue := s.ueManager.Allocate()
+	ue.IMSI = "001010000000011"
+	deadline := time.Now().Add(time.Hour)
+	rec := models.UERecoveryRecord{IMSI: ue.IMSI, MobileReachableDeadline: &deadline}
+
+	s.RestoreReachability(ue, rec)
+
+	ue.Lock()
+	defer ue.Unlock()
+	if !ue.MobileReachableTimerActive || ue.ReachabilityState != "reachable" {
+		t.Fatalf("expected an armed mobile-reachable timer, got active=%v state=%q", ue.MobileReachableTimerActive, ue.ReachabilityState)
+	}
+	if !ue.MobileReachableDeadline.Equal(deadline) {
+		t.Fatalf("deadline not preserved: got %v, want %v", ue.MobileReachableDeadline, deadline)
+	}
+}
+
+func TestRestoreReachability_ArmsImplicitDetachFromFutureDeadline(t *testing.T) {
+	s := newReachabilityTestServer()
+	s.recoveryPersistent = true
+	ue := s.ueManager.Allocate()
+	ue.IMSI = "001010000000012"
+	deadline := time.Now().Add(time.Hour)
+	rec := models.UERecoveryRecord{IMSI: ue.IMSI, ImplicitDetachDeadline: &deadline}
+
+	s.RestoreReachability(ue, rec)
+
+	ue.Lock()
+	defer ue.Unlock()
+	if !ue.ImplicitDetachTimerActive || ue.ReachabilityState != "implicit-detach-pending" {
+		t.Fatalf("expected an armed implicit-detach timer, got active=%v state=%q", ue.ImplicitDetachTimerActive, ue.ReachabilityState)
+	}
+}
+
+func TestRestoreReachability_ExpiredMobileReachableConvergesToImplicitDetach(t *testing.T) {
+	s := newReachabilityTestServer()
+	s.recoveryPersistent = true
+	s.emmTimersCfg.ImplicitDetachSeconds = 1
+	ue := s.ueManager.Allocate()
+	ue.IMSI = "001010000000013"
+	ue.EMMState = emm.StateRegistered
+	ue.ECMState = emm.ECMIdle
+	past := time.Now().Add(-time.Minute)
+	rec := models.UERecoveryRecord{IMSI: ue.IMSI, MobileReachableDeadline: &past}
+
+	s.RestoreReachability(ue, rec)
+
+	// A deadline already in the past fires the expiry goroutine asynchronously.
+	deadlineAt := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadlineAt) {
+		ue.Lock()
+		state := ue.ReachabilityState
+		ue.Unlock()
+		if state == "implicit-detach-pending" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expired mobile-reachable deadline did not converge to implicit-detach-pending")
+}
+
+func TestRestoreReachability_TerminalCleanupActiveResendsDeleteSessions(t *testing.T) {
+	mock := &mockS11{}
+	s := newTestServer(mock)
+	s.nasCfg.Timers.T3412 = 2
+	s.emmTimersCfg = config.EMMTimersConfig{MobileReachableGuardSeconds: 0, ImplicitDetachSeconds: 1, ImplicitDetachCleanupTimeoutSeconds: 5}
+	s.recoveryPersistent = true
+	ue := s.ueManager.Allocate()
+	ue.IMSI = "001010000000014"
+	ue.SGWC_TEID = 0x99887766
+	ue.DefaultEBI = 5
+	deadline := time.Now().Add(time.Hour)
+	rec := models.UERecoveryRecord{IMSI: ue.IMSI, TerminalCleanupActive: true, TerminalCleanupDeadline: &deadline}
+
+	s.RestoreReachability(ue, rec)
+
+	ue.Lock()
+	cleanupStarted := ue.ImplicitDetachCleanupStarted
+	emmState := ue.EMMState
+	ue.Unlock()
+	if !cleanupStarted || emmState != emm.StateDeregisteredInitiated {
+		t.Fatalf("expected terminal cleanup resumed, got started=%v emm=%s", cleanupStarted, emmState)
+	}
+	if len(mock.dsrCalls) != 1 {
+		t.Fatalf("expected 1 re-driven DSR for the in-flight terminal cleanup, got %d", len(mock.dsrCalls))
+	}
+}
+
+func futureTime(d time.Duration) *time.Time {
+	t := time.Now().Add(d)
+	return &t
 }

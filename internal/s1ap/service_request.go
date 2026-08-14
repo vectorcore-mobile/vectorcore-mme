@@ -110,6 +110,11 @@ func (s *Server) handleServiceRequest(
 
 	realUE, ok := s.ueManager.GetByGUTI(gutiStr)
 	if !ok {
+		// Not in memory: the usual cause is an MME restart. Try to rehydrate
+		// the context from the persisted recovery record before rejecting.
+		realUE, ok = s.recoverUEFromStore(gutiStr)
+	}
+	if !ok {
 		log.Warn("s1ap: ServiceRequest: GUTI not found",
 			zap.String("lookup_result", "miss"),
 			zap.String("lookup_guti", gutiStr),
@@ -424,6 +429,11 @@ func (s *Server) handleInitialUEExtendedServiceRequest(
 		zap.String("lookup_guti", gutiStr))
 
 	realUE, ok := s.ueManager.GetByGUTI(gutiStr)
+	if !ok {
+		// Not in memory: the usual cause is an MME restart. Try to rehydrate
+		// the context from the persisted recovery record before rejecting.
+		realUE, ok = s.recoverUEFromStore(gutiStr)
+	}
 	if !ok {
 		log.Warn("s1ap: Extended Service Request: GUTI not found",
 			zap.String("lookup_result", "miss"),

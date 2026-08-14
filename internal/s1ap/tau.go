@@ -122,13 +122,20 @@ func (s *Server) handleIdleTAUMessage(tempUE *uecontext.Context, tai *ies.TAI, n
 	gutiStr := uecontext.SerialiseGUTI(tauReq.OldGUTI)
 	ue, ok := s.ueManager.GetByGUTI(gutiStr)
 	if !ok {
-		// Try inter-MME TAU: resolve the old MME from the GUTI MMEC.
-		if s.s10Cfg.Enabled {
+		// Not in memory: the usual cause is an MME restart. Try to rehydrate
+		// the context from the persisted recovery record before falling back
+		// to inter-MME TAU resolution or rejecting outright.
+		if recovered, recOK := s.recoverUEFromStore(gutiStr); recOK {
+			ue, ok = recovered, true
+		} else if s.s10Cfg.Enabled {
+			// Try inter-MME TAU: resolve the old MME from the GUTI MMEC.
 			if peerAddr, found := s.resolveOldMME(tauReq.OldGUTI); found {
 				go s.handleInterMMETAU(tempUE, tauReq.OldGUTI, peerAddr, tai, nasPDU)
 				return
 			}
 		}
+	}
+	if !ok {
 		log.Warn("nas: idle TAU: UE not found by GUTI", zap.String("guti", gutiStr))
 		s.sendTAUReject(tempMmeUEID, emm.CauseImplicitlyDetached)
 		s.ueManager.Remove(tempUE)

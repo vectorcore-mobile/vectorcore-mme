@@ -9,7 +9,9 @@ has no source, module, runtime, or routing dependency on either project.
 ```text
 UE -- NAS SMS CP/RP -- shared SMS service -- SGd Diameter adapter -- SMSC
                              |
-                             +-- future SGs-AP adapter
+                             +-- SGs-AP adapter (association/LU only so far;
+                                 SMS-over-SGs relay is not yet wired in -
+                                 see docs/sgs-ap.md)
 ```
 
 `internal/nas/sms` owns CP/RP codecs, transaction identifiers, and NAS SMS

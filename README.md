@@ -32,7 +32,7 @@ LTE Mobility Management Entity (MME) written in Go. Part of the [VectorCore](htt
 - Go 1.22+
 - Node.js 18+ (for the web UI)
 - Linux kernel with SCTP support (`sctp` module or built-in)
-- PostgreSQL 14+ or SQLite
+- SQLite (used for the UE/session recovery store)
 
 ## Build
 
@@ -74,8 +74,7 @@ Key fields:
 | `gateway_selection.sgw.sgw_address` | Static S-GW S11 GTP-C fallback address |
 | `gateway_selection.dns.*` | DNS-based S-GW/P-GW selection and in-memory cache settings |
 | `*.qos.dscp` | Optional fixed outbound control-plane DSCP (0–63); `24` is CS3 |
-| `database.db_type` | Database driver: `postgres` or `sqlite` |
-| `database.*` | Database connection settings. For SQLite, `database.database` is the DB file path. |
+| `database.*` | SQLite-backed recovery store settings. `database.database` is the DB file path. |
 | `operator.name.*` | Full/short network name sent to UEs via EMM Information |
 | `operator.name.encoding` | Network name encoding: `gsm7` (default) or `ucs2` |
 | `operator.nitz.timezone` | IANA timezone used for EMM Information NITZ fields, preferred over static offsets |

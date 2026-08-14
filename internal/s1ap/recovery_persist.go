@@ -56,6 +56,7 @@ func (s *Server) buildRecoveryRecordsLocked(ue *uecontext.Context, recoveryState
 		RecoveryState:          recoveryState,
 		NASIntegrityAlg:        ue.IntAlg,
 		NASCipheringAlg:        ue.EncAlg,
+		NASKSI:                 ue.NASKSI,
 		UplinkNASCount:         uint32(ue.ULNASCount),
 		DownlinkNASCount:       uint32(ue.DLNASCount),
 		KASME:                  append([]byte(nil), ue.KASME...),

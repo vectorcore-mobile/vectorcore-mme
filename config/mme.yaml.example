@@ -278,15 +278,8 @@ gateway_selection:
 
 database:
   mode: "persistent"   # memory | persistent
-  # Supported values: "postgres", "sqlite".
-  db_type: "postgres"
-  server: "localhost"
-  port: 5432
-  username: "mme"
-  password: "changeme"
-  database: "mme"
-  # For SQLite, set db_type to "sqlite" and use database as the DB file path.
-  # database: "/opt/vectorcore/var/mme.db"
+  # SQLite file path for the UE/session recovery store. 
+  database: "mme.db"
   pool_size: 30
   pool_idle: 10
 

@@ -2,5 +2,4 @@ E.212 DB
 Handover X1/X2 testing.
 S10 Testing.
 API/Web-UI updates.
-Recovery... Finish startup logic and testing.
 S11 interop testing.

@@ -1,6 +1,6 @@
 [Unit]
 Description=VectorCore MME
-After=network.target postgresql.service
+After=network.target
 
 [Service]
 Type=simple

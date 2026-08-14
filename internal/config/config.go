@@ -413,14 +413,12 @@ type S6aULRConfig struct {
 	Flags uint32 `yaml:"flags"`
 }
 
+// DatabaseConfig configures the SQLite-backed recovery store. Each MME
+// instance owns its own database file; there is no shared/networked mode
+// (inter-MME context transfer is handled by S10, not a shared store).
 type DatabaseConfig struct {
-	Mode            string `yaml:"mode"`
-	Type            string `yaml:"db_type"`
-	Host            string `yaml:"server"`
-	Port            int    `yaml:"port"`
-	Username        string `yaml:"username"`
-	Password        string `yaml:"password"`
-	Database        string `yaml:"database"`
+	Mode            string `yaml:"mode"` // memory | persistent
+	Database        string `yaml:"database"` // SQLite file path
 	MaxOpenConns    int    `yaml:"pool_size"`
 	MaxIdleConns    int    `yaml:"pool_idle"`
 	ConnMaxLifetime int    `yaml:"pool_recycle"` // seconds
@@ -533,8 +531,6 @@ func Load(path string) (*Config, error) {
 		},
 		Database: DatabaseConfig{
 			Mode:            "persistent",
-			Type:            "postgres",
-			Port:            5432,
 			MaxOpenConns:    30,
 			MaxIdleConns:    10,
 			ConnMaxLifetime: 300,

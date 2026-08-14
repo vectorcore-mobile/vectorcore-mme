@@ -13,7 +13,6 @@ import (
 func TestOpenDBSQLite(t *testing.T) {
 	db, err := openDB(config.DatabaseConfig{
 		Mode:     "persistent",
-		Type:     "sqlite",
 		Database: filepath.Join(t.TempDir(), "mme.db"),
 	})
 	if err != nil {
@@ -24,9 +23,9 @@ func TestOpenDBSQLite(t *testing.T) {
 	}
 }
 
-func TestDatabaseDialectorRejectsUnsupportedType(t *testing.T) {
-	if _, err := databaseDialector(config.DatabaseConfig{Type: "mysql"}); err == nil {
-		t.Fatal("expected unsupported database type error")
+func TestDatabaseDialectorDefaultsFilename(t *testing.T) {
+	if got := databaseDialector(config.DatabaseConfig{}); got == nil {
+		t.Fatal("expected a non-nil sqlite dialector for an empty database path")
 	}
 }
 

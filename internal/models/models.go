@@ -51,6 +51,7 @@ type UERecoveryRecord struct {
 
 	NASIntegrityAlg  uint8  `gorm:"column:nas_integrity_alg" json:"nas_integrity_alg,omitempty"`
 	NASCipheringAlg  uint8  `gorm:"column:nas_ciphering_alg" json:"nas_ciphering_alg,omitempty"`
+	NASKSI           uint8  `gorm:"column:nas_ksi" json:"nas_ksi,omitempty"`
 	UplinkNASCount   uint32 `gorm:"column:uplink_nas_count" json:"uplink_nas_count,omitempty"`
 	DownlinkNASCount uint32 `gorm:"column:downlink_nas_count" json:"downlink_nas_count,omitempty"`
 	KASME            []byte `gorm:"column:kasme;size:32" json:"-"`

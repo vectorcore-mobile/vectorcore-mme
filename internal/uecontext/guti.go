@@ -3,6 +3,7 @@ package uecontext
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"sync/atomic"
 
@@ -93,6 +94,27 @@ func SerialiseGUTI(g *emm.GUTI) string {
 	b[5] = g.MMEC
 	binary.BigEndian.PutUint32(b[6:], g.MTMSI)
 	return fmt.Sprintf("%X", b)
+}
+
+// DeserialiseGUTI parses the fixed-length hex string produced by
+// SerialiseGUTI back into a *emm.GUTI. It round-trips the raw PLMN bytes
+// directly rather than re-deriving them from decoded MCC/MNC, avoiding any
+// 2-digit-vs-3-digit MNC ambiguity.
+func DeserialiseGUTI(s string) (*emm.GUTI, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("uecontext: invalid GUTI hex %q: %w", s, err)
+	}
+	if len(b) != 10 {
+		return nil, fmt.Errorf("uecontext: invalid GUTI length %d, want 10 bytes", len(b))
+	}
+	g := &emm.GUTI{
+		MMEGI: binary.BigEndian.Uint16(b[3:5]),
+		MMEC:  b[5],
+		MTMSI: binary.BigEndian.Uint32(b[6:10]),
+	}
+	copy(g.PLMN[:], b[:3])
+	return g, nil
 }
 
 func encodePLMNBCD(mcc, mnc string) ([]byte, error) {

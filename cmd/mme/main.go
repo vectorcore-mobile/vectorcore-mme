@@ -13,7 +13,6 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -29,7 +28,7 @@ import (
 	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/peertracker"
 	"github.com/vectorcore/mme/internal/repository"
-	dbstore "github.com/vectorcore/mme/internal/repository/postgres"
+	dbstore "github.com/vectorcore/mme/internal/repository/sqlite"
 	"github.com/vectorcore/mme/internal/s1ap"
 	"github.com/vectorcore/mme/internal/s1ap/pdu"
 	"github.com/vectorcore/mme/internal/sbcap"
@@ -366,12 +365,7 @@ func buildLogger(cfg config.LoggingConfig, debugConsole bool) *zap.Logger {
 }
 
 func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
-	dialector, err := databaseDialector(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	db, err := gorm.Open(dialector, &gorm.Config{
+	db, err := gorm.Open(databaseDialector(cfg), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
 	})
 	if err != nil {
@@ -409,7 +403,6 @@ func buildRepository(cfg config.DatabaseConfig, log *zap.Logger, restartEpoch st
 	}
 	log.Info("database persistent mode enabled",
 		zap.String("mode", databaseMode(cfg)),
-		zap.String("db_type", strings.ToLower(strings.TrimSpace(cfg.Type))),
 		zap.String("restart_epoch", restartEpoch))
 	return dbstore.New(db), nil
 }
@@ -422,23 +415,12 @@ func databaseMode(cfg config.DatabaseConfig) string {
 	return mode
 }
 
-func databaseDialector(cfg config.DatabaseConfig) (gorm.Dialector, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
-	case "", "postgres", "postgresql":
-		dsn := fmt.Sprintf(
-			"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-			cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database,
-		)
-		return postgres.Open(dsn), nil
-	case "sqlite", "sqlite3":
-		dsn := cfg.Database
-		if dsn == "" {
-			dsn = "mme.db"
-		}
-		return sqlite.Open(dsn), nil
-	default:
-		return nil, fmt.Errorf("unsupported database db_type %q", cfg.Type)
+func databaseDialector(cfg config.DatabaseConfig) gorm.Dialector {
+	dsn := cfg.Database
+	if dsn == "" {
+		dsn = "mme.db"
 	}
+	return sqlite.Open(dsn)
 }
 
 type noopRepository struct{}
