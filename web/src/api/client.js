@@ -33,6 +33,8 @@ export const getUEByIMSI = (imsi) => request('GET', `/ue/${encodeURIComponent(im
 export const getVersion = () => request('GET', '/oam/version')
 export const getHealth = () => request('GET', '/oam/health')
 export const getInterfaces = () => request('GET', '/oam/interfaces').then(r => r?.interfaces ?? [])
+export const getDNSCache = () => request('GET', '/oam/dns-cache').then(r => r?.entries ?? [])
+export const flushDNSCache = () => request('POST', '/oam/dns-cache/flush')
 
 // Raw Prometheus
 export async function getPrometheusText() {

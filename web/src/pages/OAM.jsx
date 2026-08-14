@@ -1,8 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react'
-import { RefreshCw, CheckCircle, XCircle, Activity, Shield, Wifi } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, Activity, Shield, Wifi, Trash2, Database } from 'lucide-react'
 import Spinner from '../components/Spinner.jsx'
+import Modal from '../components/Modal.jsx'
 import { usePoller } from '../hooks/usePoller.js'
-import { getVersion, getHealth, getInterfaces } from '../api/client.js'
+import { useToast } from '../components/Toast.jsx'
+import { getVersion, getHealth, getInterfaces, getDNSCache, flushDNSCache } from '../api/client.js'
 
 function formatUptime(seconds) {
   if (!seconds && seconds !== 0) return '—'
@@ -17,11 +19,31 @@ function formatUptime(seconds) {
 }
 
 export default function OAM() {
+  const toast = useToast()
   const fetchFn = useCallback(getVersion, [])
   const { data: version, error: versionError, loading, refresh } = usePoller(fetchFn, 5000)
 
   const interfacesFetchFn = useCallback(getInterfaces, [])
   const { data: interfaces, error: interfacesError, refresh: refreshInterfaces } = usePoller(interfacesFetchFn, 5000)
+
+  const dnsCacheFetchFn = useCallback(getDNSCache, [])
+  const { data: dnsCache, error: dnsCacheError, refresh: refreshDNSCache } = usePoller(dnsCacheFetchFn, 5000)
+  const [confirmingFlush, setConfirmingFlush] = useState(false)
+  const [flushing, setFlushing] = useState(false)
+
+  async function handleFlushDNSCache() {
+    setFlushing(true)
+    try {
+      const res = await flushDNSCache()
+      toast.success('DNS cache cleared', `${res?.flushed ?? 0} entr${res?.flushed === 1 ? 'y' : 'ies'} flushed.`)
+      setConfirmingFlush(false)
+      refreshDNSCache()
+    } catch (err) {
+      toast.error('Failed to clear DNS cache', err.message)
+    } finally {
+      setFlushing(false)
+    }
+  }
 
   const [health, setHealth] = useState(null)
   const [healthError, setHealthError] = useState(null)
@@ -204,6 +226,88 @@ export default function OAM() {
           </div>
         )}
       </div>
+
+      {/* Gateway DNS Cache */}
+      <div className="oam-section">
+        <div className="flex items-center gap-8 mb-16" style={{ justifyContent: 'space-between' }}>
+          <div className="flex items-center gap-8">
+            <Database size={16} style={{ color: 'var(--accent)' }} />
+            <h3 className="card-title">Gateway DNS Cache</h3>
+          </div>
+          <button
+            className="btn btn-ghost"
+            onClick={() => setConfirmingFlush(true)}
+            disabled={!dnsCache || dnsCache.length === 0}
+          >
+            <Trash2 size={14} /> Clear DNS Cache
+          </button>
+        </div>
+
+        {dnsCacheError && !dnsCache ? (
+          <div className="error-state" style={{ padding: '20px 0' }}>
+            <XCircle size={20} className="error-icon" /><div>{dnsCacheError}</div>
+          </div>
+        ) : dnsCache == null ? (
+          <div className="flex items-center gap-8 text-muted text-sm"><Spinner size="sm" /> Checking...</div>
+        ) : dnsCache.length === 0 ? (
+          <div className="empty-state">
+            <Database size={32} style={{ opacity: 0.3, marginBottom: 8 }} />
+            <div>DNS cache is empty.</div>
+          </div>
+        ) : (
+          <div className="table-container">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node Type</th>
+                  <th>Query</th>
+                  <th>Source</th>
+                  <th>Result</th>
+                  <th>TTL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dnsCache.map((entry, i) => (
+                  <tr key={`${entry.node_type}-${entry.query_name}-${entry.service}-${i}`}>
+                    <td style={{ fontWeight: 600, fontSize: '0.82rem' }}>{entry.node_type || '—'}</td>
+                    <td className="mono" style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      {entry.query_name || '—'}
+                    </td>
+                    <td style={{ fontSize: '0.78rem' }}>{entry.source || '—'}</td>
+                    <td className="mono" style={{ fontSize: '0.78rem' }}>
+                      {entry.error
+                        ? <span style={{ color: 'var(--danger)' }}>{entry.error}</span>
+                        : (entry.address || entry.hostname || entry.target || '—')}
+                    </td>
+                    <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                      {entry.ttl_seconds != null ? `${Math.max(0, Math.round(entry.ttl_seconds))}s` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {confirmingFlush && (
+        <Modal title="Clear DNS Cache" onClose={() => setConfirmingFlush(false)}>
+          <div className="modal-body">
+            <p>
+              This clears all {dnsCache?.length ?? 0} cached SGW/PGW DNS resolution{dnsCache?.length === 1 ? '' : 's'}.
+              Subsequent gateway selections will perform fresh DNS lookups.
+            </p>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-ghost" onClick={() => setConfirmingFlush(false)} disabled={flushing}>
+              Cancel
+            </button>
+            <button className="btn btn-danger" onClick={handleFlushDNSCache} disabled={flushing}>
+              {flushing ? <Spinner size="sm" /> : <Trash2 size={14} />} Clear Cache
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

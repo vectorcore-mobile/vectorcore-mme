@@ -573,9 +573,12 @@ func (h *Handlers) reportTransactionFailure(selected *peer.Peer) {
 }
 
 // Connected reports whether an S6a-capable or relay Diameter peer is ready.
+// This is a health/readiness probe, not a route selection, so it must not
+// go through selectPeer/SelectPeer: that path logs a "selected peer" line
+// on every call, and Connected() is polled far more often (e.g. by the
+// OAM health endpoint) than actual S6a requests are sent.
 func (h *Handlers) Connected() bool {
-	_, err := h.selectPeer(h.diameterCfg.OriginRealm)
-	return err == nil
+	return h.peers.HasReadyPeer(appIDS6a)
 }
 
 // handleDPR handles Disconnect-Peer-Request from the remote end.

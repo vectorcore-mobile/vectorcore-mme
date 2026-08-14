@@ -524,6 +524,25 @@ func (m *Manager) SelectPeer(app uint32, realm string) (*Peer, error) {
 	return result, nil
 }
 
+// HasReadyPeer reports whether a Ready direct-application or relay peer
+// exists for app, without performing (or logging) an actual route
+// selection. Intended for readiness/health probes, which run far more
+// often than real Diameter requests and would otherwise flood the log
+// with SelectPeer's per-request routing decisions.
+func (m *Manager) HasReadyPeer(app uint32) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, p := range m.peers {
+		if p.state != Ready || p.conn == nil {
+			continue
+		}
+		if p.apps[app] || p.apps[RelayApplicationID] {
+			return true
+		}
+	}
+	return false
+}
+
 // SelectPeerForDestination honours an explicit Destination-Host. It selects a
 // direct peer only when that peer is the addressed host and advertises app;
 // otherwise a relay is permitted to carry the request.

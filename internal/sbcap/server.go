@@ -45,7 +45,22 @@ func NewServer(cfg config.SBcAPConfig, log *zap.Logger, onMessage MessageHandler
 			authorized[address] = peer.Name
 		}
 	}
+	initMessageMetrics()
 	return &Server{cfg: cfg, log: log, onMessage: onMessage, authorized: authorized, connections: make(map[string]*connection), legacyWarned: make(map[string]time.Time)}
+}
+
+// initMessageMetrics pre-registers the mme_sbcap_messages_total label
+// combinations seen in normal operation. A CounterVec exposes no series at
+// all until WithLabelValues is called, so without this the metric is absent
+// from /metrics (and from the web UI's metrics table) until the first CBC
+// message of each kind actually occurs.
+func initMessageMetrics() {
+	for _, p := range []uint8{ProcedureWriteReplaceWarning, ProcedureStopWarning, ProcedureErrorIndication} {
+		metrics.SBcAPMessagesTotal.WithLabelValues("rx", strconv.Itoa(int(p)), "received")
+	}
+	for _, p := range []uint8{ProcedureWriteReplaceWarningIndication, ProcedureStopWarningIndication, ProcedureErrorIndication, ProcedurePWSRestartIndication, ProcedurePWSFailureIndication} {
+		metrics.SBcAPMessagesTotal.WithLabelValues("tx", strconv.Itoa(int(p)), "sent")
+	}
 }
 
 func (s *Server) Listen() error {

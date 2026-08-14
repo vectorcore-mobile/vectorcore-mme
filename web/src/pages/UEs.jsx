@@ -28,6 +28,8 @@ function emmStateBadge(state) {
 }
 
 function UEDetailRow({ ue }) {
+  const isIdle = ue.ecm_state === 'ECM-IDLE'
+  const idleFields = new Set(['eNB UE S1AP ID', 'eNB Global ID'])
   return (
     <tr>
       <td colSpan={6} style={{ padding: 0, background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border)' }}>
@@ -43,12 +45,19 @@ function UEDetailRow({ ue }) {
             ['MSISDN',         ue.msisdn],
             ['APN',            ue.apn],
             ['Last Modified',  ue.last_modified],
-          ].map(([label, val]) => (
-            <div key={label} style={{ fontSize: '0.75rem' }}>
-              <span style={{ color: 'var(--text-muted)', marginRight: 6 }}>{label}:</span>
-              <span className="mono" style={{ color: 'var(--text-primary)' }}>{val || '—'}</span>
-            </div>
-          ))}
+          ].map(([label, val]) => {
+            const showIdle = !val && isIdle && idleFields.has(label)
+            return (
+              <div key={label} style={{ fontSize: '0.75rem', minWidth: 0 }}>
+                <span style={{ color: 'var(--text-muted)', marginRight: 6 }}>{label}:</span>
+                {showIdle ? (
+                  <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Idle (no S1 binding)</span>
+                ) : (
+                  <span className="mono" style={{ color: 'var(--text-primary)', wordBreak: 'break-all' }}>{val || '—'}</span>
+                )}
+              </div>
+            )
+          })}
         </div>
       </td>
     </tr>
