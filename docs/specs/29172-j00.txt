@@ -1,0 +1,3413 @@
++--------------------------------+-------------------------------------+
+| 3GPP TS 29.172 V19.0.0         |                                     |
+| (2025-10)                      |                                     |
++================================+=====================================+
+| Technical Specification        |                                     |
++--------------------------------+-------------------------------------+
+| 3rd Generation Partnership     |                                     |
+| Project;                       |                                     |
+|                                |                                     |
+| Technical Specification Group  |                                     |
+| Core Network and Terminals;    |                                     |
+|                                |                                     |
+| Location Services (LCS);       |                                     |
+| Evolved Packet Core (EPC) LCS  |                                     |
+| Protocol (ELP) between the     |                                     |
+| Gateway Mobile Location Centre |                                     |
+| (GMLC) and the                 |                                     |
+| Mobile Management Entity       |                                     |
+| (MME);                         |                                     |
+| SLg interface                  |                                     |
+|                                |                                     |
+| (Release 19)                   |                                     |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| []                             | []                                  |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| The present document has been  |                                     |
+| developed within the 3rd       |                                     |
+| Generation Partnership Project |                                     |
+| (3GPP ^(TM)) and may be        |                                     |
+| further elaborated for the     |                                     |
+| purposes of 3GPP.              |                                     |
+| The present document has not   |                                     |
+| been subject to any approval   |                                     |
+| process by the 3GPP            |                                     |
+| Organizational Partners and    |                                     |
+| shall not be implemented.      |                                     |
+| This Specification is provided |                                     |
+| for future development work    |                                     |
+| within 3GPP only. The          |                                     |
+| Organizational Partners accept |                                     |
+| no liability for any use of    |                                     |
+| this Specification.            |                                     |
+| Specifications and Reports for |                                     |
+| implementation of the 3GPP     |                                     |
+| ^(TM) system should be         |                                     |
+| obtained via the 3GPP          |                                     |
+| Organizational Partners'       |                                     |
+| Publications Offices.          |                                     |
++--------------------------------+-------------------------------------+
+
++-----------------------------------------------------------------------+
+|                                                                       |
++=======================================================================+
+|   3GPP                                                                |
+|                                                                       |
+|   Postal address                                                      |
+|                                                                       |
+|   3GPP support office address                                         |
+|                                                                       |
+|   650 Route des Lucioles - Sophia Antipolis                           |
+|                                                                       |
+|   Valbonne - FRANCE                                                   |
+|                                                                       |
+|   Tel.: +33 4 92 94 42 00 Fax: +33 4 93 65 47 16                      |
+|                                                                       |
+|   Internet                                                            |
+|                                                                       |
+|   http://www.3gpp.org                                                 |
++-----------------------------------------------------------------------+
+| Copyright Notification                                                |
+|                                                                       |
+| No part may be reproduced except as authorized by written permission. |
+| The copyright and the foregoing restriction extend to reproduction in |
+| all media.                                                            |
+|                                                                       |
+| © 2025, 3GPP Organizational Partners (ARIB, ATIS, CCSA, ETSI, TSDSI,  |
+| TTA, TTC).                                                            |
+|                                                                       |
+| All rights reserved.                                                  |
+|                                                                       |
+| UMTS™ is a Trade Mark of ETSI registered for the benefit of its       |
+| members                                                               |
+|                                                                       |
+| 3GPP™ is a Trade Mark of ETSI registered for the benefit of its       |
+| Members and of the 3GPP Organizational Partners                       |
+| LTE™ is a Trade Mark of ETSI registered for the benefit of its        |
+| Members and of the 3GPP Organizational Partners                       |
+|                                                                       |
+| GSM® and the GSM logo are registered and owned by the GSM Association |
++-----------------------------------------------------------------------+
+
+ Contents
+
+Foreword 6
+
+1 Scope 7
+
+2 References 7
+
+3 Definitions, symbols and abbreviations 8
+
+3.1 Definitions 8
+
+3.2 Symbols 8
+
+3.3 Abbreviations 9
+
+4 Functional Overview 9
+
+4.1 General 9
+
+5 ELP Message Transport 10
+
+5.1 General 10
+
+5.2 Use of Diameter base protocol 10
+
+5.3 Securing Diameter Messages 11
+
+5.4 Accounting functionality 11
+
+5.5 Use of sessions 11
+
+5.6 Transport protocol 11
+
+5.7 Routing considerations 11
+
+5.8 Advertising Application Support 11
+
+6 ELP Procedures 12
+
+6.1 General 12
+
+6.2 Provide Subscriber Location 12
+
+6.2.1 General 12
+
+6.2.2 Successful Operation 12
+
+6.2.3 Unsuccessful Operation 17
+
+6.3 Subscriber Location Report 17
+
+6.3.1 General 17
+
+6.3.2 Successful Operation 17
+
+6.3.3 Unsuccessful Operation 21
+
+7 ELP Messages and Message Formats 21
+
+7.1 General 21
+
+7.2 Message Formats 22
+
+7.3 ELP Messages 22
+
+7.3.1 Provide-Location-Request (PLR) Command 22
+
+7.3.2 Provide-Location-Answer (PLA) Command 23
+
+7.3.3 Location-Report-Request (LRR) Command 24
+
+7.3.4 Location-Report-Answer (LRA) Command 24
+
+7.4 Information Elements 25
+
+7.4.1 General 25
+
+7.4.2 SLg-Location-Type 27
+
+7.4.3 LCS-EPS-Client-Name 27
+
+7.4.4 LCS-Requestor-Name 28
+
+7.4.5 LCS-Priority 28
+
+7.4.6 LCS-QoS 28
+
+7.4.7 Horizontal-Accuracy 28
+
+7.4.8 Vertical-Accuracy 28
+
+7.4.9 Vertical-Requested 28
+
+7.4.10 Velocity-Requested 29
+
+7.4.11 Response-Time 29
+
+7.4.12 Supported-GAD-Shapes 29
+
+7.4.13 LCS-Codeword 29
+
+7.4.14 LCS-Privacy-Check 29
+
+7.4.15 Accuracy-Fulfilment-Indicator 30
+
+7.4.16 Age-Of-Location-Estimate 30
+
+7.4.17 Velocity-Estimate 30
+
+7.4.18 EUTRAN-Positioning-Data 30
+
+7.4.19 ECGI 30
+
+7.4.20 Location-Event 30
+
+7.4.21 Pseudonym-Indicator 31
+
+7.4.22 LCS-Service-Type-ID 31
+
+7.4.23 LCS-Privacy-Check-Non-Session 31
+
+7.4.24 LCS-Privacy-Check-Session 31
+
+7.4.25 Feature-List-ID 31
+
+7.4.26 Feature-List 31
+
+7.4.27 LCS-QoS-Class 31
+
+7.4.28 Serving-Node 32
+
+7.4.29 GERAN-Positioning-Info 32
+
+7.4.30 GERAN-Positioning-Data 32
+
+7.4.31 GERAN-GANSS-Positioning-Data 32
+
+7.4.32 UTRAN-Positioning-Info 32
+
+7.4.33 UTRAN-Positioning-Data 32
+
+7.4.34 UTRAN-GANSS-Positioning-Data 32
+
+7.4.35 LRR-Flags 33
+
+7.4.36 Deferred-Location-Type 33
+
+7.4.37 LCS-Reference-Number 33
+
+7.4.38 Area-Event-Info 33
+
+7.4.39 Area-Definition 34
+
+7.4.40 Area 34
+
+7.4.41 Area-Type 34
+
+7.4.42 Area-Identification 35
+
+7.4.43 Occurrence-Info 35
+
+7.4.44 Interval-Time 35
+
+7.4.45 Periodic-LDR-Info 35
+
+7.4.46 Reporting-Amount 35
+
+7.4.47 Reporting-Interval 35
+
+7.4.48 Reporting-PLMN-List 35
+
+7.4.49 PLMN-ID-List 36
+
+7.4.50 Periodic-Location-Support-Indicator 36
+
+7.4.51 Prioritized-List-Indicator 36
+
+7.4.52 PLR-Flags 36
+
+7.4.53 PLA-Flags 37
+
+7.4.54 Deferred-MT-LR-Data 37
+
+7.4.55 Termination-Cause 38
+
+7.4.56 LRA-Flags 38
+
+7.4.57 ESMLC-Cell-Info 38
+
+7.4.58 Cell-Portion-ID 39
+
+7.4.59 1xRTT-RCID 39
+
+7.4.60 Delayed-Location-Reporting-Data 39
+
+7.4.61 Civic-Address 39
+
+7.4.62 Barometric-Pressure 39
+
+7.4.63 UTRAN-Additional-Positioning-Data 39
+
+7.4.64 Motion-Event-Info 39
+
+7.4.65 Linear-Distance 40
+
+7.4.66 Maximum-Interval 40
+
+7.4.67 Sampling-Interval 40
+
+7.4.68 Reporting-Duration 40
+
+7.4.69 Reporting-Location-Requirements 40
+
+7.4.70 Additional-Area 40
+
+7.4.71 AMF-Instance-Id 41
+
+7.5 Result-Code AVP and Experimental-Result AVP Values 41
+
+7.5.1 General 41
+
+7.5.2 Success 41
+
+7.5.3 Permanent Failures 41
+
+7.5.3.1 DIAMETER_ERROR_USER_UNKNOWN (5001) 41
+
+7.5.3.2 DIAMETER_ERROR_UNAUTHORIZED_REQUESTING_NETWORK (5490) 41
+
+7.5.4 Transient Failures 41
+
+7.5.4.1 DIAMETER_ERROR_UNREACHABLE_USER (4221) 41
+
+7.5.4.2 DIAMETER_ERROR_SUSPENDED_USER (4222) 41
+
+7.5.4.3 DIAMETER_ERROR_DETACHED_USER (4223) 42
+
+7.5.4.4 DIAMETER_ERROR_POSITIONING_DENIED (4224) 42
+
+7.5.4.5 DIAMETER_ERROR_POSITIONING_FAILED (4225) 42
+
+7.5.4.6 DIAMETER_ERROR_UNKNOWN_UNREACHABLE LCS_CLIENT (4226) 42
+
+Annex A (informative): Change history 43
+
+ Foreword
+
+This Technical Specification has been produced by the 3^(rd) Generation
+Partnership Project (3GPP).
+
+The contents of the present document are subject to continuing work
+within the TSG and may change following formal TSG approval. Should the
+TSG modify the contents of the present document, it will be re-released
+by the TSG with an identifying change of release date and an increase in
+version number as follows:
+
+Version x.y.z
+
+where:
+
+x the first digit:
+
+1 presented to TSG for information;
+
+2 presented to TSG for approval;
+
+3 or greater indicates TSG approved document under change control.
+
+y the second digit is incremented for all changes of substance, i.e.
+technical enhancements, corrections, updates, etc.
+
+z the third digit is incremented when editorial only changes have been
+incorporated in the document.
+
+ 1 Scope
+
+The present document specifies the procedures and information coding for
+the EPC LCS Protocol (ELP) that is needed to support the location
+services in E-UTRAN, UTRAN and GERAN. The ELP message set is applicable
+to the SLg interface between the MME and the GMLC and the Lgd interface
+between the SGSN and the GMLC. ELP is developed in accordance to the
+general principles stated in 3GPP TS 23.271 [2].
+
+2 References
+
+The following documents contain provisions which, through reference in
+this text, constitute provisions of the present document.
+
+- References are either specific (identified by date of publication,
+edition number, version number, etc.) or non‑specific.
+
+- For a specific reference, subsequent revisions do not apply.
+
+- For a non-specific reference, the latest version applies. In the case
+of a reference to a 3GPP document (including a GSM document), a
+non-specific reference implicitly refers to the latest version of that
+document in the same Release as the present document.
+
+[1] 3GPP TR 21.905: "Vocabulary for 3GPP Specifications".
+
+[2] 3GPP TS 23.271: "Functional stage 2 description of Location Services
+(LCS)".
+
+[3] 3GPP TS 23.032: "Universal Geographical Area Description (GAD)".
+
+[4] Void.
+
+[5] IETF RFC 2234: "Augmented BNF for syntax specifications".
+
+[6] 3GPP TS 23.003: "Numbering, addressing and identification".
+
+[7] 3GPP TS 29.171: "LCS Application Protocol (LCS-AP) between the MME
+and E-SMLC".
+
+[8] 3GPP TS 29.274: "Evolved General Packet Radio Service (GPRS)
+Tunnelling Protocol for Control plane (GTPv2-C)".
+
+[9] Void
+
+[10] 3GPP TS 32.299: "Charging management; Diameter charging
+applications".
+
+[11] 3GPP TS 29.272: "Evolved Packet System; MME and SGSN Related
+Interfaces Based on Diameter Protocol".
+
+[12] 3GPP TS 29.329: "Sh Interface based on the Diameter protocol".
+
+[13] 3GPP TS 33.210: "3G Security; Network Domain Security; IP Network
+Layer Security".
+
+[14] IETF RFC 4960: "Stream Control Transmission Protocol".
+
+[15] 3GPP TS 22.071: "Location Services (LCS); Service description".
+
+[16] IETF RFC 5778: "Diameter Mobile IPv6: Support for Home Agent to
+Diameter Server Interaction".
+
+[17] 3GPP TS 29.229: "Cx and Dx Interfaces based on the Diameter
+protocol; protocol details".
+
+[18] 3GPP TS 29.173: "Location Services; Diameter-based SLh interface
+for Control Plane LCS".
+
+[19] 3GPP TS 29.002: "Mobile Application Part (MAP) specification".
+
+[20] 3GPP TS 49.031: "Location Services (LCS) – Base Station System
+Application Part LCS Extension – (BSSAP-LE)".
+
+[21] 3GPP TS 25.413: "UTRAN Iu Interface RANAP signalling".
+
+[22] 3GPP2 A.S0014-D v5.0: "Interoperability Specification (IOS) for
+cdma2000 Access Network Interfaces – Part 4 (A1, A1p, A2, and A5
+Interfaces) UTRAN Iu Interface RANAP signalling".
+
+[23] IETF RFC 6733: "Diameter Base Protocol".
+
+[24] 3GPP TS 24.080: "Mobile radio interface layer 3 Supplementary
+services specification; Formats and coding".
+
+[25] IETF RFC 7944: "Diameter Routing Message Priority".
+
+[26] 3GPP TS 29.571: "5G System; Common Data Types for Service Based
+Interfaces Stage 3".
+
+3 Definitions, symbols and abbreviations
+
+3.1 Definitions
+
+For the purposes of the present document, the terms and definitions
+given in TR 21.905 [1] and the following apply. A term defined in the
+present document takes precedence over the definition of the same term,
+if any, in TR 21.905 [1].
+
+EPC-MO-LR: EPC Mobile Originating Location Request
+
+EPC-MT-LR: EPC Mobile Terminating Location Request
+
+EPC-NI-LR: EPC Network Induced Location Request
+
+PS-MO-LR: Packet Switched Mobile Originating Location Request
+
+PS-MT-LR: Packet Switched Mobile Terminating Location Request
+
+PS-NI-LR: Packet Switched Network Induced Location Request
+
+LCS: LoCation Services
+
+LCS Client: software and/or hardware entity that interacts with a LCS
+Server (in this case, the GMLC) for the purpose of obtaining location
+information for one or more Mobile Stations. LCS Clients subscribe to
+LCS in order to obtain location information. LCS Clients may or may not
+interact with human users. The LCS Client is responsible for formatting
+and presenting data and managing the user interface (dialogue). The LCS
+Client may reside in the Mobile Station (UE).
+
+LCS QoS: The QoS class determines the degree of adherence to the quality
+of service information as required by the source of a location request.
+
+Target: UE being positioned
+
+3.2 Symbols
+
+For the purposes of the present document, the following symbols apply:
+
+SLg Interface between GMLC and MME
+
+Lgd Interface between GMLC and SGSN
+
+3.3 Abbreviations
+
+For the purposes of the present document, the abbreviations given in
+TR 21.905 [1] and the following apply. An abbreviation defined in the
+present document takes precedence over the definition of the same
+abbreviation, if any, in TR 21.905 [1].
+
+DRMP Diameter Routing Message Priority
+
+EPC Enhanced Packet Core
+
+GMLC Gateway Mobile Location Centre
+
+IMEI International Mobile Equipment Identity
+
+IMS IP Multimedia Subsystem
+
+IMSI International Mobile Subscriber Identity
+
+MME Mobility Management Entity
+
+TTTP Transfer To Third Party
+
+UE User Equipment, as defined in 3GPP TS 23.032 [3]
+
+4 Functional Overview
+
+4.1 General
+
+This document defines the EPC LCS Protocol (ELP) used on the SLg
+interface between the GMLC and the MME and on the Lgd interface between
+the GMLC and the SGSN in the Evolved Packet Core (EPC).
+
+The location of the SLg interface within the LCS logical architecture is
+shown in Figure 4.1-1.
+
+[]
+
+Figure 4.1-1 SLg interface in the LCS Architecture
+
+The location of the Lgd interface within the LCS logical architecture is
+shown in Figure 4.1-2.
+
+[]
+
+Figure 4.1-2 Lgd interface in the LCS Architecture
+
+The high level functions of the ELP protocol are described in 3GPP TS
+23.271 [2].
+
+The main functions of the protocol are:
+
+- To allow the GMLC to request position estimates for a particular
+target UE from the MME or SGSN in order to support the EPC-MT-LR or
+PS-MT-LR positioning procedures. This is achieved using the Provide
+Subscriber Location message;
+
+- To allow the MME or SGSN to return a position estimate or an error
+report to the GMLC in response to a Provide Subscriber Location request
+as part of an EPC-MT-LR or PS-MT-LR positioning procedure;
+
+- To allow the MME to forward an unsolicited position estimate to the
+GMLC as part of the EPC-MO-LR or EPC-NI-LR procedures. This is achieved
+using the Subscriber Location Report message;
+
+- To allow the SGSN to forward an unsolicited position estimate to the
+GMLC as part of the PS-MO-LR, PS-NI-LR or periodic MO-LR TTTP
+procedures. This is achieved using the Subscriber Location Report
+message;
+
+- To allow the GMLC to acknowledge receipt of an unsolicited position
+estimate as part of the EPC-MO-LR, EPC-NI-LR, PS-MO-LR, PS-NI-LR or
+periodic MO-LR TTTP procedures;
+
+- To allow the GMLC to request position estimates for a particular
+target UE from the SGSN or MME as part of the deferred MT-LR procedure.
+This is achieved using the Provide Subscriber Location message;
+
+- To allow the SGSN or MME to acknowledge receipt of position estimate
+request to the GMLC as part of a deferred MT-LR procedure;
+
+- To support the procedures for handover of an IMS emergency call with
+EPS/GPRS access.
+
+5 ELP Message Transport
+
+5.1 General
+
+The ELP protocol is defined as a Vendor Specific diameter application
+(SLg application). It reuses the basic mechanisms defined by the
+Diameter base protocol as specified in IETF RFC 6733 [23], and it
+defines a number of additional commands and AVPs to implement the SLg,
+Lgd specific procedures.
+
+5.2 Use of Diameter base protocol
+
+The Diameter base protocol as specified in IETF RFC 6733 [23] shall
+apply except as modified by the defined support of the methods and the
+defined support of the commands and AVPs, result and error codes as
+described in this specification. Unless otherwise specified, the
+procedures (including error handling and unrecognised information
+handling) shall be used unmodified.
+
+5.3 Securing Diameter Messages
+
+For secure transport of Diameter messages, see 3GPP TS 33.210 [13].
+
+5.4 Accounting functionality
+
+Accounting functionality (Accounting Session State Machine, related
+command codes and AVPs) shall not be used on the SLg, Lgd interfaces.
+
+5.5 Use of sessions
+
+Between the MME and the GMLC and between the SGSN and the GMLC, Diameter
+sessions shall be implicitly terminated. An implicitly terminated
+session is one for which the server does not maintain state information.
+The client shall not send any re-authorization or session termination
+requests to the server.
+
+The Diameter base protocol as specified in IETF RFC 6733 [23] includes
+the Auth-Session-State AVP as the mechanism for the implementation of
+implicitly terminated sessions.
+
+The client (server) shall include in its requests (responses) the
+Auth-Session-State AVP set to the value NO_STATE_MAINTAINED (1), as
+described in IETF RFC 6733 [23]. As a consequence, the server shall not
+maintain any state information about this session and the client shall
+not send any session termination request. Neither the
+Authorization-Lifetime AVP nor the Session-Timeout AVP shall be present
+in requests or responses.
+
+5.6 Transport protocol
+
+Diameter messages over the SLg and Lgd interfaces shall make use of SCTP
+(see IETF RFC 4960 [14]).
+
+5.7 Routing considerations
+
+This clause specifies the use of the Diameter routing AVPs
+Destination-Realm and Destination-Host.
+
+Destination-Realm AVP shall always be included in all diameter requests,
+and therefore is declared as mandatory in the ABNF for all commands.
+
+When a request is initiated by the GMLC, the name of the MME or SGSN
+shall be determined by querying the HSS over the SLh interface, and
+retrieve the specific MME or SGSN that is currently serving the UE.
+Therefore, Destination-Host AVP shall always be included in the commands
+originated at the GMLC, and is declared as mandatory in the ABNF.
+
+When a request is initiated by the MME or SGSN, the name of the GMLC may
+be either locally configured in the MME/SGSN (e.g., in the intra-domain
+scenario, when the GMLC belongs to the same PLMN as the MME/SGSN), or it
+is known from a previously received location procedure initiated at the
+GMLC. Therefore, the Destination-Host AVP is declared as mandatory in
+the ABNF of the commands originated at the MME or SGSN.
+
+If the Vendor-Specific-Application-ID AVP is received in any of the
+commands defined in this specification, it shall be ignored by the
+receiving node, and it shall not be used for routing purposes.
+
+5.8 Advertising Application Support
+
+The MME, SGSN and GMLC shall advertise support of the Diameter SLg
+Application by including the value of the application identifier in the
+Auth-Application-Id AVP within the Vendor-Specific-Application-Id
+grouped AVP of the Capabilities-Exchange-Request and
+Capabilities-Exchange-Answer commands.
+
+The vendor identifier value of 3GPP (10415) shall be included in the
+Supported-Vendor-Id AVP of the Capabilities-Exchange-Request and
+Capabilities-Exchange-Answer commands, and in the Vendor-Id AVP within
+the Vendor-Specific-Application-Id grouped AVP of the
+Capabilities-Exchange-Request and Capabilities-Exchange-Answer commands.
+
+The Vendor-Id AVP included in Capabilities-Exchange-Request and
+Capabilities-Exchange-Answer commands that is not included in the
+Vendor-Specific-Application-Id AVPs as described above shall indicate
+the manufacturer of the Diameter node as per IETF RFC 6733 [23].
+
+6 ELP Procedures
+
+6.1 General
+
+The ELP procedures, between the GMLC and the MME over SLg interface and
+between GMLC and SGSN over Lgd interface, are used to exchange messages
+related to location services. The ELP can be divided into the following
+sub-procedures.
+
+- Provide Subscriber Location
+
+- Subscriber Location Report
+
+6.2 Provide Subscriber Location
+
+6.2.1 General
+
+The Provide Subscriber Location operation is used by a GMLC to request
+the location of a target UE from the MME or SGSN at any time, as part of
+EPC-MT-LR or PS-MT-LR positioning procedures. The response contains a
+location estimate of the target UE and other additional information.
+
+The Provide Subscriber Location operation is also used by a GMLC to
+request the location of the target UE from the SGSN or MME at any time,
+as part of deferred MT-LR procedure. The response contains the
+acknowledgment of the receipt of the request and other additional
+information.
+
+6.2.2 Successful Operation
+
+[]
+
+Figure 6.2.2-1: Provide Subscriber Location procedure. Successful
+operation.
+
+The GMLC initiates the procedure by sending a PROVIDE SUBSCRIBER
+LOCATION REQUEST message to the MME or SGSN. This message carries the
+type of location information requested (e.g. current location and
+optionally, velocity), the UE subscriber's IMSI, LCS QoS information
+(e.g. accuracy, response time), an indication of whether the LCS client
+has the override capability, and an indication of whether delayed
+location reporting for UEs transiently not reachable (e.g. UEs in
+extended idle mode DRX or Power Saving Mode) is supported as specified
+in clauses 9.1.6 and 9.1.15 of 3GPP TS 23.271 [2]. The message also
+carries an LCS reference number, if delayed location reporting is
+supported. For deferred MT-LR procedure, additionally, the message
+carries Deferred location type, LCS reference number, H-GMLC address,
+periodic LDR info, triggered LDR info, etc.
+
+Upon reception of PROVIDE SUBSCRIBER LOCATION REQUEST message, the MME
+or SGSN shall perform authentication privacy verification on the
+location request. After that, for EPC-MT-LR or PS-MT-LR procedures the
+MME or SGSN shall retrieve the location information of the target UE
+from E-UTRAN or UTRAN/GERAN according to the procedures described in
+3GPP TS 23.271 [2]. For a deferred EPC-MT-LR procedure, the MME shall
+wait until the UE becomes reachable before performing authentication
+privacy verification on the location request and instigating periodic or
+triggered location in the UE.
+
+The MME or SGSN returns a PROVIDE SUBSCRIBER LOCATION RESPONSE to the
+GMLC. For EPC-MT-LR or PS-MT-LR procedures, if the target UE is
+transiently not reachable and delayed location reporting for UEs
+transiently not reachable is supported, the message shall contain an
+indication that the UE is transiently not reachable; otherwise the
+message shall contain the location estimate, its age and obtained
+accuracy. If the MME or SGSN failed to get the current location and the
+LCS client is requesting the current or last known location, the MME or
+SGSN may return the last known location of the target UE if this is
+known.
+
+For a deferred EPC-MT-LR procedure for periodic or triggered location,
+the MME returns a PROVIDE SUBSCRIBER LOCATION RESPONSE to the GMLC to
+indicate that the MME is able and willing to support the procedure.
+After the MME has performed successful authentication privacy
+verification on the location request and successfully instigated
+periodic or triggered location in the UE, the MME returns a SUBSCRIBER
+LOCATION REPORT to the GMLC to indicate that periodic or triggered
+location has been activated in the UE. The MME (or a different MME)
+returns additional SUBSCRIBER LOCATION REPORT messages to the GMLC (or
+possibly to a different GMLC if not the HGMLC) for each periodic or
+triggered location event detected by the UE. For details, refer to 3GPP
+TS 23.271 [2].
+
+If the GMLC has received indication from the HSS indicating the combined
+MME/SGSN node supporting the optimized LCS procedure (see 3GPP TS 29.173
+[18] clause 5.2.1.2) and if the GMLC also supports optimized LCS
+procedure, the GMLC shall set the "Optimized-LCS-Proc-Req" bit within
+the PLR-Flags of the PROVIDE SUBSCRIBER LOCATION REQUEST message during
+EPC-MT-LR and/or PS-MT-LR procedures. When the combined MME/SGSN
+receives this message with "Optimized-LCS-Proc-Req" bit within the
+PLR-Flags set, the combined MME/SGSN shall perform EPC-MT-LR or PS-MT-LR
+procedure depending upon the knowledge of the current RAT type of the
+UE. E.g. if the UE is in active mode in E-UTRAN, the combined MME/SGSN
+shall perform only EPC-MT-LR procedure; if the ISR activated UE is in
+idle mode, the combined MME/SGSN shall perform the paging followed by
+either EPC-MT-LR or PS-MT-LR procedure (depending upon the RAT where the
+UE is active). Hence, the combined MME/SGSN shall perform optimized LCS
+procedure to retrieve the location information of the target UE from
+either E-UTRAN or UTRAN/GERAN.
+
+The combined MME/SGSN shall return a PROVIDE SUBSCRIBER LOCATION
+RESPONSE to the GMLC. If the target UE is transiently not reachable and
+delayed location reporting for UEs transiently not reachable is
+supported, the message shall contain an indication that the UE is
+transiently not reachable; otherwise the message shall contain the
+location estimate, its age and obtained accuracy. If the combined
+MME/SGSN failed to get the current location and the LCS client is
+requesting the current or last known location, the combined MME/SGSN
+should return the latest of the last known EPS or UTRAN/GERAN location
+of the target UE if this is known. In both the cases, the combined
+MME/SGSN may set "Optimized-LCS-Proc-Performed" bit within PLA-Flags, if
+it has performed optimized LCS procedure.
+
+This procedure is mapped to the commands Provide-Location-Request/Answer
+in the Diameter application specified in clauses 7.3.1 and 7.3.2.
+
+Table 6.2.2-1: Provide Subscriber Location Request
+
++------------+----------+---+-----------------------------------------+
+| I          | Mapping  | C | Description                             |
+| nformation | to       | a |                                         |
+| element    | Diameter | t |                                         |
+| name       | AVP      | . |                                         |
++------------+----------+---+-----------------------------------------+
+| Location   | S        | M | This Information Element shall contain  |
+| Type       | Lg-Locat |   | the type of location measurement        |
+|            | ion-Type |   | requested, such as current location,    |
+|            |          |   | initial location, last known location,  |
+|            |          |   | etc. (see 3GPP TS 22.071 [15]).         |
++------------+----------+---+-----------------------------------------+
+| IMSI       | U        | C | If present, this Information Element    |
+|            | ser-Name |   | shall contain the IMSI of the user      |
+|            |          |   | whose UE is to be positioned (see Note  |
+|            |          |   | 1).                                     |
++------------+----------+---+-----------------------------------------+
+| MSISDN     | MSISDN   | C | If present, this Information Element    |
+|            |          |   | shall contain the MSISDN of the user    |
+|            |          |   | whose UE is to be positioned (see Note  |
+|            |          |   | 1).                                     |
++------------+----------+---+-----------------------------------------+
+| IMEI       | IMEI     | C | If present, this Information Element    |
+|            |          |   | shall contain the IMEI of the UE to be  |
+|            |          |   | positioned (see Note 1).                |
++------------+----------+---+-----------------------------------------+
+| Client     | LCS      | M | This Information Element shall contain  |
+| Name       | -EPS-Cli |   | the name of the LCS client issuing the  |
+|            | ent-Name |   | positioning request.                    |
++------------+----------+---+-----------------------------------------+
+| Client     | LCS-Cli  | M | This Information Element shall contain  |
+| Type       | ent-Type |   | the type of LCS client (Emergency,      |
+|            |          |   | Lawful Interception …) issuing the      |
+|            |          |   | positioning request (see 3GPP TS 23.271 |
+|            |          |   | [2] and 3GPP TS 32.299 [10]).           |
++------------+----------+---+-----------------------------------------+
+| Requestor  | LC       | O | If present, this Information Element    |
+| Name       | S-Reques |   | contains the identity of the            |
+|            | tor-Name |   | originating entity which has requested  |
+|            |          |   | the location of the target UE from the  |
+|            |          |   | LCS Client.                             |
++------------+----------+---+-----------------------------------------+
+| Priority   | LCS-     | O | If present, this Information Element    |
+|            | Priority |   | shall contain the priority of the LCS   |
+|            |          |   | client issuing the positioning request. |
++------------+----------+---+-----------------------------------------+
+| QoS        | LCS-QoS  | O | If present, this Information Element    |
+|            |          |   | shall contain the quality of service    |
+|            |          |   | requested, such as the accuracy of the  |
+|            |          |   | positioning measurement and the         |
+|            |          |   | response time of the positioning        |
+|            |          |   | operation.                              |
++------------+----------+---+-----------------------------------------+
+| Velocity   | Ve       | O | If present, this information element    |
+| Requested  | locity-R |   | shall contain an indication of whether  |
+|            | equested |   | or not the Velocity of the target UE is |
+|            |          |   | requested.                              |
++------------+----------+---+-----------------------------------------+
+| Supported  | LCS-Supp | O | If present, this Information Element    |
+| GAD Shapes | orted-GA |   | shall contain the list of supported GAD |
+|            | D-Shapes |   | shapes by the LCS client.               |
++------------+----------+---+-----------------------------------------+
+| Service    | LCS      | O | If present, this Information Element    |
+| Type ID    | -Service |   | shall contain the service type          |
+|            | -Type-ID |   | associated for the particular           |
+|            |          |   | positioning request (the meaning of the |
+|            |          |   | different service types is defined in   |
+|            |          |   | 3GPP TS 22.071 [15]).                   |
++------------+----------+---+-----------------------------------------+
+| Codeword   | LCS-     | O | If present, this Information Element    |
+|            | Codeword |   | shall contain the Codeword to be used   |
+|            |          |   | between an LCS client and a target UE   |
+|            |          |   | in order to check and accept or reject  |
+|            |          |   | the positioning request.                |
++------------+----------+---+-----------------------------------------+
+| APN        | S        | C | If present, this Information Element    |
+|            | ervice-S |   | shall contain the Access Point Name     |
+|            | election |   | (APN) Network Identifier of the LCS     |
+|            |          |   | client, as used by the target UE. It    |
+|            |          |   | shall only be included in               |
+|            |          |   | session-related location requests.      |
++------------+----------+---+-----------------------------------------+
+| Sessi      | L        | O | If present, this Information Element    |
+| on-Related | CS-Priva |   | shall contain an indication of how the  |
+| Privacy    | cy-Check |   | positioning operation should proceed in |
+| Check      | -Session |   | the relation to the checking of the     |
+|            |          |   | session-related privacy settings of the |
+|            |          |   | user.                                   |
++------------+----------+---+-----------------------------------------+
+| Non-Sessi  | LCS-P    | O | If present, this Information Element    |
+| on-Related | rivacy-C |   | shall contain an indication of how the  |
+| Privacy    | heck-Non |   | positioning operation should proceed in |
+| Check      | -Session |   | the relation to the checking of the     |
+|            |          |   | non-session-related privacy settings of |
+|            |          |   | the user.                               |
++------------+----------+---+-----------------------------------------+
+| Deferred   | Deferr   | O | If present, this Information Element    |
+| Location   | ed-Locat |   | shall contain the type of the event     |
+| Type       | ion-Type |   | until when the location estimation is   |
+|            |          |   | deferred. Applicable event types are:   |
+|            |          |   | UE available, UE entering or leaving or |
+|            |          |   | being in a pre-defined geographical     |
+|            |          |   | area, periodic location, UE moving by   |
+|            |          |   | more than a minimum linear distance     |
+|            |          |   | (NOTE). This Information Element is     |
+|            |          |   | applicable only for the deferred MT-LR  |
+|            |          |   | procedure.                              |
+|            |          |   |                                         |
+|            |          |   | NOTE: this value is only applicable to  |
+|            |          |   | a deferred EPC-MT-LR.                   |
++------------+----------+---+-----------------------------------------+
+| LCS        | LCS-     | O | If present, this Information Element    |
+| -Reference | Referenc |   | shall contain the reference number      |
+| Number     | e-Number |   | identifying the deferred location       |
+|            |          |   | request or identifying the request for  |
+|            |          |   | which delayed location reporting for    |
+|            |          |   | UEs transiently not reachable is        |
+|            |          |   | supported. This Information Element is  |
+|            |          |   | applicable only when:                   |
+|            |          |   |                                         |
+|            |          |   | - the deferred MT-LR procedure is       |
+|            |          |   | initiated; or                           |
+|            |          |   |                                         |
+|            |          |   | - an EPC-MT-LR or PS-MT-LR procedure is |
+|            |          |   | initiated and the message includes the  |
+|            |          |   | indication that delayed location        |
+|            |          |   | reporting for UEs transiently not       |
+|            |          |   | reachable is supported.                 |
++------------+----------+---+-----------------------------------------+
+| Area Event | Area-Ev  | O | If present, this Information Element    |
+| Info       | ent-Info |   | shall contain area definition, type of  |
+|            |          |   | area event, occurrence info and minimum |
+|            |          |   | interval time. For a deferred           |
+|            |          |   | EPC-MT-LR, this Information Element may |
+|            |          |   | also contain the duration of event      |
+|            |          |   | reporting, the maximum time interval    |
+|            |          |   | between event reports, the maximum      |
+|            |          |   | event sampling interval, and whether    |
+|            |          |   | location estimates shall be included in |
+|            |          |   | event reports. This Information Element |
+|            |          |   | is applicable only when the deferred    |
+|            |          |   | MT-LR is initiated for the area event   |
+|            |          |   | (UE entering or leaving or being in a   |
+|            |          |   | pre-defined geographical area).         |
++------------+----------+---+-----------------------------------------+
+| H-GMLC     | GMLC     | O | If present, this Information Element    |
+| Address    | -Address |   | shall contain the address identifying   |
+|            |          |   | the H-GMLC which initiated the deferred |
+|            |          |   | MT-LR procedure. This Information       |
+|            |          |   | Element is applicable only when the     |
+|            |          |   | deferred MT-LR procedure is performed.  |
++------------+----------+---+-----------------------------------------+
+| PLR Flags  | P        | O | This Information Element contains a bit |
+|            | LR-Flags |   | mask. See 7.4.52 for the meaning of the |
+|            |          |   | bits.                                   |
++------------+----------+---+-----------------------------------------+
+| Periodic   | Periodic | O | If present, this Information Element    |
+| LDR        | -LDR-Inf |   | shall contain reporting amount and      |
+| I          | ormation |   | reporting interval of deferred periodic |
+| nformation |          |   | location. This Information Element is   |
+|            |          |   | applicable only when the deferred MT-LR |
+|            |          |   | procedure is initiated for the periodic |
+|            |          |   | location event.                         |
++------------+----------+---+-----------------------------------------+
+| Reporting  | Rep      | O | If present, this Information Element    |
+| PLMN List  | orting-P |   | shall contain a list of PLMNs in which  |
+|            | LMN-List |   | the subsequent location estimates must  |
+|            |          |   | be obtained, or the subsequent          |
+|            |          |   | triggered or periodic events must be    |
+|            |          |   | reported, by the UE as part of a        |
+|            |          |   | periodic MO-LR TTTP or periodic MT-LR   |
+|            |          |   | procedure.                              |
++------------+----------+---+-----------------------------------------+
+| Supported  | Su       | O | If present, this information element    |
+| Features   | pported- |   | shall contain the list of features      |
+|            | Features |   | supported by the origin host.           |
+| (See 3GPP  |          |   |                                         |
+| TS 29.229  |          |   |                                         |
+| [17])      |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+| Motion     | M        | O | If present, this Information Element    |
+| Event Info | otion-Ev |   | shall contain information for motion    |
+|            | ent-Info |   | event reporting. This information       |
+|            |          |   | includes the minimum linear distance    |
+|            |          |   | for a motion event report, the duration |
+|            |          |   | of event reporting, the minimum and     |
+|            |          |   | maximum time intervals between event    |
+|            |          |   | reports, the maximum event sampling     |
+|            |          |   | interval, whether location estimates    |
+|            |          |   | shall be included in event reports, and |
+|            |          |   | whether only one location report is     |
+|            |          |   | required or more than one. This         |
+|            |          |   | Information Element is applicable only  |
+|            |          |   | for a deferred EPC-MT-LR.               |
++------------+----------+---+-----------------------------------------+
+| NOTE 1: At |          |   |                                         |
+| least one  |          |   |                                         |
+| of these   |          |   |                                         |
+| IEs shall  |          |   |                                         |
+| be present |          |   |                                         |
+| in the     |          |   |                                         |
+| message.   |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+
+Table 6.2.2-2: Provide Subscriber Location Answer
+
++------------+----------+---+-----------------------------------------+
+| I          | Mapping  | C | Description                             |
+| nformation | to       | a |                                         |
+| element    | Diameter | t |                                         |
+| name       | AVP      | . |                                         |
++------------+----------+---+-----------------------------------------+
+| Result     | Res      | M | This Information Element shall contain  |
+|            | ult-Code |   | the result of the operation.            |
+|            | /        |   |                                         |
+|            | Exp      |   | The Result-Code AVP shall be used to    |
+|            | erimenta |   | indicate success / errors as defined in |
+|            | l-Result |   | the Diameter base protocol (see         |
+|            |          |   | IETF RFC 6733 [23]).                    |
+|            |          |   |                                         |
+|            |          |   | The Experimental-Result AVP shall be    |
+|            |          |   | used for ELP errors. This is a grouped  |
+|            |          |   | AVP which shall contain the 3GPP Vendor |
+|            |          |   | ID in the Vendor-Id AVP, and the error  |
+|            |          |   | code in the Experimental-Result-Code    |
+|            |          |   | AVP.                                    |
++------------+----------+---+-----------------------------------------+
+| Location   | L        | O | If present, this Information Element    |
+| Estimate   | ocation- |   | shall contain an estimate of the        |
+|            | Estimate |   | location of the UE in universal         |
+|            |          |   | coordinates and the accuracy of the     |
+|            |          |   | estimate.                               |
+|            |          |   |                                         |
+|            |          |   | This Information Element shall not be   |
+|            |          |   | included if the PLA Flags Information   |
+|            |          |   | Element is present and if the bit       |
+|            |          |   | corresponding to the                    |
+|            |          |   | "                                       |
+|            |          |   | UE-Transiently-Not-Reachable-Indicator" |
+|            |          |   | is set.                                 |
++------------+----------+---+-----------------------------------------+
+| Accuracy   | Accur    | O | If present, this Information Element    |
+| Fulfilment | acy-Fulf |   | shall contain an indication of whether  |
+| Indicator  | ilment-I |   | the requested accuracy (as indicated in |
+|            | ndicator |   | the LCS-QoS IE in the request message)  |
+|            |          |   | was fulfilled or not.                   |
++------------+----------+---+-----------------------------------------+
+| Age of     | Age-of-L | O | If present, this Information Element    |
+| Location   | ocation- |   | shall contain an indication of how long |
+| Estimate   | Estimate |   | ago the location estimate was obtained. |
++------------+----------+---+-----------------------------------------+
+| Velocity   | V        | O | If present, this Information Element    |
+| Estimate   | elocity- |   | shall contain an estimate of the        |
+|            | Estimate |   | velocity of the target UE, composed by  |
+|            |          |   | horizontal speed, vertical speed, and   |
+|            |          |   | their respective uncertainty (see 3GPP  |
+|            |          |   | TS 23.032 [3]).                         |
++------------+----------+---+-----------------------------------------+
+| EUTRAN     | EUTRAN-  | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Data |   | positioning method that was attempted   |
+| Data       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | The internal structure and encoding is  |
+|            |          |   | defined in 3GPP TS 29.171 [7]. This     |
+|            |          |   | Information Element is applicable only  |
+|            |          |   | when the UE is attached to E-UTRAN      |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the MME or the combined MME/SGSN.       |
++------------+----------+---+-----------------------------------------+
+| ECGI       | ECGI     | O | If present, this Information Element    |
+|            |          |   | shall contain the current cell location |
+|            |          |   | of the target UE as delivered by the    |
+|            |          |   | eNB to the MME. The E-UTRAN Cell Global |
+|            |          |   | Identifier (ECGI) is used to globally   |
+|            |          |   | identify a cell. This Information       |
+|            |          |   | Element is applicable only when the UE  |
+|            |          |   | is attached to E-UTRAN access and when  |
+|            |          |   | the message is sent by the MME or       |
+|            |          |   | combined MME/SGSN.                      |
++------------+----------+---+-----------------------------------------+
+| GERAN      | GERAN-   | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Info |   | positioning method that was attempted   |
+| Info       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | This Information Element is applicable  |
+|            |          |   | only when the UE is attached to GERAN   |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the SGSN or combined MME/SGSN.          |
++------------+----------+---+-----------------------------------------+
+| CGI        | Cell     | O | If present, this Information Element    |
+|            | -Global- |   | shall contain the current cell location |
+|            | Identity |   | of the target UE. The Cell Global       |
+|            |          |   | Identifier (CGI) is used to globally    |
+|            |          |   | identify a cell. This Information       |
+|            |          |   | Element is applicable only when the UE  |
+|            |          |   | is attached to GERAN access and when    |
+|            |          |   | the message is sent by the SGSN or      |
+|            |          |   | combined MME/SGSN.                      |
++------------+----------+---+-----------------------------------------+
+| UTRAN      | UTRAN-   | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Info |   | positioning method that was attempted   |
+| Info       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | This Information Element is applicable  |
+|            |          |   | only when the UE is attached to UTRAN   |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the SGSN or combined MME/SGSN.          |
++------------+----------+---+-----------------------------------------+
+| SAI        | Servi    | O | If present, this Information Element    |
+|            | ce-Area- |   | shall contain the current service area  |
+|            | Identity |   | of the target UE. The Service Area      |
+|            |          |   | Identifier (SAI) is used to globally    |
+|            |          |   | identify a service area. This           |
+|            |          |   | Information Element is applicable only  |
+|            |          |   | when the UE is attached to UTRAN access |
+|            |          |   | and when the message is sent by the     |
+|            |          |   | SGSN or combined MME/SGSN.              |
++------------+----------+---+-----------------------------------------+
+| Target     | Serv     | O | If present, this information element    |
+| Serving    | ing-Node |   | shall contain the address of the target |
+| Node       |          |   | side serving node for handover of an    |
+| Identity   |          |   | IMS Emergency Call.                     |
++------------+----------+---+-----------------------------------------+
+| PLA Flags  | P        | O | This Information Element contains a bit |
+|            | LA-Flags |   | mask. See 7.4.53 for the meaning of the |
+|            |          |   | bits.                                   |
+|            |          |   |                                         |
+|            |          |   | If this Information Element is present  |
+|            |          |   | and if it the bit corresponding to the  |
+|            |          |   | "Deferred-MT-LR-Response-Indicator" is  |
+|            |          |   | set, the "Location-Estimate"            |
+|            |          |   | Information Element is ignored in this  |
+|            |          |   | message.                                |
++------------+----------+---+-----------------------------------------+
+| E-SMLC     | ESMLC-C  | O | If present, this Information Element    |
+| provided   | ell-Info |   | shall contain the current cell          |
+| Cell Info  |          |   | information of the target UE as known   |
+|            |          |   | by E-SMLC.                              |
++------------+----------+---+-----------------------------------------+
+| Civic      | Civic    | O | If present, this Information Element    |
+| Address    | -Address |   | contains a location estimate for the    |
+|            |          |   | target UE expressed as a Civic address. |
++------------+----------+---+-----------------------------------------+
+| Barometric | Bar      | O | If present, this Information Element    |
+| Pressure   | ometric- |   | contains the barometric pressure        |
+|            | Pressure |   | measurement as reported by the target   |
+|            |          |   | UE.                                     |
++------------+----------+---+-----------------------------------------+
+| Supported  | Su       | O | If present, this information element    |
+| Features   | pported- |   | shall contain the list of features      |
+|            | Features |   | supported by the origin host.           |
+| (See 3GPP  |          |   |                                         |
+| TS 29.229  |          |   |                                         |
+| [17])      |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+
+6.2.3 Unsuccessful Operation
+
+On receipt of a PROVIDE SUBSCRIBER LOCATION RESPONSE with a Result-Code
+or Experimental-Result AVP indicating failure the GMLC considers the
+positioning request as failed.
+
+If the GMLC receives "Optimized-LCS-Proc-Performed" bit within PLA-Flags
+set, it shall assume that the combined MME/SGSN has either performed
+EPC-MT-LR or PS-MT-LR procedure to retrieve the location of the target
+UE. And hence, it need not send another PROVIDE SUBSCRIBER LOCATION
+REQUEST message to the combined MME/SGSN.
+
+6.3 Subscriber Location Report
+
+6.3.1 General
+
+The Subscriber Location Report operation is used by an MME or SGSN to
+provide the location of a target UE to a GMLC, when a request for
+location has been implicitly issued or when a Delayed Location Reporting
+is triggered after receipt of a request for location for a UE
+transiently not reachable.
+
+6.3.2 Successful Operation
+
+[]
+
+Figure 6.3.2-1: Subscriber Location Report procedure. Successful
+operation.
+
+The MME or SGSN initiates the procedure by sending a SUBSCRIBER LOCATION
+REPORT message to the GMLC. The message may carry the identity of the
+UE, the location estimate and its age, and the event causing the
+location report.
+
+Upon reception of SUBSCRIBER LOCATION REPORT message, the GMLC shall
+return a SUBSCRIBER LOCATION REPORT ACK to the MME or SGSN and process
+the location report accordingly, e.g. transfer of the location estimate
+to an external LCS Client according to procedure described in 3GPP TS
+23.271 [2].
+
+If the Location-Event indicates a DEFERRED_LR_RESPONSE then the
+Location-Estimate shall not be sent if the LCS-Supported-GAD-Shapes had
+been received in Provide Subscriber Location request and the shape
+encoded in Location-Estimate was not marked as supported in
+LCS-Supported-GAD-Shapes. In such a case Termination-Cause in
+Deferred-MT-LR-Data shall be present with value
+SHAPE_OF_LOCATION_ESTIMATE_NOT_SUPPORTED.
+
+If the Location-Event indicates a HANDOVER_TO_5GC, the Subscriber
+Location Report shall include Location-Event, UE identifies and AMF ID
+as target node information, EPC-GMLC identifies the handover by
+Location-Event and target AMF.
+
+This procedure is mapped to the commands Location-Report-Request/Answer
+in the Diameter application specified in clauses 7.3.3 and 7.3.4.
+
+Table 6.3.2-1: Subscriber Location Report
+
++------------+----------+---+-----------------------------------------+
+| I          | Mapping  | C | Description                             |
+| nformation | to       | a |                                         |
+| element    | Diameter | t |                                         |
+| name       | AVP      | . |                                         |
++------------+----------+---+-----------------------------------------+
+| Location   | Locati   | M | This Information Element shall contain  |
+| Event      | on-Event |   | the type of event that caused the       |
+|            |          |   | location procedure to be initiated.     |
++------------+----------+---+-----------------------------------------+
+| IMSI       | U        | C | If present, this Information Element    |
+|            | ser-Name |   | shall contain the IMSI of the user      |
+|            |          |   | whose UE is to be positioned (see Note  |
+|            |          |   | 1).                                     |
++------------+----------+---+-----------------------------------------+
+| MSISDN     | MSISDN   | C | If present, this Information Element    |
+|            |          |   | shall contain the MSISDN of the user    |
+|            |          |   | whose UE is to be positioned (see Note  |
+|            |          |   | 1).                                     |
++------------+----------+---+-----------------------------------------+
+| IMEI       | IMEI     | C | If present, this Information Element    |
+|            |          |   | shall contain the IMEI of the UE to be  |
+|            |          |   | positioned (see Note 1).                |
++------------+----------+---+-----------------------------------------+
+| Client     | LCS      | O | If present, this Information Element    |
+| Name       | -EPS-Cli |   | shall contain the name of the LCS       |
+|            | ent-Name |   | client where the result of the          |
+|            |          |   | positioning operation should be sent.   |
++------------+----------+---+-----------------------------------------+
+| Location   | L        | O | If present, this Information Element    |
+| Estimate   | ocation- |   | shall contain an estimate of the        |
+|            | Estimate |   | location of the UE in universal         |
+|            |          |   | coordinates and the accuracy of the     |
+|            |          |   | estimate.                               |
++------------+----------+---+-----------------------------------------+
+| Accuracy   | Accur    | O | If present, this Information Element    |
+| Fulfilment | acy-Fulf |   | shall contain an indication of whether  |
+| Indicator  | ilment-I |   | the requested accuracy was fulfilled or |
+|            | ndicator |   | not.                                    |
++------------+----------+---+-----------------------------------------+
+| Age of     | Age-of-L | O | If present, this Information Element    |
+| Location   | ocation- |   | shall contain an indication of how long |
+| Estimate   | Estimate |   | ago the location estimate was obtained. |
++------------+----------+---+-----------------------------------------+
+| Velocity   | V        | O | If present, this Information Element    |
+| Estimate   | elocity- |   | shall contain an estimate of the        |
+|            | Estimate |   | velocity of the UE, composed by         |
+|            |          |   | horizontal speed, vertical speed, and   |
+|            |          |   | their respective uncertainty (see 3GPP  |
+|            |          |   | TS 23.032 [3]).                         |
++------------+----------+---+-----------------------------------------+
+| EUTRAN     | EUTRAN-  | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Data |   | positioning method that was attempted   |
+| Data       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | The internal structure and encoding is  |
+|            |          |   | defined in 3GPP TS 29.171 [7]. This     |
+|            |          |   | Information Element is applicable only  |
+|            |          |   | when the UE is attached to E-UTRAN      |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the MME or the MME part of the combined |
+|            |          |   | MME/SGSN.                               |
++------------+----------+---+-----------------------------------------+
+| ECGI       | ECGI     | O | If present, this Information Element    |
+|            |          |   | shall contain the current cell location |
+|            |          |   | of the target UE as delivered by the    |
+|            |          |   | eNB to the MME. The E-UTRAN Cell Global |
+|            |          |   | Identifier (ECGI) is used to globally   |
+|            |          |   | identify a cell. This Information       |
+|            |          |   | Element is applicable only when the UE  |
+|            |          |   | is attached to E-UTRAN access and when  |
+|            |          |   | the message is sent by the MME or the   |
+|            |          |   | MME part of the combined MME/SGSN.      |
++------------+----------+---+-----------------------------------------+
+| GERAN      | GERAN-   | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Info |   | positioning method that was attempted   |
+| Info       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | This Information Element is applicable  |
+|            |          |   | only when the UE is attached to GERAN   |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the SGSN or the SGSN part of the        |
+|            |          |   | combined MME/SGSN.                      |
++------------+----------+---+-----------------------------------------+
+| CGI        | Cell     | O | If present, this Information Element    |
+|            | -Global- |   | shall contain the current cell location |
+|            | Identity |   | of the target UE. The Cell Global       |
+|            |          |   | Identifier (CGI) is used to globally    |
+|            |          |   | identify a cell. This Information       |
+|            |          |   | Element is applicable only when the UE  |
+|            |          |   | is attached to GERAN access and when    |
+|            |          |   | the message is sent by the SGSN or the  |
+|            |          |   | SGSN part of the combined MME/SGSN.     |
++------------+----------+---+-----------------------------------------+
+| UTRAN      | UTRAN-   | O | If present, this Information Element    |
+| P          | Position |   | shall indicate the usage of each        |
+| ositioning | ing-Info |   | positioning method that was attempted   |
+| Info       |          |   | to determine the location estimate,     |
+|            |          |   | either successfully or unsuccessfully.  |
+|            |          |   | This Information Element is applicable  |
+|            |          |   | only when the UE is attached to UTRAN   |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the SGSN or the SGSN part of the        |
+|            |          |   | combined MME/SGSN.                      |
++------------+----------+---+-----------------------------------------+
+| SAI        | Servi    | O | If present, this Information Element    |
+|            | ce-Area- |   | shall contain the current service area  |
+|            | Identity |   | of the target UE. The Service Area      |
+|            |          |   | Identifier (SAI) is used to globally    |
+|            |          |   | identify a service area. This           |
+|            |          |   | Information Element is applicable only  |
+|            |          |   | when the UE is attached to UTRAN access |
+|            |          |   | and when the message is sent by the     |
+|            |          |   | SGSN or the SGSN part of the combined   |
+|            |          |   | MME/SGSN.                               |
++------------+----------+---+-----------------------------------------+
+| Service    | LCS      | O | If present, this Information Element    |
+| Type ID    | -Service |   | shall contain the service type          |
+|            | -Type-ID |   | associated for the particular           |
+|            |          |   | positioning report identifying the      |
+|            |          |   | service at the receiving LCS Client     |
+|            |          |   | (the meaning of the different service   |
+|            |          |   | types is defined in 3GPP TS 22.071      |
+|            |          |   | [15]).                                  |
++------------+----------+---+-----------------------------------------+
+| Pseudonym  | Pse      | O | If present, this Information Element    |
+| Indicator  | udonym-I |   | shall contain an indication of whether  |
+|            | ndicator |   | or not a pseudonym must be allocated by |
+|            |          |   | the network and transferred to the LCS  |
+|            |          |   | client as the identity of the UE.       |
++------------+----------+---+-----------------------------------------+
+| Supported  | Su       | O | If present, this information element    |
+| Features   | pported- |   | shall contain the list of features      |
+|            | Features |   | supported by the origin host.           |
+| (See 3GPP  |          |   |                                         |
+| TS 29.229  |          |   |                                         |
+| [17])      |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+| LCS QoS    | LCS-Q    | O | If present, this Information Element    |
+| Class      | oS-Class |   | shall contain the LCS-QoS-Class         |
+|            |          |   | requested by the target UE.             |
++------------+----------+---+-----------------------------------------+
+| Target     | Serv     | O | If present, this information element    |
+| Serving    | ing-Node |   | shall contain the address of the target |
+| Node       |          |   | side serving node for handover of an    |
+| Identity   |          |   | IMS Emergency Call.                     |
++------------+----------+---+-----------------------------------------+
+| LRR Flags  | L        | C | This Information Element contains a bit |
+|            | RR-Flags |   | mask. See 7.4.35 for the meaning of the |
+| (See       |          |   | bits.                                   |
+| 7.4.35)    |          |   |                                         |
+|            |          |   | It shall be present when the message is |
+|            |          |   | sent over Lgd interface.                |
++------------+----------+---+-----------------------------------------+
+| LCS        | LCS-     | O | If present, this Information Element    |
+| -Reference | Referenc |   | shall contain the reference number      |
+| Number     | e-Number |   | identifying the deferred location       |
+|            |          |   | request or identifying the request for  |
+|            |          |   | which Delayed Location Reporting is     |
+|            |          |   | triggered. This is same as the          |
+|            |          |   | reference number included in the        |
+|            |          |   | Provide Subscriber Location request for |
+|            |          |   | the deferred MT-LR procedure or for the |
+|            |          |   | EPC-MT-LR or PS-MT-LR with the          |
+|            |          |   | Delayed-Location-Reporting-Support      |
+|            |          |   | indication, or the reference number     |
+|            |          |   | included in the Subscriber Location     |
+|            |          |   | Report Ack for periodic MO-LR TTTP      |
+|            |          |   | procedure. This Information Element     |
+|            |          |   | shall be included if the Location-Event |
+|            |          |   | is set to:                              |
+|            |          |   |                                         |
+|            |          |   | - "DEFERRED_MT_LR_RESPONSE"; or         |
+|            |          |   |                                         |
+|            |          |   | - "DELAYED_LOCATION_REPORTING".         |
++------------+----------+---+-----------------------------------------+
+| Deferred   | Def      | O | If present, this Information Element is |
+| MT-LR Data | erred-MT |   | used to report the deferred location    |
+|            | -LR-Data |   | event type, the location information    |
+|            |          |   | and optionally a reason why the serving |
+|            |          |   | node or UE aborted monitoring the event |
+|            |          |   | to the GMLC. The deferred location      |
+|            |          |   | event type may correspond to the        |
+|            |          |   | location event type requested in the    |
+|            |          |   | Provide Subscriber Location Request.    |
+|            |          |   | For a deferred EPC-MT-LR, the deferred  |
+|            |          |   | location event type may also indicate   |
+|            |          |   | LDR activation in the UE or expiration  |
+|            |          |   | of the maximum time interval between    |
+|            |          |   | event reports. This Information Element |
+|            |          |   | shall be included when the              |
+|            |          |   | Location-Event is set to                |
+|            |          |   | "DEFERRED_MT_LR_RESPONSE".              |
++------------+----------+---+-----------------------------------------+
+| H-GMLC     | GMLC     | O | If present, this Information Element    |
+| Address    | -Address |   | shall contain the address identifying   |
+|            |          |   | the H-GMLC which should receive         |
+|            |          |   | location estimates. This is the same as |
+|            |          |   | the H-GMLC address included in the      |
+|            |          |   | Provide Subscriber Location request for |
+|            |          |   | the deferred MT-LR procedure or the     |
+|            |          |   | H-GMLC address included in the          |
+|            |          |   | Subscriber Location Report Ack for      |
+|            |          |   | periodic MO-LR TTTP procedure.          |
++------------+----------+---+-----------------------------------------+
+| Sequence   | Reportin | O | If present, this parameter contains the |
+| Number     | g-Amount |   | number of the periodic location reports |
+|            |          |   | completed. The sequence number would be |
+|            |          |   | set to 1 in the first location report   |
+|            |          |   | and increment by 1 for each new report. |
+|            |          |   | When the number reaches the reporting   |
+|            |          |   | amount value, the H-GMLC (for a         |
+|            |          |   | periodic MT-LR or a periodic MO-LR      |
+|            |          |   | TTTP) will know the procedure is        |
+|            |          |   | complete. This Information Element is   |
+|            |          |   | applicable only when the message is     |
+|            |          |   | sent by the SGSN or the SGSN part of    |
+|            |          |   | the combined MME/SGSN.                  |
++------------+----------+---+-----------------------------------------+
+| Periodic   | Periodic | O | If present, this Information Element    |
+| LDR        | -LDR-Inf |   | shall contain the UE requested          |
+| I          | ormation |   | reporting amount and reporting interval |
+| nformation |          |   | of deferred periodic location           |
+|            |          |   | reporting. This Information Element is  |
+|            |          |   | applicable only when the periodic MO-LR |
+|            |          |   | TTTP procedure is initiated by the UE   |
+|            |          |   | and when the message is sent by the     |
+|            |          |   | SGSN or the SGSN part of the combined   |
+|            |          |   | MME/SGSN.                               |
++------------+----------+---+-----------------------------------------+
+| E-SMLC     | ESMLC-C  | O | If present, this Information Element    |
+| provided   | ell-Info |   | shall contain the current cell          |
+| Cell Info  |          |   | information of the target UE as known   |
+|            |          |   | by E-SMLC.                              |
++------------+----------+---+-----------------------------------------+
+| 1xRTT      | 1x       | O | If present, this Information Element    |
+| Reference  | RTT-RCID |   | shall contain the 1xRTT Reference Cell  |
+| Cell ID    |          |   | ID uniquely identifying of the target   |
+|            |          |   | cell location for handover of an IMS    |
+|            |          |   | ermergency call. This Information       |
+|            |          |   | Element is applicable only when the UE  |
+|            |          |   | is making handover toa cdma2000 1xRTT   |
+|            |          |   | access and when the message is sent by  |
+|            |          |   | the MME or the MME part of the combined |
+|            |          |   | MME/SGSN.                               |
++------------+----------+---+-----------------------------------------+
+| Delayed    | Delayed  | O | If present, this Information Element is |
+| Location   | -Locatio |   | used to report to the GMLC the reason   |
+| Reporting  | n-Report |   | why the serving node ended an earlier   |
+| Data       | ing-Data |   | EPC-MT-LR or PS-MT-LR with the          |
+|            |          |   | Delayed-Location-Reporting-Support      |
+|            |          |   | indication received for a UE            |
+|            |          |   | transiently not reachable.              |
+|            |          |   |                                         |
+|            |          |   | This Information Element shall be       |
+|            |          |   | included when the Location-Event is set |
+|            |          |   | to "DELAYED_LOCATION_REPORTING".        |
++------------+----------+---+-----------------------------------------+
+| Civic      | Civic    | O | If present, this Information Element    |
+| Address    | -Address |   | contains a location estimate for the    |
+|            |          |   | target UE expressed as a Civic address. |
++------------+----------+---+-----------------------------------------+
+| Barometric | Bar      | O | If present, this Information Element    |
+| Pressure   | ometric- |   | contains the barometric pressure        |
+|            | Pressure |   | measurement as reported by the target   |
+|            |          |   | UE.                                     |
++------------+----------+---+-----------------------------------------+
+| AMF        | AMF-Ins  |   | If present, this Information Element    |
+| Instance   | tance-Id |   | contains the AMF ID for LCS Handover to |
+| ID         |          |   | 5GC.                                    |
++------------+----------+---+-----------------------------------------+
+| NOTE 1: At |          |   |                                         |
+| least one  |          |   |                                         |
+| of these   |          |   |                                         |
+| IEs shall  |          |   |                                         |
+| be present |          |   |                                         |
+| in the     |          |   |                                         |
+| message.   |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+
+Table 6.3.2-2: Subscriber Location Report Ack
+
++------------+----------+---+-----------------------------------------+
+| I          | Mapping  | C | Description                             |
+| nformation | to       | a |                                         |
+| element    | Diameter | t |                                         |
+| name       | AVP      | . |                                         |
++------------+----------+---+-----------------------------------------+
+| Result     | Res      | M | This Information Element shall contain  |
+|            | ult-Code |   | the result of the operation.            |
+|            | /        |   |                                         |
+|            | Exp      |   | The Result-Code AVP shall be used to    |
+|            | erimenta |   | indicate success / errors as defined in |
+|            | l-Result |   | the Diameter base protocol (see         |
+|            |          |   | IETF RFC 6733 [23]).                    |
+|            |          |   |                                         |
+|            |          |   | The Experimental-Result AVP shall be    |
+|            |          |   | used for ELP errors. This is a grouped  |
+|            |          |   | AVP which shall contain the 3GPP Vendor |
+|            |          |   | ID in the Vendor-Id AVP, and the error  |
+|            |          |   | code in the Experimental-Result-Code    |
+|            |          |   | AVP.                                    |
++------------+----------+---+-----------------------------------------+
+| H-GMLC     | GMLC     | O | If present, this Information Element    |
+| Address    | -Address |   | shall contain the address identifying   |
+|            |          |   | the H-GMLC which should receive         |
+|            |          |   | location estimates as part of periodic  |
+|            |          |   | MO-LR TTTP procedure. This Information  |
+|            |          |   | Element is applicable only when the     |
+|            |          |   | message is sent towards the SGSN or the |
+|            |          |   | SGSN part of the combined MME/SGSN.     |
++------------+----------+---+-----------------------------------------+
+| LRA Flags  | L        | O | This Information Element contains a bit |
+|            | RA-Flags |   | mask. See 7.4.56 for the meaning of the |
+|            |          |   | bits.                                   |
++------------+----------+---+-----------------------------------------+
+| Reporting  | Rep      | O | If present, this Information Element    |
+| PLMN List  | orting-P |   | shall contain a list of PLMNs in which  |
+|            | LMN-List |   | the subsequent location estimates must  |
+|            |          |   | be obtained as part of periodic MO-LR   |
+|            |          |   | TTTP procedure. This Information        |
+|            |          |   | Element is applicable only when the     |
+|            |          |   | message is sent towards the SGSN or the |
+|            |          |   | SGSN part of the combined MME/SGSN.     |
++------------+----------+---+-----------------------------------------+
+| LCS        | LCS-     | O | If present, this Information Element    |
+| Reference  | Referenc |   | shall contain the reference number      |
+| Number     | e-Number |   | identifying the deferred location       |
+|            |          |   | request or identifying the request for  |
+|            |          |   | which Delayed Location Reporting was    |
+|            |          |   | triggered. This Information Element is  |
+|            |          |   | applicable only when the message is     |
+|            |          |   | sent towards the SGSN or the SGSN part  |
+|            |          |   | of the combined MME/SGSN.               |
++------------+----------+---+-----------------------------------------+
+| Supported  | Su       | O | If present, this information element    |
+| Features   | pported- |   | shall contain the list of features      |
+|            | Features |   | supported by the origin host.           |
+| (See 3GPP  |          |   |                                         |
+| TS 29.229  |          |   |                                         |
+| [17])      |          |   |                                         |
++------------+----------+---+-----------------------------------------+
+
+6.3.3 Unsuccessful Operation
+
+If for some reason the GMLC does not accept the SUBSCRIBER LOCATION
+REPORT APDU, the GMLC shall send a SUBSCRIBER LOCATION REPORT ACK
+message with a Result-Code or Experimental-Result AVP indicating
+failure.
+
+7 ELP Messages and Message Formats
+
+7.1 General
+
+The Diameter base protocol as specified in IETF RFC 6733 [23] shall
+apply except as modified by the defined support of the methods and the
+defined support of the commands and AVPs, result and error codes as
+specified in this specification. Unless otherwise specified, the
+procedures (including error handling and unrecognised information
+handling) shall be used unmodified.
+
+This clause specifies a Diameter application that allows a Diameter
+server and a Diameter client:
+
+- to retrieve the location information of a target UE
+
+- to report the location information of a target UE
+
+The SLg/Lgd interface protocol is defined as an IETF vendor specific
+Diameter application, where the vendor is 3GPP. The vendor identifier
+assigned by IANA to 3GPP
+(http://www.iana.org/assignments/enterprise-numbers) is 10415.
+
+The Diameter application identifier assigned to the SLg interface
+application is 16777255 (allocated by IANA).
+
+The Lgd interface uses the Diameter application identifier defined for
+the SLg interface application.
+
+7.2 Message Formats
+
+This clause defines Command-Code values for the SLg interface
+application. These Command-Code values are applicable for the SLg and
+Lgd interfaces.
+
+Every command is defined by means of the ABNF syntax IETF RFC 2234 [5],
+according to the Command Code Format (CCF) specification defined in
+IETF RFC 6733 [23]. If the definition and use of an AVP is not specified
+in this document, the guidelines IETF RFC 6733 [23] shall apply.
+
+For these commands, the Application-ID field shall be set to16777255
+(application identifier of the SLg interface application).
+
+The Vendor-Specific-Application-Id AVP shall not be included in any
+command sent by Diameter nodes supporting applications defined in this
+specification. If the Vendor-Specific-Application-Id AVP is received in
+any of the commands defined in this specification, it shall be ignored
+by the receiving node.
+
+NOTE: The Vendor-Specific-Application-Id is included as an optional AVP
+in all Command Code Format specifications defined in this specification
+in order to overcome potential interoperability issues with intermediate
+Diameter agents non-compliant with IETF RFC 6733 [23].
+
+The following Command Codes are defined in this specification:
+
+Table 7.2-1: Command-Code values
+
+  --------------------------------- ---------------- ---------- ----------
+  Command-Name                      Abbreviation     Code       Clause
+
+  Provide-Location-Request          PLR              8388620    7.3.1
+
+  Provide-Location -Answer          PLA              8388620    7.3.2
+
+  Location-Report-Request           LRR              8388621    7.3.3
+
+  Location-Report-Answer            LRA              8388621    7.3.4
+  --------------------------------- ---------------- ---------- ----------
+
+7.3 ELP Messages
+
+7.3.1 Provide-Location-Request (PLR) Command
+
+The Provide-Location-Request (PLR) command, indicated by the
+Command-Code field set to 8388620 and the 'R' bit set in the Command
+Flags field, is sent by the GMLC in order to request subscriber location
+to the MME or SGSN.
+
+Message Format
+
+  < Provide-Location-Request> ::= < Diameter Header: 8388620, REQ, PXY,
+  16777255 >
+
+  < Session-Id >
+
+  [ DRMP ]
+
+  [ Vendor-Specific-Application-Id ]
+
+  { Auth-Session-State }
+
+  { Origin-Host }
+
+  { Origin-Realm }
+
+  { Destination-Host }
+
+  { Destination-Realm }
+
+  { SLg-Location-Type }
+
+  [ User-Name ]
+
+  [ MSISDN ]
+
+  [ IMEI ]
+
+  { LCS-EPS-Client-Name }
+
+  { LCS-Client-Type }
+
+  [ LCS-Requestor-Name ]
+
+  [ LCS-Priority ]
+
+  [ LCS-QoS ]
+
+  [ Velocity-Requested ]
+
+  [ LCS-Supported-GAD-Shapes ]
+
+  [ LCS-Service-Type-ID ]
+
+  [ LCS-Codeword ]
+
+  [ LCS-Privacy-Check-Non-Session ]
+
+  [ LCS-Privacy-Check-Session ]
+
+  [ Service-Selection ]
+
+  [ Deferred-Location-Type ]
+
+  [ LCS-Reference-Number ]
+
+  [ Area-Event-Info ]
+
+  [ GMLC-Address ]
+
+  [ PLR-Flags ]
+
+  [ Periodic-LDR-Information ]
+
+  [ Reporting-PLMN-List ]
+
+  [ Motion-Event-Info ]
+
+  *[ Supported-Features ]
+
+  *[ AVP ]
+
+  *[ Proxy-Info ]
+
+  *[ Route-Record ]
+
+7.3.2 Provide-Location-Answer (PLA) Command
+
+The Provide-Location-Answer (PLA) command, indicated by the Command-Code
+field set to 8388620 and the 'R' bit cleared in the Command Flags field,
+is sent by the MME or SGSN to the GMLC in response to the
+Provide-Location-Request command.
+
+Message Format
+
+  < Provide-Location-Answer > ::= < Diameter Header: 8388620, PXY,
+  16777255 >
+
+  < Session-Id >
+
+  [ DRMP ]
+
+  [ Vendor-Specific-Application-Id ]
+
+  [ Result-Code ]
+
+  [ Experimental-Result ]
+
+  { Auth-Session-State }
+
+  { Origin-Host }
+
+  { Origin-Realm }
+
+  [ Location-Estimate ]
+
+  [ Accuracy-Fulfilment-Indicator ]
+
+  [ Age-Of-Location-Estimate]
+
+  [ Velocity-Estimate ]
+
+  [ EUTRAN-Positioning-Data]
+
+  [ ECGI ]
+
+  [ GERAN-Positioning-Info ]
+
+  [ Cell-Global-Identity ]
+
+  [ UTRAN-Positioning-Info ]
+
+  [ Service-Area-Identity ]
+
+  [ Serving-Node ]
+
+  [ PLA-Flags ]
+
+  [ ESMLC-Cell-Info ]
+
+  [ Civic-Address ]
+
+  [ Barometric-Pressure ]
+
+  *[ Supported-Features ]
+
+  *[ AVP ]
+
+  [ Failed-AVP ]
+
+  *[ Proxy-Info ]
+
+  *[ Route-Record ]
+
+7.3.3 Location-Report-Request (LRR) Command
+
+The Location-Report-Request (LRR) command, indicated by the Command-Code
+field set to 8388621 and the 'R' bit set in the Command Flags field, is
+sent by the MME or SGSN in order to provide subscriber location data to
+the GMLC.
+
+Message Format
+
+  < Location-Report-Request> ::= < Diameter Header: 8388621, REQ, PXY,
+  16777255 >
+
+  < Session-Id >
+
+  [ DRMP ]
+
+  [ Vendor-Specific-Application-Id ]
+
+  { Auth-Session-State }
+
+  { Origin-Host }
+
+  { Origin-Realm }
+
+  { Destination-Host }
+
+  { Destination-Realm }
+
+  { Location-Event }
+
+  [ LCS-EPS-Client-Name ]
+
+  [ User-Name ]
+
+  [ MSISDN]
+
+  [ IMEI ]
+
+  [ Location-Estimate ]
+
+  [ Accuracy-Fulfilment-Indicator ]
+
+  [ Age-Of-Location-Estimate ]
+
+  [ Velocity-Estimate ]
+
+  [ EUTRAN-Positioning-Data ]
+
+  [ ECGI]
+
+  [ GERAN-Positioning-Info ]
+
+  [ Cell-Global-Identity ]
+
+  [ UTRAN-Positioning-Info ]
+
+  [ Service-Area-Identity ]
+
+  [ LCS-Service-Type-ID ]
+
+  [ Pseudonym-Indicator ]
+
+  [ LCS-QoS-Class ]
+
+  [ Serving-Node ]
+
+  [ LRR-Flags ]
+
+  [ LCS-Reference-Number ]
+
+  [ Deferred-MT-LR-Data]
+
+  [ GMLC-Address ]
+
+  [ Reporting-Amount ]
+
+  [ Periodic-LDR-Information ]
+
+  [ ESMLC-Cell-Info ]
+
+  [ 1xRTT-RCID ] ]
+
+  [ Delayed-Location-Reporting-Data ]
+
+  [ Civic-Address ]
+
+  [ Barometric-Pressure ]
+
+  *[ Supported-Features ]
+
+  *[ AVP ]
+
+  *[ Proxy-Info ]
+
+  *[ Route-Record ]
+
+7.3.4 Location-Report-Answer (LRA) Command
+
+The Location-Report-Answer (LRA) command, indicated by the Command-Code
+field set to 8388621 and the 'R' bit cleared in the Command Flags field,
+is sent by the GMLC to the MME or SGSN in response to the
+Location-Report-Request command.
+
+Message Format
+
+  < Location-Report-Answer > ::= < Diameter Header: 8388621, PXY,
+  16777255>
+
+  < Session-Id >
+
+  [ DRMP ]
+
+  [ Vendor-Specific-Application-Id ]
+
+  [ Result-Code ]
+
+  [ Experimental-Result ]
+
+  { Auth-Session-State }
+
+  { Origin-Host }
+
+  { Origin-Realm }
+
+  [ GMLC-Address ]
+
+  [ LRA-Flags ]
+
+  [ Reporting-PLMN-List ]
+
+  [ LCS-Reference-Number ]
+
+  *[ Supported-Features ]
+
+  *[ AVP ]
+
+  [ Failed-AVP ]
+
+  *[ Proxy-Info ]
+
+  *[ Route-Record ]
+
+7.4 Information Elements
+
+7.4.1 General
+
+The following table describes the Diameter AVPs defined for the SLg
+interface protocol, their AVP Code values, types, possible flag values
+and whether the AVP may or not be encrypted.
+
+For all AVPs which contain bit masks and are of the type Unsigned32, bit
+0 shall be the least significant bit. For example, to get the value of
+bit 0, a bit mask of 0x00000001 should be used.
+
+Table 7.4.1-1: Diameter ELP Application AVPs
+
+  ------------------------------------- ------ --------- -------------- ------- ----- -------- ------ ---------
+                                                                        AVP                           
+                                                                        Flag                          
+                                                                        rules                         
+
+  Attribute Name                        AVP    Clause    Value Type     Must    May   Should   Must   May
+                                        Code   defined                                not      not    Encrypt
+
+  SLg-Location-Type                     2500   7.4.2     Enumerated     M, V                          No
+
+  LCS-EPS-Client-Name                   2501   7.4.3     Grouped        M, V                          No
+
+  LCS-Requestor-Name                    2502   7.4.4     Grouped        M, V                          No
+
+  LCS-Priority                          2503   7.4.5     Unsigned32     M, V                          No
+
+  LCS-QoS                               2504   7.4.6     Grouped        M, V                          No
+
+  Horizontal-Accuracy                   2505   7.4.7     Unsigned32     M, V                          No
+
+  Vertical-Accuracy                     2506   7.4.8     Unsigned32     M, V                          No
+
+  Vertical-Requested                    2507   7.4.9     Enumerated     M, V                          No
+
+  Velocity-Requested                    2508   7.4.10    Enumerated     M, V                          No
+
+  Response-Time                         2509   7.4.11    Enumerated     M, V                          No
+
+  Supported-GAD-Shapes                  2510   7.4.12    Unsigned32     M, V                          No
+
+  LCS-Codeword                          2511   7.4.13    UTF8String     M, V                          No
+
+  LCS-Privacy-Check                     2512   7.4.14    Enumerated     M, V                          No
+
+  Accuracy-Fulfilment-Indicator         2513   7.4.15    Enumerated     M, V                          No
+
+  Age-Of-Location-Estimate              2514   7.4.16    Unsigned32     M, V                          No
+
+  Velocity-Estimate                     2515   7.4.17    OctetString    M, V                          No
+
+  EUTRAN-Positioning-Data               2516   7.4.18    OctetString    M, V                          No
+
+  ECGI                                  2517   7.4.19    OctetString    M, V                          No
+
+  Location-Event                        2518   7.4.20    Enumerated     M, V                          No
+
+  Pseudonym-Indicator                   2519   7.4.21    Enumerated     M, V                          No
+
+  LCS-Service-Type-ID                   2520   7.4.22    Unsigned32     M, V                          No
+
+  LCS-Privacy-Check-Non-Session         2521   7.4.23    Grouped        M, V                          No
+
+  LCS-Privacy-Check-Session             2522   7.4.24    Grouped        M, V                          No
+
+  LCS-QoS-Class                         2523   7.4.27    Enumerated     M, V                          No
+
+  GERAN-Positioning-Info                2524   7.4.29    Grouped        V                      M      No
+
+  GERAN-Positioning-Data                2525   7.4.30    OctetString    V                      M      No
+
+  GERAN-GANSS-Positioning-Data          2526   7.4.31    OctetString    V                      M      No
+
+  UTRAN-Positioning-Info                2527   7.4.32    Grouped        V                      M      No
+
+  UTRAN-Positioning-Data                2528   7.4.33    OctetString    V                      M      No
+
+  UTRAN-GANSS-Positioning-Data          2529   7.4.34    OctetString    V                      M      No
+
+  LRR-Flags                             2530   7.4.35    Unsigned32     V                      M      No
+
+  LCS-Reference-Number                  2531   7.4.37    OctetString    V                      M      No
+
+  Deferred-Location-Type                2532   7.4.36    Unsigned32     V                      M      No
+
+  Area-Event-Info                       2533   7.4.38    Grouped        V                      M      No
+
+  Area-Definition                       2534   7.4.39    Grouped        V                      M      No
+
+  Area                                  2535   7.4.40    Grouped        V                      M      No
+
+  Area-Type                             2536   7.4.41    Unsigned32     V                      M      No
+
+  Area-Identification                   2537   7.4.42    Grouped        V                      M      No
+
+  Occurrence-Info                       2538   7.4.43    Enumerated     V                      M      No
+
+  Interval-Time                         2539   7.4.44    Unsigned32     V                      M      No
+
+  Periodic-LDR-Information              2540   7.4.45    Grouped        V                      M      No
+
+  Reporting-Amount                      2541   7.4.46    Unsigned32     V                      M      No
+
+  Reporting-Interval                    2542   7.4.47    Unsigned32     V                      M      No
+
+  Reporting-PLMN-List                   2543   7.4.48    Grouped        V                      M      No
+
+  PLMN-ID-List                          2544   7.4.49    Grouped        V                      M      No
+
+  PLR-Flags                             2545   7.4.52    Unsigned32     V                      M      No
+
+  PLA-Flags                             2546   7.4.53    Unsigned32     V                      M      No
+
+  Deferred-MT-LR-Data                   2547   7.4.54    Grouped        V                      M      No
+
+  Termination-Cause                     2548   7.4.55    Unsigned32     V                      M      No
+
+  LRA-Flags                             2549   7.4.56    Unsigned32     V                      M      No
+
+  Periodic-Location-Support-Indicator   2550   7.4.50    Enumerated     V                      M      No
+
+  Prioritized-List-Indicator            2551   7.4.51    Enumerated     V                      M      No
+
+  ESMLC-Cell-Info                       2552   7.4.57    Grouped        V                      M      No
+
+  Cell-Portion-ID                       2553   7.4.58    Unsigned32     V                      M      No
+
+  1xRTT-RCID                            2554   7.4.59    OctetString    V                      M      No
+
+  Delayed-Location-Reporting-Data       2555   7.4.60    Grouped        V                      M      No
+
+  Civic-Address                         2556   7.4.61    UTF8String     V                      M      No
+
+  Barometric-Pressure                   2557   7.4.62    Unsigned32     V                      M      No
+
+  UTRAN-Additional-Positioning-Data     2558   7.4.63    OctetString    V                      M      No
+
+  Motion-Event-Info                     2559   7.4.64    Grouped        V                      M      No
+
+  Linear-Distance                       2560   7.4.65    Unsigned32     V                      M      No
+
+  Maximum-Interval                      2561   7.4.66    Unsigned32     V                      M      No
+
+  Sampling-Interval                     2562   7.4.67    Unsigned32     V                      M      No
+
+  Reporting-Duration                    2563   7.4.68    Unsigned32     V                      M      No
+
+  Reporting-Location-Requirements       2564   7.4.69    Unsigned32     V                      M      No
+
+  Additional-Area                       2565   7.4.70    Grouped        V                      M      No
+
+  AMF-Instance-Id                       2566   7.4.71    UTF8String     V                      M      No
+
+  Note: The AVP header bit denoted as                                                                 
+  'M', indicates whether support of the                                                               
+  AVP is required. The AVP header bit                                                                 
+  denoted as 'V', indicates whether the                                                               
+  optional Vendor-ID field is present                                                                 
+  in the AVP header.                                                                                  
+  For further details, see                                                                            
+  IETF RFC 6733 [23].                                                                                 
+  ------------------------------------- ------ --------- -------------- ------- ----- -------- ------ ---------
+
+Table 7.4.1-2: Diameter ELP Application reused AVPs
+
++-----------------+----+-------------+--------+----------------------+
+| Attribute Name  | A  | Reference   | Value  | Comment              |
+|                 | VP |             | Type   |                      |
+|                 | Co |             |        |                      |
+|                 | de |             |        |                      |
++-----------------+----+-------------+--------+----------------------+
+| LCS-F           | 12 | 3GPP TS     | Enum   |                      |
+| ormat-Indicator | 37 | 32.299 [10] | erated |                      |
++-----------------+----+-------------+--------+----------------------+
+| LCS-Name-String | 12 | 3GPP TS     | UTF8   |                      |
+|                 | 38 | 32.299 [10] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| LCS-Client-Type | 12 | 3GPP TS     | Enum   |                      |
+|                 | 41 | 32.299 [10] | erated |                      |
++-----------------+----+-------------+--------+----------------------+
+| LCS-Requ        | 12 | 3GPP TS     | UTF8   |                      |
+| estor-Id-String | 40 | 32.299 [10] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| Lo              | 12 | 3GPP TS     | Octet  |                      |
+| cation-Estimate | 42 | 32.299 [10] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| IMEI            | 14 | 3GPP TS     | UTF8   |                      |
+|                 | 02 | 29.272 [11] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| MSISDN          | 7  | 3GPP TS     | Octet  |                      |
+|                 | 01 | 29.329 [12] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| Se              | 4  | 3GPP TS     | UTF8   | It is used to define |
+| rvice-Selection | 93 | 29.272      | String | the APN              |
+|                 |    | [11],       |        |                      |
+|                 |    |             |        |                      |
+|                 |    | IETF RFC    |        |                      |
+|                 |    | 5778 [16]   |        |                      |
++-----------------+----+-------------+--------+----------------------+
+| User-Name       | 1  | IETF RF     | UTF8   | It is used to        |
+|                 |    | C 6733 [23] | String | include the user's   |
+|                 |    |             |        | IMSI                 |
++-----------------+----+-------------+--------+----------------------+
+| Sup             | 6  | 3GPP TS     | G      |                      |
+| ported-Features | 28 | 29.229 [17] | rouped |                      |
++-----------------+----+-------------+--------+----------------------+
+| Feature-List-ID | 6  | 3GPP TS     | Unsi   | See clause 7.4.25    |
+|                 | 29 | 29.229 [17] | gned32 |                      |
++-----------------+----+-------------+--------+----------------------+
+| Feature-List    | 6  | 3GPP TS     | Unsi   | See clause 7.4.26    |
+|                 | 30 | 29.229 [17] | gned32 |                      |
++-----------------+----+-------------+--------+----------------------+
+| Serving-Node    | 24 | 3GPP TS     | G      | See clause 6.4.3     |
+|                 | 01 | 29.173 [18] | rouped |                      |
++-----------------+----+-------------+--------+----------------------+
+| Cell-           | 16 | 3GPP TS     | Octet  | See clause 7.3.119   |
+| Global-Identity | 04 | 29.272 [11] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| Servic          | 16 | 3GPP TS     | Octet  | See clause 7.3.122   |
+| e-Area-Identity | 07 | 29.272 [11] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| GMLC-Address    | 24 | 3GPP TS     | A      | See clause 6.4.7     |
+|                 | 05 | 29.173 [18] | ddress |                      |
++-----------------+----+-------------+--------+----------------------+
+| Visited-PLMN-Id | 14 | 3GPP TS     | Octet  | See clause 7.3.9     |
+|                 | 07 | 29.272 [11] | String |                      |
++-----------------+----+-------------+--------+----------------------+
+| DRMP            | 3  | IETF RF     | Enum   | DRMP                 |
+|                 | 01 | C 7944 [25] | erated |                      |
++-----------------+----+-------------+--------+----------------------+
+
+7.4.2 SLg-Location-Type
+
+The SLg-Location-Type AVP is of type Enumerated. The following values
+are defined:
+
+CURRENT_LOCATION (0)
+
+CURRENT_OR_LAST_KNOWN_LOCATION (1)
+
+INITIAL_LOCATION (2)
+
+ACTIVATE_DEFERRED_LOCATION (3)
+
+CANCEL_DEFERRED_LOCATION (4)
+
+NOTIFICATION_VERIFICATION_ONLY (5)
+
+7.4.3 LCS-EPS-Client-Name
+
+The LCS-EPS-Client-Name AVP is of type Grouped.
+
+AVP format:
+
+  LCS-EPS-Client-Name ::= <AVP header: 2501 10415>
+
+  [ LCS-Name-String ]
+  [ LCS-Format-Indicator ]
+
+The details of the LCS-Name-String AVP and the LCS-Format-Indicator AVP
+are described in 3GPP TS 32.299 [10].
+
+7.4.4 LCS-Requestor-Name
+
+The LCS-Requestor-Name AVP is of type Grouped.
+
+AVP format:
+
+  LCS-Requestor-Name ::= <AVP header: 2502 10415>
+
+  [ LCS-Requestor-Id-String ]
+  [ LCS-Format-Indicator ]
+
+The details of the LCS-Requestor-Id-String AVP and the
+LCS-Format-Indicator AVP are described in 3GPP TS 32.299 [10].
+
+7.4.5 LCS-Priority
+
+The LCS-Priority AVP is of type Unsigned32. It indicates the priority of
+the location request. The value 0 shall indicate the highest priority,
+and the value 1 shall indicate normal priority. All other values shall
+be treated as 1 (normal priority). For details, refer to 3GPP TS 22.071
+[15].
+
+7.4.6 LCS-QoS
+
+The LCS-QoS AVP is of type Grouped.
+
+AVP format:
+
+  LCS-QoS ::= <AVP header: 2504 10415>
+
+  [ LCS-QoS-Class ]
+  [ Horizontal-Accuracy ]
+  [ Vertical-Accuracy ]
+  [ Vertical-Requested ]
+  [ Response-Time]
+
+7.4.7 Horizontal-Accuracy
+
+The Horizontal-Accuracy AVP is of type Unsigned32. Bits 6-0 corresponds
+to Uncertainty Code defined in 3GPP TS 23.032 [3]. The horizontal
+location error should be less than the error indicated by the
+uncertainty code with 67% confidence. Bits 7 to 31 shall be ignored.
+
+7.4.8 Vertical-Accuracy
+
+The Vertical-Accuracy AVP is of type Unsigned32. Bits 6-0 corresponds to
+Uncertainty Code defined in 3GPP TS 23.032 [3]. The vertical location
+error should be less than the error indicated by the uncertainty code
+with 67% confidence. Bits 7 to 31 shall be ignored.
+
+7.4.9 Vertical-Requested
+
+The Vertical-Requested AVP is of type Enumerated. The following values
+are defined:
+
+VERTICAL_COORDINATE_IS_NOT REQUESTED (0)
+
+VERTICAL_COORDINATE_IS_REQUESTED (1)
+
+Default value if AVP is not present is:
+VERTICAL_COORDINATE_IS_NOT_REQUESTED (0).
+
+7.4.10 Velocity-Requested
+
+The Velocity-Requested AVP is of type Enumerated. The following values
+are defined:
+
+VELOCITY_IS_NOT_REQUESTED (0)
+
+VELOCITY_IS_REQUESTED (1)
+
+Default value if AVP is not present is: VELOCITY_IS_NOT_REQUESTED (0).
+
+7.4.11 Response-Time
+
+The Response-Time AVP is of type Enumerated. The following values are
+defined:
+
+LOW_DELAY (0)
+
+DELAY_TOLERANT (1)
+
+7.4.12 Supported-GAD-Shapes
+
+The Supported-GAD-Shapes AVP is of type Unsigned32 and it shall contain
+a bitmask.
+
+A node shall mark in the BIT STRING all Shapes defined in 3GPP TS 23.032
+[3] it supports.
+
+Bits 10-0 in shall indicate the supported Shapes defined in 3GPP TS
+23.032 [3]. Bits 11 to 31 shall be ignored.
+
+ellipsoidPoint (0)
+
+ellipsoidPointWithUncertaintyCircle (1)
+
+ellipsoidPointWithUncertaintyEllipse (2)
+
+polygon (3)
+
+ellipsoidPointWithAltitude (4)
+
+ellipsoidPointWithAltitudeAndUncertaintyElipsoid (5)
+
+ellipsoidArc (6)
+
+highAccuracyEllipsoidPointWithUncertaintyEllipse (7)
+
+highAccuracyEllipsoidPointWithAltitudeAndUncertaintyEllipsoid (8)
+
+highAccuracyEllipsoidPointWithScalableUncertaintyEllipse (9)
+
+highAccuracyEllipsoidPointWithAltitudeAndScalableUncertaintyEllipsoid
+(10)
+
+7.4.13 LCS-Codeword
+
+The LCS-Codeword AVP is of type UTF8String. It indicates the potential
+codeword string to send in a notification message to the UE.
+
+7.4.14 LCS-Privacy-Check
+
+The LCS-Privacy-Check AVP is of type Enumerated. The following values
+are defined:
+
+ALLOWED_WITHOUT_NOTIFICATION (0)
+
+ALLOWED_WITH_NOTIFICATION (1)
+
+ALLOWED_IF_NO_RESPONSE (2)
+
+RESTRICTED_IF_NO_RESPONSE (3)
+
+NOT_ALLOWED (4)
+
+Default value if AVP is not present is: ALLOWED_WITHOUT_NOTIFICATION
+(0).
+
+7.4.15 Accuracy-Fulfilment-Indicator
+
+The Accuracy-Fulfilment-Indicator AVP is of type Enumerated. The
+following values are defined:
+
+REQUESTED_ACCURACY_FULFILLED (0)
+
+REQUESTED_ACCURACY_NOT_FULFILLED (1)
+
+7.4.16 Age-Of-Location-Estimate
+
+The Age-Of-Location-Estimate AVP is of type Unsigned32. It indicates how
+long ago the location estimate was obtained in minutes, as indicated in
+3GPP TS 29.002 [19].
+
+7.4.17 Velocity-Estimate
+
+The Velocity-Estimate AVP is of type OctetString. It is composed of 4 or
+more octets with an internal structure according to 3GPP TS 23.032 [3].
+
+7.4.18 EUTRAN-Positioning-Data
+
+The EUTRAN-Positioning-Data AVP is of type OctetString. It shall contain
+the encoded content of the "Positioning-Data" Information Element as
+defined in 3GPP TS 29.171 [7].
+
+7.4.19 ECGI
+
+The ECGI AVP is of type OctetString. It indicates the E-UTRAN Cell
+Global Identifier. It is coded according to clause 8.21.5, in 3GPP TS
+29.274 [8].
+
+7.4.20 Location-Event
+
+The Location-Event AVP is of type Enumerated. The following values are
+defined:
+
+EMERGENCY_CALL_ORIGINATION (0)
+
+EMERGENCY_CALL_RELEASE (1)
+
+MO_LR (2)
+
+EMERGENCY_CALL_HANDOVER (3)
+
+DEFERRED_MT_LR_RESPONSE (4)
+
+DEFERRED_MO_LR_TTTP_INITIATION (5)
+
+DELAYED_LOCATION_REPORTING (6)
+
+HANDOVER_TO_5GC (7)
+
+DEFERRED_MT_LR_RESPONSE is applicable to the delivery of an event report
+and/or a location estimate for an LDR initiated earlier by either the
+network (via an MT-LR activate deferred location) or the UE (via a
+periodic MO-LR TTTP initiation for a UE with UTRAN access).
+
+DELAYED_LOCATION_REPORTING is applicable to the delivery of a location
+estimate for an EPC-MT-LR or PS-MT-LR initiated earlier by the network
+for a UE which was transiently not reachable.
+
+7.4.21 Pseudonym-Indicator
+
+The Pseudonym-Indicator AVP is of type Enumerated. It defines if a
+pseudonym is requested. The following values are defined:
+
+PSEUDONYM_NOT_REQUESTED (0)
+
+PSEUDONYM_REQUESTED (1)
+
+Default value if AVP is not present is: PSEUDONYM_NOT_REQUESTED (0).
+
+7.4.22 LCS-Service-Type-ID
+
+The LCS-Service-Type-ID is of type Unsigned32. It defines the identifier
+associated to one of the Service Types for which the LCS client is
+allowed to locate the particular UE.
+
+7.4.23 LCS-Privacy-Check-Non-Session
+
+The LCS-Privacy-Check-Non-Session AVP is of type Grouped.
+
+AVP format:
+
+  LCS-Privacy-Check-Non-Session ::= <AVP header: 2521 10415>
+
+  { LCS-Privacy-Check }
+
+Default value if AVP is not present is that AVP LCS-Privacy-Check take
+value: ALLOWED_WITHOUT_NOTIFICATION (0).
+
+7.4.24 LCS-Privacy-Check-Session
+
+The LCS-Privacy-Check-Session AVP is of type Grouped.
+
+AVP format:
+
+  LCS-Privacy-Check-Session ::= <AVP header: 2522 10415>
+
+  { LCS-Privacy-Check }
+
+Default value if AVP is not present is that AVP LCS-Privacy-Check take
+value: NOT_ALLOWED (4).
+
+7.4.25 Feature-List-ID
+
+The syntax of this AVP is defined in 3GPP TS 29.229 [17]. For this
+release, the Feature-List-ID AVP value shall be set to 1.
+
+7.4.26 Feature-List
+
+The syntax of this AVP is defined in 3GPP TS 29.229 [17]. A null value
+indicates that there is no feature used by the application.
+
+NOTE: There are no features defined for this release.
+
+7.4.27 LCS-QoS-Class
+
+The LCS-QoS-Class AVP is of the type Enumerated. The following values
+are defined.
+
+ASSURED (0)
+
+BEST EFFORT (1)
+
+7.4.28 Serving-Node
+
+The Serving-Node AVP is of type Grouped. This AVP shall contain the
+information about the network node serving the targeted user.
+
+7.4.29 GERAN-Positioning-Info
+
+The GERAN-Positioning-Info AVP is of type Grouped.
+
+AVP format:
+
+  GERAN-Positioning-Info ::= <AVP header: 2524 10415>
+
+  [ GERAN-Positioning-Data ]
+
+  [ GERAN-GANSS-Positioning-Data ]
+
+  *[ AVP ]
+
+7.4.30 GERAN-Positioning-Data
+
+The GERAN-Positioning-Data AVP is of type OctetString. It shall contain
+the encoded content of the "Positioning Data" Information Element as
+defined in 3GPP TS 49.031 [20].
+
+7.4.31 GERAN-GANSS-Positioning-Data
+
+The GERAN-GANSS-Positioning-Data AVP is of type OctetString. It shall
+contain the encoded content of the "GANSS Positioning Data" Information
+Element as defined in 3GPP TS 49.031 [20].
+
+7.4.32 UTRAN-Positioning-Info
+
+The UTRAN-Positioning-Info AVP is of type Grouped.
+
+AVP format:
+
+  UTRAN-Positioning-Info ::= <AVP header: 2527 10415>
+
+  [ UTRAN-Positioning-Data ]
+
+  [ UTRAN-GANSS-Positioning-Data ]
+
+  [ UTRAN-Additional-Positioning-Data ]
+
+  *[ AVP ]
+
+7.4.33 UTRAN-Positioning-Data
+
+The UTRAN-Positioning-Data AVP is of type OctetString. It shall contain
+the encoded content of the "positioningDataDiscriminator" and the
+"positioningDataSet" included in the "positionData" Information Element
+as defined in 3GPP TS 25.413 [21].
+
+7.4.34 UTRAN-GANSS-Positioning-Data
+
+The UTRAN-GANSS-Positioning-Data AVP is of type OctetString. It shall
+contain the encoded content of the "GANSS-PositioningDataSet" only,
+included in the "positionData" Information Element as defined in 3GPP TS
+25.413 [21].
+
+7.4.35 LRR-Flags
+
+The LRR-Flags AVP is of type Unsigned32 and it shall contain a bit mask.
+The meaning of the bits shall be as defined in table 7.4.35/1:
+
+Table 7.4.35/1: LRR-Flags
+
++-------+---------------+----------------------------------------------+
+| Bit   | Name          | Description                                  |
++-------+---------------+----------------------------------------------+
+| 0     | Lgd/          | This bit, when set, indicates that the       |
+|       | SLg-Indicator | Location Report Request message is sent on   |
+|       |               | the Lgd interface, i.e. the source node is   |
+|       |               | an SGSN (or a combined MME/SGSN to which the |
+|       |               | UE is attached via UTRAN or GERAN).          |
+|       |               |                                              |
+|       |               | This bit, when cleared, indicates that the   |
+|       |               | Location Report Request message is sent on   |
+|       |               | the SLg interface, i.e. the source node is   |
+|       |               | an MME (or a combined MME/SGSN to which the  |
+|       |               | UE is attached via E-UTRAN).                 |
++-------+---------------+----------------------------------------------+
+| 1     | MO            | This bit, when set, indicates that the MO-LR |
+|       | -LR-ShortCirc | short circuit feature is used by the UE for  |
+|       | uit-Indicator | location estimate. This bit is applicable    |
+|       |               | only when for deferred MT-LR procedure and   |
+|       |               | when the message is sent over Lgd interface. |
++-------+---------------+----------------------------------------------+
+| 2     | MO            | This bit, when set, indicates that the UE is |
+|       | -LR-ShortCirc | requesting to use MO-LR short circuit        |
+|       | uit-Requested | feature for location estimate. This bit is   |
+|       |               | applicable only when periodic MO-LR TTTP     |
+|       |               | procedure is initiated by the UE and when    |
+|       |               | the message is sent over Lgd interface.      |
++-------+---------------+----------------------------------------------+
+| N     |               |                                              |
+| OTE1: |               |                                              |
+| Bits  |               |                                              |
+| not   |               |                                              |
+| de    |               |                                              |
+| fined |               |                                              |
+| in    |               |                                              |
+| this  |               |                                              |
+| table |               |                                              |
+| shall |               |                                              |
+| be    |               |                                              |
+| cl    |               |                                              |
+| eared |               |                                              |
+| by    |               |                                              |
+| the   |               |                                              |
+| se    |               |                                              |
+| nding |               |                                              |
+| MME   |               |                                              |
+| or    |               |                                              |
+| SGSN  |               |                                              |
+| and   |               |                                              |
+| disc  |               |                                              |
+| arded |               |                                              |
+| by    |               |                                              |
+| the   |               |                                              |
+| rece  |               |                                              |
+| iving |               |                                              |
+| GMLC. |               |                                              |
++-------+---------------+----------------------------------------------+
+
+7.4.36 Deferred-Location-Type
+
+The Deferred-Location-Type AVP is of type Unsigned32 and it shall
+contain a bit mask. Each bit indicates a type of event, until when the
+location estimation is deferred. For details, please refer to 3GPP TS
+23.271 [3] clause 4.4.2. The meaning of the bits shall be as defined in
+table 7.4.36/1:
+
+Table 7.4.36/1: Deferred-Location-Type
+
+  -------- ----------------------------- ----------------------------------------------
+  Bit      Event Type                    Description
+
+  0        UE-Available                  Any event in which the SGSN has established a
+                                         contact with the UE.
+
+  1        Entering-Into-Area            An event where the UE enters a pre-defined
+                                         geographical area.
+
+  2        Leaving-From-Area             An event where the UE leaves a pre-defined
+                                         geographical area.
+
+  3        Being-Inside-Area             An event where the UE is currently within the
+                                         pre-defined geographical area.
+
+  4        Periodic-LDR                  An event where a defined periodic timer
+                                         expires in the UE and activates a location
+                                         report or a location request.
+
+  5        Motion-Event                  An event where the UE moves by more than a
+                                         minimum linear distance. This event is
+                                         applicable to a deferred EPC-MT-LR only.
+
+  6        LDR-Activated                 An event where deferred location reporting has
+                                         been activated in the UE. This event is
+                                         applicable to a deferred EPC-MT-LR only.
+
+  7        Maximum-Interval-Expiration   An event where the maximum reporting interval
+                                         has expired. This event is applicable to a
+                                         deferred EPC-MT-LR only.
+  -------- ----------------------------- ----------------------------------------------
+
+7.4.37 LCS-Reference-Number
+
+The LCS-Reference-Number AVP is of type OctetString of length 1. It
+shall contain the reference number identifying the deferred location
+request.
+
+7.4.38 Area-Event-Info
+
+The Area-Event-Info AVP is of type Grouped.
+
+AVP format:
+
+  Area-Event-Info ::= <AVP header: 2533 10415>
+
+  { Area-Definition }
+
+  [ Occurrence-Info ]
+
+  [ Interval-Time ]
+
+  [ Maximum-Interval ]
+
+  [ Sampling-Interval ]
+
+  [ Reporting-Duration ]
+
+  [ Reporting-Location-Requirements ]
+
+  *[ AVP ]
+
+If not included, the default value of Occurrence-Info shall be
+considered as "ONE_TIME_EVENT" (0). Interval-Time and Maximum-Interval
+AVPs are only applicable when the Occurrence-Info is set to
+"MULTIPLE_TIME_EVENT" (1). If not included, the default value of
+Interval-Time shall be considered as one and the default values of
+Maximum-Interval, Sampling-Interval and Reporting-Duration shall each be
+considered as the maximum value.
+
+7.4.39 Area-Definition
+
+The Area-Definition AVP is of type Grouped.
+
+AVP format:
+
+  Area-Definition ::= <AVP header: 2534 10415>
+
+  1*10{ Area }
+
+  *240[ Additional-Area ]
+
+  *[ AVP ]
+
+For a PS-MT-LR over the Lgd interface, the Additional-Area AVP shall not
+be included.
+
+7.4.40 Area
+
+The Area AVP is of type Grouped.
+
+AVP format:
+
+  Area ::= <AVP header: 2535 10415>
+
+  { Area-Type }
+
+  { Area-Identification }
+
+  *[ AVP ]
+
+7.4.41 Area-Type
+
+The Area-Type AVP is of type Unsigned32. The following values are
+defined:
+
+"Country Code" 0
+
+"PLMN ID" 1
+
+"Location Area ID" 2
+
+"Routing Area ID" 3
+
+"Cell Global ID" 4
+
+"UTRAN Cell ID" 5
+
+"Tracking Area ID" 6
+
+"E-UTRAN Cell Global ID" 7
+
+7.4.42 Area-Identification
+
+The Area-Identification AVP is of type OctetString and shall contain the
+identification of the area applicable for the change of area event based
+deferred location reporting. For Area-Type 0 to 5, octets are coded as
+described in 3GPP TS 29.002 [24]. For Area-Type 6, octets are coded as
+defined for the Tracking Area Identity area identification in 3GPP TS
+24.080 [24]. For Area-Type 7, octets are coded as defined for the ECGI
+area identification in 3GPP TS 24.080 [24]. For a deferred EPC-MT-LR for
+the area event, only Area-Type 6 and 7 are applicable.
+
+7.4.43 Occurrence-Info
+
+The Occurrence-Info AVP is of type Enumerated. The following values are
+defined:
+
+ONE_TIME_EVENT (0)
+
+MULTIPLE_TIME_EVENT (1)
+
+7.4.44 Interval-Time
+
+The Interval-Time AVP is of type Unsigned32 and it contains the minimum
+time interval between area reports or motion reports, in seconds. The
+minimum value shall be 1 second and the maximum value 32767 seconds.
+
+7.4.45 Periodic-LDR-Info
+
+The Periodic-LDR-Info AVP is of type Grouped.
+
+AVP format:
+
+  Periodic-LDR-Info ::= <AVP header: 2540 10415>
+
+  { Reporting-Amount }
+
+  { Reporting-Interval }
+
+  *[ AVP ]
+
+Reporting-Interval x Rreporting-Amount shall not exceed 8639999 (99
+days, 23 hours, 59 minutes and 59 seconds) for compatibility with OMA
+MLP and RLP.
+
+7.4.46 Reporting-Amount
+
+The Reporting-Amount AVP is of type Unsigned32 and it contains reporting
+frequency. Its minimum value shall be 1 and maximum value shall be
+8639999.
+
+7.4.47 Reporting-Interval
+
+The Interval-Time AVP is of type Unsigned32 and it contains reporting
+interval in seconds. Its minimum value shall be 1 and maximum value
+shall be 8639999.
+
+7.4.48 Reporting-PLMN-List
+
+The Reporting-PLMN-List AVP is of type Grouped.
+
+AVP format:
+
+  Reporting-PLMN-List ::= <AVP header: 2543 10415>
+
+  1*20{ PLMN-ID-List }
+
+  [ Prioritized-List-Indicator ]
+
+  *[ AVP ]
+
+If not included, the default value of Prioritized-List-Indicator shall
+be considered as "NOT_PRIORITIZED" (0).
+
+7.4.49 PLMN-ID-List
+
+The PLMN-ID-List AVP is of type Grouped.
+
+AVP format:
+
+  PLMN-ID-List ::= <AVP header: 2544 10415>
+
+  { Visited-PLMN-Id }
+
+  [ Periodic-Location-Support-Indicator ]
+
+  *[ AVP ]
+
+If not included, the default value of
+Periodic-Location-Support-Indicator shall be considered as
+"NOT_SUPPORTED" (0).
+
+7.4.50 Periodic-Location-Support-Indicator
+
+The Periodic-Location-Support-Indicator AVP is of type Enumerated and it
+indicates if the given PLMN-ID (indicated by Visited-PLMN-Id) supports
+periodic location or not. The following values are defined:
+
+NOT_SUPPORTED (0)
+
+SUPPORTED (1)
+
+7.4.51 Prioritized-List-Indicator
+
+The Prioritized-List-Indicator AVP is of type Enumerated and it
+indicates if the PLMN-ID-List is provided in prioritized order or not.
+The following values are defined:
+
+NOT_PRIORITIZED (0)
+
+PRIORITIZED (1)
+
+7.4.52 PLR-Flags
+
+The PLR-Flags AVP is of type Unsigned32 and it shall contain a bit mask.
+The meaning of the bits shall be as defined in table 7.4.52/1:
+
+Table 7.4.52/1: PLR-Flags
+
++-------+---------------+----------------------------------------------+
+| Bit   | Name          | Description                                  |
++-------+---------------+----------------------------------------------+
+| 0     | MO            | This bit, when set, indicates that the MO-LR |
+|       | -LR-ShortCirc | short circuit feature is requested for the   |
+|       | uit-Indicator | periodic location. This bit is applicable    |
+|       |               | only when the deferred MT-LR procedure is    |
+|       |               | initiated for a periodic location event and  |
+|       |               | when the message is sent over Lgd interface. |
++-------+---------------+----------------------------------------------+
+| 1     | Optimized     | This bit, when set, indicates that the GMLC  |
+|       | -LCS-Proc-Req | is requesting the optimized LCS procedure    |
+|       |               | for the combined MME/SGSN. This bit is       |
+|       |               | applicable only when the MT-LR procedure is  |
+|       |               | initiated by the GMLC over the Lgd           |
+|       |               | interface. The GMLC shall set this bit only  |
+|       |               | when the HSS indicates the combined MME/SGSN |
+|       |               | node supporting the optimized LCS procedure. |
++-------+---------------+----------------------------------------------+
+| 2     | Delay         | This bit, when set, indicates that the GMLC  |
+|       | ed-Location-R | supports delayed location reporting for UEs  |
+|       | eporting-Supp | transiently not reachable (e.g. UEs in       |
+|       | ort-Indicator | extended idle mode DRX or Power Saving Mode) |
+|       |               | as specified in clauses 9.1.6 and 9.1.15 of  |
+|       |               | 3GPP TS 23.271 [2], i.e. that the GMLC       |
+|       |               | supports                                     |
+|       |               |                                              |
+|       |               | - receiving a PROVIDE SUBSCRIBER LOCATION    |
+|       |               | RESPONSE with the                            |
+|       |               | UE-Transiently-Not-Reachable-Indicator set   |
+|       |               | in the PLA-Flags IE; and                     |
+|       |               |                                              |
+|       |               | - receiving the location information in a    |
+|       |               | subsequent SUBSCRIBER LOCATION REPORT when   |
+|       |               | the UE becomes reachable.                    |
++-------+---------------+----------------------------------------------+
+| N     |               |                                              |
+| OTE1: |               |                                              |
+| Bits  |               |                                              |
+| not   |               |                                              |
+| de    |               |                                              |
+| fined |               |                                              |
+| in    |               |                                              |
+| this  |               |                                              |
+| table |               |                                              |
+| shall |               |                                              |
+| be    |               |                                              |
+| cl    |               |                                              |
+| eared |               |                                              |
+| by    |               |                                              |
+| the   |               |                                              |
+| se    |               |                                              |
+| nding |               |                                              |
+| GMLC  |               |                                              |
+| and   |               |                                              |
+| disc  |               |                                              |
+| arded |               |                                              |
+| by    |               |                                              |
+| the   |               |                                              |
+| rece  |               |                                              |
+| iving |               |                                              |
+| MME   |               |                                              |
+| or    |               |                                              |
+| SGSN. |               |                                              |
++-------+---------------+----------------------------------------------+
+
+7.4.53 PLA-Flags
+
+The PLA-Flags AVP is of type Unsigned32 and it shall contain a bit mask.
+The meaning of the bits shall be as defined in table 7.4.53/1:
+
+Table 7.4.53/1: PLA-Flags
+
+  ----------- ---------------------------------------- ----------------------------------------------
+  Bit         Name                                     Description
+
+  0           Deferred-MT-LR-Response-Indicator        This bit, when set, indicates that the message
+                                                       is sent in response to the deferred-MT
+                                                       location request.
+
+  1           MO-LR-ShortCircuit-Indicator             This bit, when set, indicates that the MO-LR
+                                                       short circuit feature is accepted by the UE,
+                                                       for periodic location reporting. This bit is
+                                                       applicable only when the message is sent over
+                                                       Lgd interface.
+
+  2           Optimized-LCS-Proc-Performed             This bit, when set, indicates that the
+                                                       combined MME/SGSN has performed the optimized
+                                                       LCS procedure to retrieve the location of the
+                                                       target UE. This bit is applicable only when
+                                                       the message is sent for the MT-LR procedure
+                                                       over the Lgd interface.
+
+  3           UE-Transiently-Not-Reachable-Indicator   This bit, when set, indicates that the UE is
+                                                       transiently not reachable due to power saving
+                                                       (e.g. UE is in extended idle mode DRX or in
+                                                       Power Saving Mode), and that the location
+                                                       information will be returned in a subsequent
+                                                       Subscriber Location Report when the UE becomes
+                                                       reachable.
+
+  NOTE1: Bits                                          
+  not defined                                          
+  in this                                              
+  table shall                                          
+  be cleared                                           
+  by the                                               
+  sending MME                                          
+  or SGSN and                                          
+  discarded                                            
+  by the                                               
+  receiving                                            
+  GMLC.                                                
+  ----------- ---------------------------------------- ----------------------------------------------
+
+7.4.54 Deferred-MT-LR-Data
+
+The Deferred-MT-LR-Data AVP is of type Grouped.
+
+AVP format:
+
+  Deferred-MT-LR-Data ::= <AVP header: 2547 10415>
+
+  { Deferred-Location-Type }
+
+  [ Termination-Cause ]
+
+  [ Serving-Node ]
+
+  *[ AVP ]
+
+Serving-Node may be included only when the Termination-Cause is present
+indicating MT_LR_RESTART.
+
+The Serving-Node refers to the node where the UE has moved to and shall
+be included, if available.
+
+7.4.55 Termination-Cause
+
+The Termination-Cause AVP is of type Unsigned32. The following values
+are defined:
+
+"Normal" 0
+
+"Error Undefined" 1
+
+"Internal Timeout" 2
+
+"Congestion" 3
+
+"MT_LR_Restart" 4
+
+"Privacy Violation" 5
+
+"Shape of Location Estimate Not Supported" 6
+
+"Subscriber Termination" 7
+
+"UE Termination" 8
+
+"Network Termination" 9
+
+"MT_LR_Restart" cause code shall be used to trigger the GMLC to restart
+the location procedure, either because the sending node knows that the
+terminal has moved under coverage of another SGSN or MME, or because the
+subscriber has been deregistered due to a Cancel Location received from
+HSS.
+
+Any unrecognized value of Termination-Cause shall be treated the same as
+value 1 ("Error Undefined").
+
+7.4.56 LRA-Flags
+
+The LRA-Flags AVP is of type Unsigned32 and it shall contain a bit mask.
+The meaning of the bits shall be as defined in table 7.4.56/1:
+
+Table 7.4.56/1: LRA-Flags
+
+  ----------- ------------------------------ ----------------------------------------------
+  Bit         Name                           Description
+
+  0           MO-LR-ShortCircuit-Indicator   This bit, when set, indicates that the MO-LR
+                                             short circuit feature is used for obtaining
+                                             location estimate. This bit is applicable only
+                                             when the message is sent over Lgd interface.
+
+  NOTE1: Bits                                
+  not defined                                
+  in this                                    
+  table shall                                
+  be cleared                                 
+  by the                                     
+  sending                                    
+  GMLC and                                   
+  discarded                                  
+  by the                                     
+  receiving                                  
+  MME or                                     
+  SGSN.                                      
+  ----------- ------------------------------ ----------------------------------------------
+
+7.4.57 ESMLC-Cell-Info
+
+The ESMLC-Cell-Info AVP is of type Grouped.
+
+AVP format:
+
+  ESMLC-Cell-Info ::= <AVP header: 2552 10415>
+
+  [ ECGI ]
+  [ Cell-Portion-ID ]
+  *[ AVP ]
+
+7.4.58 Cell-Portion-ID
+
+The Cell-Portion-ID AVP is of type Unsigned32. It indicates the current
+Cell Portion location of the target UE as provided by the E-SMLC. It
+shall contain the value of the "Cell Portion ID" Information Element as
+defined in 3GPP TS 29.171 [7].
+
+7.4.59 1xRTT-RCID
+
+The 1xRTT-RCID AVP is of type OctetString. It indicates the 1xRTT
+Reference Cell Id that consists of a Cell Identification Discriminator
+and a Cell Identification and shall be formatted according to octets 3
+through the end of the Cell Identifier element defined in clause 4.2.17
+in 3GPP2 A.S0014-D [22]. The allowable cell discriminator values are
+"0000 0010", and "0000 0111".
+
+7.4.60 Delayed-Location-Reporting-Data
+
+The Delayed-Location-Reporting-Data AVP is of type Grouped.
+
+AVP format:
+
+  Delayed-Location-Reporting-Data ::= <AVP header: 2555 10415>
+
+  [ Termination-Cause ]
+
+  [ Serving-Node ]
+
+  *[ AVP ]
+
+Serving-Node may be included only when the Termination-Cause is present
+indicating MT_LR_RESTART.
+
+The Serving-Node refers to the node where the UE has moved to and shall
+be included, if available.
+
+7.4.61 Civic-Address
+
+The Civic-Address AVP is of type UTF8String. It contains the XML
+document carried in the "Civic Address" Information Element as defined
+in 3GPP TS 29.171 [7].
+
+7.4.62 Barometric-Pressure
+
+The Barometric-Pressure AVP is of type Unsigned32. It contains the
+"Barometric Pressure" Information Element as defined in 3GPP TS 29.171
+[7].
+
+7.4.63 UTRAN-Additional-Positioning-Data
+
+The UTRAN-Additional-Positioning-Data AVP is of type OctetString. It
+contains the "UTRAN Additional Positioning Data" Information Element as
+defined in 3GPP 25.413 [21].
+
+7.4.64 Motion-Event-Info
+
+The Motion-Event-Info AVP is of type Grouped.
+
+AVP format:
+
+  Motion-Event-Info ::= <AVP header: 2559 10415>
+
+  { Linear-Distance }
+
+  [ Occurrence-Info ]
+
+  [ Interval-Time ]
+
+  [ Maximum-Interval ]
+
+  [ Sampling-Interval ]
+
+  [ Reporting-Duration ]
+
+  [ Reporting-Location-Requirements ]
+
+  *[ AVP ]
+
+If not included, the default value of Occurrence-Info shall be
+considered as "ONE_TIME_EVENT" (0). Interval-Time and Maximum-Interval
+AVPs are only applicable when the Occurrence-Info is set to
+"MULTIPLE_TIME_EVENT" (1). If not included, the default value of
+Interval-Time shall be considered as one and the default values of
+Maximum-Interval, Sampling-Interval and Reporting-Duration shall each be
+considered as the maximum value. The Motion-Event-Info AVP is only
+applicable to a deferred EPC-MT-LR.
+
+7.4.65 Linear-Distance
+
+The Linear-Distance AVP is of type Unsigned32 and it contains the
+minimum linear (straight line) distance for motion event reports, in
+meters. The minimum value shall be 1 and maximum value shall be 10,000.
+The Linear-Distance AVP is only applicable to a deferred EPC-MT-LR.
+
+7.4.66 Maximum-Interval
+
+The Maximum-Interval AVP is of type Unsigned32 and it contains the
+maximum time interval between consecutive event reports, in seconds. The
+minimum value shall be 1 second and the maximum value 86400 seconds. The
+Maximum-Interval AVP is only applicable to a deferred EPC-MT-LR.
+
+7.4.67 Sampling-Interval
+
+The Sampling-Interval AVP is of type Unsigned32 and it contains the
+maximum time interval between consecutive evaluations by a UE of an area
+event or motion event, in seconds. The minimum value shall be 1 second
+and the maximum value 3600 seconds. The Sampling-Interval AVP is only
+applicable to a deferred EPC-MT-LR.
+
+7.4.68 Reporting-Duration
+
+The Reporting-Duration AVP is of type Unsigned32 and it contains the
+maximum duration of event reporting, in seconds. Its minimum value shall
+be 1 and maximum value shall be 8640000. The Reporting-Duration AVP is
+only applicable to a deferred EPC-MT-LR.
+
+7.4.69 Reporting-Location-Requirements
+
+The Reporting-Location-Requirements AVP is of type Unsigned32 and it
+shall contain a bit string indicating requirements on location provision
+for a deferred EPC-MT-LR. When a bit is set to one, the corresponding
+requirement is present. When a bit is set to zero or when the AVP is
+omitted, the corresponding requirement is not present. For support of
+backward compatibility, a receiver shall ignore any bits that are set to
+one but are not supported
+
+The meaning of the bits shall be as defined in table 7.4.69/1:
+
+Table 7.4.69/1: Reporting-Location-Requirements
+
+  -------- ------------------- ----------------------------------------------
+  Bit      Requirement         Description
+
+  0        Location-Estimate   A location estimate is required for each area
+                               event, motion event report or expiration of
+                               the maximum time interval between event
+                               reports.
+
+  1-31     None                Spare
+  -------- ------------------- ----------------------------------------------
+
+7.4.70 Additional-Area
+
+The Additional-Area AVP is of type Grouped.
+
+AVP format:
+
+  Additional-Area ::= <AVP header: 2565 10415>
+
+  { Area-Type }
+
+  { Area-Identification }
+
+  *[ AVP ]
+
+7.4.71 AMF-Instance-Id
+
+The AMF-Instance-Id AVP is of type UTF8String and contain the AMF
+Instance ID. It is coded as the NfInstanceId according to clause
+5.3.2-1, in 3GPP TS 29.571 [26].
+
+7.5 Result-Code AVP and Experimental-Result AVP Values
+
+7.5.1 General
+
+This clause defines result code values that shall be supported by all
+Diameter implementations that conform to this specification.
+
+7.5.2 Success
+
+Result codes that fall within the Success category shall be used to
+inform a peer that a request has been successfully completed. The
+Result-Code AVP values defined in the Diameter base protocol specified
+in IETF RFC 6733 [23] shall be applied.
+
+7.5.3 Permanent Failures
+
+Errors that fall within the Permanent Failures category shall be used to
+inform the peer that the request has failed, and should not be attempted
+again. The Result-Code AVP values defined in the Diameter base protocol
+specified in IETF RFC 6733 [23]shall be applied. When one of the result
+codes defined here is included in a response, it shall be inside an
+Experimental-Result AVP and the Result-Code AVP shall be absent.
+
+7.5.3.1 DIAMETER_ERROR_USER_UNKNOWN (5001)
+
+This result code shall be sent by the MME/SGSN to indicate that the user
+is unknown. This error code is defined in 3GPP TS 29.229 [17]
+
+7.5.3.2 DIAMETER_ERROR_UNAUTHORIZED_REQUESTING_NETWORK (5490)
+
+This result code shall be sent by the MME/SGSN to indicate that the
+requesting GMLC's network is not authorized to request UE location
+information. This error code is defined in 3GPP TS 29.173 [18]
+
+7.5.4 Transient Failures
+
+Errors that fall within the transient failures category are those used
+to inform a peer that the request could not be satisfied at the time
+that it was received. The request may be able to be satisfied in the
+future.
+
+7.5.4.1 DIAMETER_ERROR_UNREACHABLE_USER (4221)
+
+This result code shall be sent by the MME/SGSN to indicate that the user
+could not be reached in order to perform positioning procedure.
+
+7.5.4.2 DIAMETER_ERROR_SUSPENDED_USER (4222)
+
+This result code shall be sent by the MME/SGSN to indicate that the user
+is suspended in the MME.
+
+7.5.4.3 DIAMETER_ERROR_DETACHED_USER (4223)
+
+This result code shall be sent by the MME/SGSN to indicate that the user
+is detached in the MME.
+
+7.5.4.4 DIAMETER_ERROR_POSITIONING_DENIED (4224)
+
+This result code shall be sent by the MME/SGSN to indicate that the
+positioning procedure was denied.
+
+7.5.4.5 DIAMETER_ERROR_POSITIONING_FAILED (4225)
+
+This result code shall be sent by the MME/SGSN to indicate that the
+positioning procedure failed.
+
+7.5.4.6 DIAMETER_ERROR_UNKNOWN_UNREACHABLE LCS_CLIENT (4226)
+
+This result code shall be sent by the GMLC to indicate that the LCS
+Client was not known or could not be reached.
+
+ Annex A (informative): Change history
+
+  --------- -------- ----------- ------ ----- ----- ------------------------------------- --------
+  Date      TSG #    TSG Doc.    CR     Rev   Cat   Subject/Comment                       New
+
+  2010-03   CT-47    CP-100055                      3GPP TS presented for approval in     9.0.0
+                                                    CT#47                                 
+
+  2010-06   CT-48    CP-100286   0001               Velocity-Requested IE                 9.1.0
+
+  2010-09   CT-49    CP-100463   0002   1           Addition of Command Codes             9.2.0
+
+  2010-09   CT-49    CP-100463   0003   1           Notification Verification Only in     
+                                                    Location Type                         
+
+  2010-09   CT-49    CP-100463   0004   1           SLg for Inter Domain Scenarios        
+
+  2010-09   CT-49    CP-100463   0005               Editorial Updates                     
+
+  2010-09   CT-49    CP-100463   0007               Definition of EUTRAN-Positioning-Data 
+
+  2010-12   CT-50    CP-100681   0009               Clarification of LCS-priority AVP     9.3.0
+
+  2010-12   CT-50    CP-100681   0010               Correction of error code assignment   
+
+  2010-12   CT-50    CP-100681   0011               Correction of bit numbering in        
+                                                    Horizontal and Vertical Accuracy IEs  
+                                                    in SLg                                
+
+  2010-12   CT-50    CP-100681   0012               Units of Age of Location Estimate IE  
+                                                    in SLg                                
+
+  2011-03   CT-51    CP-110054   0013   1           Add missing Vendor Specific           9.4.0
+                                                    Application Id                        
+
+  2011-03   CT-51    CP-110054   0014   2           Essential correction on the value     
+                                                    type of the ELP Application AVPs      
+
+  2011-03                                           Update to Rel-10 version (MCC)        10.0.0
+
+  2011-09   CT-53    CP-110565   0015   2           Correction to references              10.1.0
+
+  2012-09   CT-57                                   Update to Rel-11 version (MCC)        11.0.0
+
+  2013-03   CT-59    CP-130156   0016   1           Definition of Lgd interface between   12.0.0
+                                                    SGSN and GMLC (Clause 1, 3, 4, 5)     
+
+  2013-03   CT-59    CP-130156   0017   1           Definition of Lgd interface between   
+                                                    SGSN and GMLC (Clause 2, 6, 7)        
+
+  2013-06   CT-60    CP-130291   0018   2           Support of deferred MT-LR and         12.1.0
+                                                    periodic MO-LR TTTP procedures over   
+                                                    Lgd interface                         
+
+  2013-09   CT-61    CP-130458   0019   1           Addressing the editor's note of the   12.2.0
+                                                    Location-Event AVP                    
+
+  2013-12   CT-62    CP-130631   0024   1           Adding E-SMLC provided Cell info and  12.3.0
+                                                    Cell Portion                          
+
+  2013-12   CT-62    CP-130624   0023   3           Optimized LCS procedure between GMLC  
+                                                    and combined MME/SGSN                 
+
+  2014-03   CT-63    CP-140032   0025   2           E-SMLC provided Cell info and Cell    12.4.0
+                                                    Portion                               
+
+  2015-03   CT-67    CP-150015   0031   -           Renaming of Location-Type AVP         12.5.0
+
+  2015-03   CT-67    CP-150018   0027   1           Location reporting in emergency       
+                                                    1xSRVCC                               
+
+  2015-12   CT-70    CP-150776   0032   1           EPC-MT-LR and PS-MT-LR procedure for  13.0.0
+                                                    UEs transiently not reachable due to  
+                                                    power saving                          
+
+  2015-12   CT-70    CP-150776   0034   2           Indoor Positioning support in SLg/Lgd 
+
+  2016-06   CT-72    CP-160226   0035   1           Delayed Location Reporting Data in    13.1.0
+                                                    Subscriber Location Report            
+
+  2017-03   CT#75    CP-170036   0037   1           Bit ordering in Diameter AVPs used as 14.0.0
+                                                    bit-masks                             
+
+  2017-03   CT#75    CP-170048   0038   -           Update of reference for the Diameter  14.0.0
+                                                    base protocol                         
+
+  2017-03   CT#75    CP-170048   0039   -           Handling of the                       14.0.0
+                                                    Vendor-Specific-Application-Id AVP    
+
+  2017-03   CT#75    CP-170048   0040   1           Cardinality of the Failed-AVP AVP in  14.0.0
+                                                    answer                                
+
+  2017-06   CT#76    CP-171030   0036   3           Enhancements to Location Services for 14.1.0
+                                                    CIoT                                  
+
+  2018-03   CT#79    CP-180016   0041   1           Deferred location for the UE          14.2.0
+                                                    availability event with EPC Access    
+
+  2018-06   CT#80    -           -      -           Update to Rel-15 version (MCC)        15.0.0
+
+  2019-09   CT#85    CP-192095   0042   1           Addition of High Accuracy location    15.1.0
+                                                    estimates                             
+
+  2019-12   CT#86    CP-193018   0046   -           Missing AVPs in                       15.2.0
+                                                    Provide-Location-Request Command      
+
+  2019-12   CT#86    CP-193022   0048   -           Motion-Event-Info AVP                 15.2.0
+
+  2020-07   CT#88e   -           -      -           Update to Rel-16 version (MCC)        16.0.0
+
+  2022-03   CT#95e   CP-220085   0049   1     F     High Accuracy GAD Shape with Scalable 16.1.0
+                                                    Uncertainty                           
+
+  2022-03   CT#95e   -           -      -           Update to Rel-17 version (MCC)        17.0.0
+
+  2022-09   CT#97e   CP-222022   0050   -     B     Diameter message priority over SLg    18.0.0
+                                                    and Lgd                               
+
+  2023-06   CT#100   CP-231031   0052   1     B     Support of Location service           18.1.0
+                                                    bi-directional continuity from EPS to 
+                                                    5GS                                   
+
+  2025-10   -        -           -      -           Update to Rel-19 version (MCC)        19.0.0
+  --------- -------- ----------- ------ ----- ----- ------------------------------------- --------

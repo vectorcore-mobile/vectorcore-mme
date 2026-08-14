@@ -1,0 +1,6088 @@
++--------------------------------+-------------------------------------+
+| 3GPP TS 24.080 V19.3.0         |                                     |
+| (2026-03)                      |                                     |
++================================+=====================================+
+| Technical Specification        |                                     |
++--------------------------------+-------------------------------------+
+| 3rd Generation Partnership     |                                     |
+| Project;                       |                                     |
+|                                |                                     |
+| Technical Specification Group  |                                     |
+| Core Network and Terminals;    |                                     |
+|                                |                                     |
+| Mobile radio interface layer 3 |                                     |
+|                                |                                     |
+| Supplementary services         |                                     |
+| specification;                 |                                     |
+|                                |                                     |
+| Formats and coding             |                                     |
+|                                |                                     |
+| (Release 19)                   |                                     |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| []                             | []                                  |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| The present document has been  |                                     |
+| developed within the 3rd       |                                     |
+| Generation Partnership Project |                                     |
+| (3GPP ^(TM)) and may be        |                                     |
+| further elaborated for the     |                                     |
+| purposes of 3GPP.              |                                     |
+| The present document has not   |                                     |
+| been subject to any approval   |                                     |
+| process by the 3GPP            |                                     |
+| Organizational Partners and    |                                     |
+| shall not be implemented.      |                                     |
+| This Specification is provided |                                     |
+| for future development work    |                                     |
+| within 3GPP only. The          |                                     |
+| Organizational Partners accept |                                     |
+| no liability for any use of    |                                     |
+| this Specification.            |                                     |
+| Specifications and Reports for |                                     |
+| implementation of the 3GPP     |                                     |
+| ^(TM) system should be         |                                     |
+| obtained via the 3GPP          |                                     |
+| Organizational Partners'       |                                     |
+| Publications Offices.          |                                     |
++--------------------------------+-------------------------------------+
+
++-----------------------------------------------------------------------+
+|                                                                       |
++=======================================================================+
+|   3GPP                                                                |
+|                                                                       |
+|   Postal address                                                      |
+|                                                                       |
+|   3GPP support office address                                         |
+|                                                                       |
+|   650 Route des Lucioles - Sophia Antipolis                           |
+|                                                                       |
+|   Valbonne - FRANCE                                                   |
+|                                                                       |
+|   Tel.: +33 4 92 94 42 00 Fax: +33 4 93 65 47 16                      |
+|                                                                       |
+|   Internet                                                            |
+|                                                                       |
+|   http://www.3gpp.org                                                 |
++-----------------------------------------------------------------------+
+| Copyright Notification                                                |
+|                                                                       |
+| No part may be reproduced except as authorized by written permission. |
+| The copyright and the foregoing restriction extend to reproduction in |
+| all media.                                                            |
+|                                                                       |
+| © 2026, 3GPP Organizational Partners (ARIB, ATIS, CCSA, ETSI, TSDSI,  |
+| TTA, TTC).                                                            |
+|                                                                       |
+| All rights reserved.                                                  |
+|                                                                       |
+| UMTS™ is a Trade Mark of ETSI registered for the benefit of its       |
+| members                                                               |
+|                                                                       |
+| 3GPP™ is a Trade Mark of ETSI registered for the benefit of its       |
+| Members and of the 3GPP Organizational Partners                       |
+| LTE™ is a Trade Mark of ETSI registered for the benefit of its        |
+| Members and of the 3GPP Organizational Partners                       |
+|                                                                       |
+| GSM® and the GSM logo are registered and owned by the GSM Association |
++-----------------------------------------------------------------------+
+
+ Contents
+
+Foreword 8
+
+1 Scope 9
+
+1.1 References 9
+
+1.2 Abbreviations 10
+
+2 Message functional definitions and contents 10
+
+2.1 General 10
+
+2.2 Messages for supplementary services control 11
+
+2.3 Facility 11
+
+2.4 Register 12
+
+2.4.1 Register (network to MS direction) 12
+
+2.4.2 Register (MS to network direction) 12
+
+2.4.2.1 SS version 12
+
+2.5 Release complete 13
+
+2.5.1 Cause 13
+
+2.5.2 Facility 13
+
+This information element shall be included as required by the service
+description and the procedures defined in TS 24.010. When the MS and
+network support the ExtendedFacility IE for 5G LCS (as specified in
+3GPP TS 24.571 [19]) and the length of the component cannot be fitted
+into the Facility IE, i.e. exceeds 255 octets, the ExtendedFacility IE
+shall be used. The Facility IE shall be empty and ignored when
+ExtendedFacility IE is present.3 General message format and information
+elements coding 13
+
+3.1 Overview 13
+
+3.2 Protocol discriminator 14
+
+3.3 Transaction identifier 14
+
+3.4 Message type 14
+
+3.5 Other information elements 14
+
+3.6 Facility information element 15
+
+3.6.1 Component (octet 3 etc.) 15
+
+3.6.2 Component type tag 17
+
+3.6.3 Component ID tag 17
+
+3.6.4 Operation Code 18
+
+3.6.5 Sequence and Set tags 18
+
+3.6.6 Error Code 18
+
+3.6.7 Problem Code 18
+
+3.7 Version handling for supplementary services 19
+
+3.7.1 Supplementary service screening indicator 19
+
+3.7.2 Supplementary service version indicator 20
+
+3.8 ExtendedFacility information element 20
+
+4 Supplementary services operation specifications 20
+
+4.1 General 20
+
+4.2 Operation types 21
+
+4.2.1 Void 28
+
+4.2.2 Operations description 28
+
+4.2.2.1 registerSS (MS --> network) 28
+
+4.2.2.2 eraseSS (MS --> network) 28
+
+4.2.2.3 activateSS (MS --> network) 28
+
+4.2.2.4 deactivateSS (MS --> network) 28
+
+4.2.2.5 interrogateSS (MS --> network) 28
+
+4.2.2.6 notifySS (network --> MS) 28
+
+4.2.2.7 registerPassword (MS --> network) 28
+
+4.2.2.8 getPassword (network --> MS) 29
+
+4.2.2.9 processUnstructuredSS-Data (MS --> network) 29
+
+4.2.2.10 processUnstructuredSS-Request (MS --> network) 29
+
+4.2.2.11 unstructuredSS-Request (network --> MS) 29
+
+4.2.2.12 unstructuredSS-Notify (network --> MS) 29
+
+4.2.2.13 forwardCheckSSIndication (network --> MS) 29
+
+4.2.2.14 forwardChargeAdvice (network --> MS) 29
+
+4.2.2.15 buildMPTY (MS --> network) 29
+
+4.2.2.16 holdMPTY (MS --> network) 29
+
+4.2.2.17 retrieveMPTY (MS --> network) 29
+
+4.2.2.18 splitMPTY (MS --> network) 29
+
+4.2.2.19 forwardCUG-Info (MS --> network) 29
+
+4.2.2.20 explicitCT (MS --> Network) 29
+
+4.2.2.21 accessRegisterCCEntry (MS --> Network) 30
+
+4.2.2.22 callDeflection (MS --> Network) 30
+
+4.2.2.23 userUserService (MS --> Network, Network --> MS) 30
+
+4.2.2.24 lcs-LocationNotification (network --> MS) 30
+
+4.2.2.25 lcs-MOLR (MS --> Network) 30
+
+4.2.2.26 lcs-AreaEventRequest (network --> MS) 30
+
+4.2.2.27 lcs-AreaEventReport (MS --> network) 30
+
+4.2.2.28 lcs-AreaEventCancellation (network --> MS) 30
+
+4.2.2.29 lcs-PeriodicLocationRequest (network --> MS) 30
+
+4.2.2.30 lcs-LocationUpdate (network --> MS) 30
+
+4.2.2.31 lcs-PeriodicLocationCancellation (network --> MS) 30
+
+4.2.2.32 lcs-PeriodicTriggeredInvoke (network --> MS) 31
+
+4.2.2.33 lcs-EventReport (MS --> Network) 31
+
+4.2.2.34 lcs-CancelDeferredLocation (network --> MS) 31
+
+4.2.2.35 lcs-MSCancelDeferredLocation (MS -->network) 31
+
+4.2.2.36 lcs-LocationPrivacySetting (MS --> network) 31
+
+4.2.2.37 lcs-PruAssociation (MS -->network) 31
+
+4.2.2.38 lcs-PruDisassociation (MS --> network, network --> MS) 31
+
+4.3 Errors 32
+
+4.3.1 Errors ASN.1 specification 32
+
+4.3.2 Errors description 32
+
+4.3.2.1 unknownSubscriber 32
+
+4.3.2.2 bearerServiceNotProvisioned 33
+
+4.3.2.3 teleServiceNotProvisioned 33
+
+4.3.2.4 illegalSS-Operation 33
+
+4.3.2.5 ss-ErrorStatus 33
+
+4.3.2.6 ss-NotAvailable 33
+
+4.3.2.7 ss-SubscriptionViolation 33
+
+4.3.2.8 ss-Incompatibility 33
+
+4.3.2.9 systemFailure 33
+
+4.3.2.10 dataMissing 33
+
+4.3.2.11 unexpectedDataValue 33
+
+4.3.2.12 passwordRegistrationFailure 34
+
+4.3.2.13 negativePasswordCheck 34
+
+4.3.2.14 facilityNotSupported 34
+
+4.3.2.15 resourcesNotAvailable 34
+
+4.3.2.16 maxNumberOfMPTY-ParticipantsExceeded 34
+
+4.3.2.17 callBarred 34
+
+4.3.2.18 numberOfPW-AttemptsViolation 34
+
+4.3.2.19 absentSubscriber 34
+
+4.3.2.20 illegalSubscriber 34
+
+4.3.2.21 illegalEquipment 34
+
+4.3.2.22 ussd-Busy 34
+
+4.3.2.23 unknownAlphabet 35
+
+4.3.2.24 invalidDeflectedToNumber 35
+
+4.3.2.25 specialServiceCode 35
+
+4.3.2.26 deflectionToServedSubscriber 35
+
+4.3.2.27 rejectedByNetwork 35
+
+4.3.2.28 rejectedByUser 35
+
+4.3.2.29 positionMethodFailure 35
+
+4.3.2.30 resourceLimitation 35
+
+4.3.2.31 lcs-invalidPru 35
+
+4.3.2.32 lcs-PruAssociationRej 35
+
+4.4 Data types and identifiers 35
+
+4.4.1 General 35
+
+4.4.2 ASN.1 data types 36
+
+4.4.3 Identifiers definition 49
+
+4.4.3.1 chargingInformation 49
+
+4.4.3.2 e1 49
+
+4.4.3.3 e2 49
+
+4.4.3.4 e3 49
+
+4.4.3.5 e4 50
+
+4.4.3.6 e5 50
+
+4.4.3.7 e6 50
+
+4.4.3.8 e7 50
+
+4.4.3.9 ss-Code 50
+
+4.4.3.10 ss-Notification 50
+
+4.4.3.11 ss-Status 50
+
+4.4.3.12 callIsWaiting-Indicator 50
+
+4.4.3.13 callOnhold-Indicator 50
+
+4.4.3.14 mpty-Indicator 50
+
+4.4.3.15 forwardCUG-InfoArg 50
+
+4.4.3.16 cug-Index 50
+
+4.4.3.17 suppressPrefCUG 51
+
+4.4.3.18 suppressOA 51
+
+4.4.3.19 clirSuppressionRejected 51
+
+4.4.3.20 ect-Indicator 51
+
+4.4.3.21 ect-CallState 51
+
+4.4.3.22 rdn 51
+
+4.4.3.23 presentationAllowedAddress 51
+
+4.4.3.24 presentationRestricted 51
+
+4.4.3.25 numberNotAvailableDueToInterworking 51
+
+4.4.3.26 presentationRestrictedAddress 51
+
+4.4.3.27 partyNumber 51
+
+4.4.3.28 partyNumberSubaddress 51
+
+4.4.3.29 nameIndicator 52
+
+4.4.3.30 namePresentationAllowed 52
+
+4.4.3.31 nameUnavailable 52
+
+4.4.3.32 namePresentationRestricted 52
+
+4.4.3.33 deflectedToNumber 52
+
+4.4.3.34 deflectedToSubaddress 52
+
+4.4.3.35 uUS-Service 52
+
+4.4.3.36 uUS-Required 52
+
+4.4.3.37 locationNotificationArg 52
+
+4.4.3.38 notificationType 52
+
+4.4.3.39 locationNotificationRes 52
+
+4.4.3.40 verificationResponse 52
+
+4.4.3.41 lcs-MOLRArg 52
+
+4.4.3.42 molr-Type 53
+
+4.4.3.43 locationMethod 53
+
+4.4.3.44 gpsAssistanceData 53
+
+4.4.3.45 lcs-MOLRRes 53
+
+4.4.3.46 decipheringKeys 53
+
+4.4.3.47 multicall-Indicator 53
+
+4.4.3.48 pseudonymIndicator 53
+
+4.4.3.49 LCS-PeriodicLocationRequestArg 53
+
+4.4.3.50 LCS-PeriodicLocationRequestRes 53
+
+4.4.3.51 LCS-LocationUpdateArg 53
+
+4.4.3.52 LCS-LocationUpdateRes 53
+
+4.4.3.53 LCS-PeriodicLocationCancellationArg 53
+
+4.4.3.54 terminationCause 53
+
+4.4.3.55 mo-lrShortCircuit 54
+
+4.4.3.56 locationUpdateRequest 54
+
+4.4.3.57 ganssAssistanceData 54
+
+4.4.3.58 positioningProtocolPDU 54
+
+4.4.3.59 multiplePositioningProtocolPDUs 54
+
+4.4.3.60 LCS-PeriodicTriggeredInvokeArg 54
+
+4.4.3.61 LCS-PeriodicTriggeredInvokeRes 54
+
+4.4.3.62 periodicLocation 54
+
+4.4.3.63 areaEventReporting 54
+
+4.4.3.64 areaList 54
+
+4.4.3.65 area 54
+
+4.4.3.66 areaType 54
+
+4.4.3.67 areaIdentification 54
+
+4.4.3.68 maximumInterval 55
+
+4.4.3.69 samplingInterval 55
+
+4.4.3.70 duration 55
+
+4.4.3.71 location-Info 55
+
+4.4.3.72 motionEventReporting 55
+
+4.4.3.73 linearDistance 55
+
+4.4.3.74 LCS-EventReportArg 55
+
+4.4.3.75 LCS-EventReportRes 55
+
+4.4.3.76 LCS-CancelDeferredLocationArg 55
+
+4.4.3.77 eventType 55
+
+4.4.3.78 referenceNumberExt 55
+
+4.4.3.79 h-gmlc-callBackUri 55
+
+4.4.3.80 supportedGADShapes 55
+
+4.4.3.81 lcs-QoS 56
+
+4.4.3.82 controlPlane-CIoT-5GS-Optimisation 56
+
+4.4.3.83 LCS-LocationPrivacySettingArg 56
+
+4.4.3.84 locationPrivacyIndication 56
+
+4.4.3.85 validTimePeriod 56
+
+4.4.3.86 endTime 56
+
+4.4.3.86 timestampOfLocationEstimate 56
+
+4.4.3.88 eventReportAllowedArea 56
+
+4.4.3.89 eventReportExpectedArea 56
+
+4.4.3.90 associationType 56
+
+4.4.3.91 positioningCapabilities 56
+
+4.4.3.92 locationOfPru 56
+
+4.4.3.93 periodicUpdateTimer 57
+
+4.4.3.94 updateTrigger 57
+
+4.4.3.95 ackIndication 57
+
+4.4.3.96 stateOfPru 57
+
+4.4.3.97 reportingInd 57
+
+4.4.3.98 lcs-SLMOLRArg 57
+
+4.4.3.99 slmolr-Type 57
+
+4.4.3.100 calculationAssistIndicator 57
+
+4.4.3.101 preferredRangingResult 57
+
+4.4.3.102 relatedUEInfo 57
+
+4.4.3.103 maxRelatedUE 57
+
+4.4.3.104 rangingUEInfo 57
+
+4.4.3.105 rangingRole 57
+
+4.4.3.106 lcs-SLMOLRRes 58
+
+4.4.3.108 userPlaneEventReportStat 58
+
+4.4.3.109 userPlaneReportAFAddr 58
+
+4.4.3.110 cumulativeReportCriteria 58
+
+4.4.3.111 af-Ipv4-Addrs 58
+
+4.4.3.112 af-Ipv6-Addrs 58
+
+4.4.3.113 af-Fqdn 58
+
+4.4.3.114 timerCriteria 58
+
+4.4.3.115 counterCriteria 58
+
+4.4.3.116 areaUsageInd 58
+
+4.4.3.117 absoluteLocation 58
+
+4.4.3.118 absoluteVelocity 58
+
+4.4.3.119 relativeResult 59
+
+4.4.3.120 singleRelativeResult 59
+
+4.4.3.121 relativeLocation 59
+
+4.4.3.122 rangeDirection 59
+
+4.4.3.123 relativeVelocity 59
+
+4.4.3.124 ueOnlyRSLPosAllowed 59
+
+4.4.3.125 lcs-SLMTLRArg 59
+
+4.4.3.126 slmtlr-Type 59
+
+4.4.3.127 locatedUEselect 59
+
+4.4.3.128 coordinateID 59
+
+4.4.3.129 lcs-SLMTLRRes 59
+
+4.4.3.130 multipleRangingSlPosProtocolPDUs 59
+
+4.4.3.131 lcs-DLRSPPTransportRArg 59
+
+4.4.3.132 lcs-DLRSPPTransportRes 60
+
+4.4.3.133 lcs-ULRSPPTransportRArg 60
+
+4.4.3.134 lcs-ULRSPPTransportRes 60
+
+4.4.3.135 ueBased 60
+
+4.4.3.136 requestedRangingResult 60
+
+4.5 Operations and errors implementation 60
+
+Annex A (informative): Expanded ASN.1 Module "SS-Protocol" 62
+
+Annex B (informative): Change history 63
+
+ Foreword
+
+This Technical Specification has been produced by the 3rd Generation
+Partnership Project (3GPP).
+
+The contents of the present document are subject to continuing work
+within the TSG and may change following formal TSG approval. Should the
+TSG modify the contents of the present document, it will be re-released
+by the TSG with an identifying change of release date and an increase in
+version number as follows:
+
+Version x.y.z
+
+where:
+
+x the first digit:
+
+1 presented to TSG for information;
+
+2 presented to TSG for approval;
+
+3 or greater indicates TSG approved document under change control.
+
+y the second digit is incremented for all changes of substance, i.e.
+technical enhancements, corrections, updates, etc.
+
+z the third digit is incremented when editorial only changes have been
+incorporated in the document.
+
+In the present document, modal verbs have the following meanings:
+
+shall indicates a mandatory requirement to do something
+
+shall not indicates an interdiction (prohibition) to do something
+
+The constructions "shall" and "shall not" are confined to the context of
+normative provisions, and do not appear in Technical Reports.
+
+The constructions "must" and "must not" are not used as substitutes for
+"shall" and "shall not". Their use is avoided insofar as possible, and
+they are not used in a normative context except in a direct citation
+from an external, referenced, non-3GPP document, or so as to maintain
+continuity of style when extending or modifying the provisions of such a
+referenced document.
+
+should indicates a recommendation to do something
+
+should not indicates a recommendation not to do something
+
+may indicates permission to do something
+
+need not indicates permission not to do something
+
+The construction "may not" is ambiguous and is not used in normative
+elements. The unambiguous constructions "might not" or "shall not" are
+used instead, depending upon the meaning intended.
+
+can indicates that something is possible
+
+cannot indicates that something is impossible
+
+The constructions "can" and "cannot" are not substitutes for "may" and
+"need not".
+
+will indicates that something is certain or expected to happen as a
+result of action taken by an agency the behaviour of which is outside
+the scope of the present document
+
+will not indicates that something is certain or expected not to happen
+as a result of action taken by an agency the behaviour of which is
+outside the scope of the present document
+
+might indicates a likelihood that something will happen as a result of
+action taken by some agency the behaviour of which is outside the scope
+of the present document
+
+might not indicates a likelihood that something will not happen as a
+result of action taken by some agency the behaviour of which is outside
+the scope of the present document
+
+In addition:
+
+is (or any other verb in the indicative mood) indicates a statement of
+fact
+
+is not (or any other negative verb in the indicative mood) indicates a
+statement of fact
+
+The constructions "is" and "is not" do not indicate requirements.
+
+1 Scope
+
+The present document contains the coding of information necessary for
+support of supplementary service operation on the mobile radio interface
+layer 3.
+
+Clause 2 gives the functional definitions and contents of messages for
+call independent supplementary service operations. Messages necessary
+for support of call related supplementary service operations are defined
+in TS 24.008.
+
+Clause 3 gives the general format and coding for messages used for call
+independent supplementary service and the format and coding of
+information elements used for both call related and call independent
+supplementary service operations.
+
+Clause 4 gives the specification of the call related and call
+independent supplementary service operations.
+
+1.1 References
+
+The following documents contain provisions which, through reference in
+this text, constitute provisions of the present document.
+
+- References are either specific (identified by date of publication,
+edition number, version number, etc.) or non‑specific.
+
+- For a specific reference, subsequent revisions do not apply.
+
+- For a non-specific reference, the latest version applies. In the case
+of a reference to a 3GPP document (including a GSM document), a
+non-specific reference implicitly refers to the latest version of that
+document in the same Release as the present document.
+
+[1] 3GPP TR 21.905: "3G Vocabulary".
+
+[2] 3GPP TS 22.024: "Description of Charge Advice Information (CAI)".
+
+[3] 3GPP TS 44.006: "Mobile Station ‑ Base Station System (MS ‑ BSS)
+interface Data Link (DL) layer specification".
+
+[4] 3GPP TS 24.007: "Mobile radio interface signalling layer 3; General
+aspects".
+
+[5] 3GPP TS 24.008: "Mobile radio interface layer 3 specification".
+
+[6] 3GPP TS 24.010: "Mobile radio interface layer 3; Supplementary
+services specification; General aspects".
+
+[7] 3GPP TS 24.080: "Mobile radio interface layer 3 supplementary
+services specification; Formats and coding".
+
+[8] 3GPP TS 24.090: "Unstructured supplementary services operation ‑
+Stage 3".
+
+[9] 3GPP TS 29.002: "Mobile Application Part (MAP) specification".
+
+[10] 3GPPTS 29.011: "Signalling interworking for supplementary
+services".
+
+[11] ITU-T Recommendation X.680: "Information technology – Abstract
+Syntax Notation One (ASN.1): Specification of basic notation".
+
+[11b] ITU-T Recommendation X.681: "Information technology – Abstract
+Syntax Notation One (ASN.1): Information object specification".
+
+[12] ITU-T Recommendation X.690: "Information technology – ASN.1
+encoding rules: Specification of Basic Encoding Rules (BER), Canonical
+Encoding Rules (CER) and Distinguished Encoding Rules (DER)".
+
+[13] ITU-T Recommendation X.880: "Data networks and open system
+communication - Open System Interconnection - Service definitions -
+Remote operations: Concepts, model and notation".
+
+[14] 3GPP TS 49.031: "Location Services (LCS); Base Station Application
+Part LCS Extension (BSSAP-LE)".
+
+[15] 3GPP TS 24.171: "NAS Signalling for Control Plane LCS in Evolved
+Packet System".
+
+[16] 3GPP TS 24.301: "Non-Access-Stratum (NAS) protocol for Evolved
+Packet System (EPS)".
+
+[17] 3GPP TS 37.355: "LTE Positioning Protocol (LPP)".
+
+[18] RFC 3339: "Date and Time on the Internet: Timestamps ".
+
+[19] 3GPP TS 24.571: "Control plane Location Services (LCS) procedures;
+Stage 3".
+
+[20] 3GPP TS 38.355: "Sidelink Positioning Protocol (SLPP)".
+
+1.2 Abbreviations
+
+Abbreviations used in the present document are listed in TR 21.905 [1]
+and below. An abbreviation defined in the present document takes
+precedence over the definition of the same abbreviation, if any, in
+TR 21.905 [1].
+
+GAD Geographical Area Description
+
+LDR Location Deferred Request
+
+2 Message functional definitions and contents
+
+2.1 General
+
+This clause defines the structure of the messages of the layer 3
+protocol defined in TS 24.080. These messages are standard L3 messages
+as defined in TS 24.007.
+
+Each definition includes:
+
+a) a brief description of the message;
+
+b) a table listing the information elements in the order of their
+appearance in the message. In a sequence of consecutive IEs with half
+octet length, the first IE occupies bits 1 to 4 of octet N, the second
+bits 5 to 8 of octet N, the third bits 1 to 4 of octet N+1 etc..
+
+For each IE the table indicates:
+
+1) the information element identifier, in hexadecimal notation, if the
+IE has format T, TV or TLV. If the IEI has half octet length, it is
+specified by a notation representing the IEI as a hexadecimal digit
+followed by a "-" (example: B-);
+
+2) the name of the IE (which gives an idea of the semantics of the
+element), which is used in this and other specifications as a reference
+to the IE within the message;
+
+3) the name of the type of the IE (which indicates the coding of the
+value part of the IE), and a reference to a description of the value
+part of the IE;
+
+4) the presence requirement indication (M, C or O) for the IE, as
+defined in TS 24.007;
+
+5) the format of the IE (T, V, TV, LV, TLV) as defined in TS 24.007;
+
+6) the length of the IE (or permissible range of lengths), in octets, in
+the message, where "?" means that the maximum length of the IE is only
+constrained by the link layer protocol, and in the case of the facility
+IE by possible further considerations specified in TS 24.010. This
+indication is non-normative.
+
+c) Clauses specifying conditions for IEs with presence requirement C or
+O in the relevant message. Together with other conditions specified in
+TS 24.080, TS 24.010 or TS 24.08x and 24.09x-series this defines when
+the IE shall be included or not, what non-presence of such IEs means,
+and (for IEs with presence requirement C) the static conditions for
+presence and/or non-presence of the IEs (see TS 24.007).
+
+2.2 Messages for supplementary services control
+
+Table 2.1 summarizes the messages for call independent supplementary
+services control (see TS 24.010 for a detailed description of call
+independent supplementary service messages).
+
+Table 2.1: Messages for call independent supplementary service control
+
+  -------------------------------------------------- --------------------
+  Messages for supplementary service control         Reference
+
+  FACILITY                                           2.3
+
+  REGISTER                                           2.4
+
+  RELEASE COMPLETE                                   2.5
+  -------------------------------------------------- --------------------
+
+2.3 Facility
+
+This message is sent by the mobile station or the network to request or
+acknowledge a supplementary service. It is used when information is to
+be conveyed and the transaction already exists, but is not to be
+released. The supplementary service to be invoked, and its associated
+parameters, are specified in the Facility information element and
+ExtendedFacility information element (see table 2.2). When the MS and
+network support the ExtendedFacility IE for 5G LCS (as specified in
+3GPP TS 24.571 [19]) and the length of the component cannot be fitted
+into the Facility IE, i.e. exceeds 255 octets, the ExtendedFacility IE
+shall be used. The Facility IE shall be empty and ignored when
+ExtendedFacility IE is present.
+
+Table 2.2: FACILITY message content
+
+  --------------------------------------------------------------------------
+  IEI   Information        Type / Reference   Presence    Format    Length
+        element                                                     
+  ----- ------------------ ------------------ ----------- --------- --------
+        Supplementary      Protocol           M           V         1/2
+        service            discriminator                            
+
+        protocol           3.2                                      
+        discriminator                                               
+
+        Transaction        Transaction        M           V         1/2
+        identifier         identifier                               
+
+                           3.3                                      
+
+        Facility           Message type       M           V         1
+
+        message type       3.4                                      
+
+        Facility           Facility           M           LV        2-?
+
+                           3.6                                      
+
+  F1    ExtendedFacility   ExtendedFacility   O           TLV       3-?
+
+                           3.8                                      
+  --------------------------------------------------------------------------
+
+2.4 Register
+
+2.4.1 Register (network to MS direction)
+
+This message is sent by the network to the mobile station to assign a
+new transaction identifier for call independent supplementary service
+control and to request or acknowledge a supplementary service (see table
+2.3). When the MS and network support the ExtendedFacility IE for 5G LCS
+(as specified in 3GPP TS 24.571 [19]) and the length of the component
+cannot be fitted into the Facility IE, i.e. exceeds 255 octets, the
+ExtendedFacility IE shall be used. The Facility IE shall be empty and
+ignored when ExtendedFacility IE is present.
+
+Table 2.3: REGISTER message content (network to MS direction)
+
+  ---------------------------------------------------------------------------
+  IEI   Information        Type / Reference   Presence   Format    Length
+        element                                                    
+  ----- ------------------ ------------------ ---------- --------- ----------
+        Supplementary      Protocol           M          V         1/2
+        service            discriminator                           
+
+        protocol           3.2                                     
+        discriminator                                              
+
+        Transaction        Transaction        M          V         1/2
+        identifier         identifier                              
+
+                           3.3                                     
+
+        Register           Message type       M          V         1
+
+        message type       3.4                                     
+
+  1C    Facility           Facility           M          TLV       2-?
+
+                           3.6                                     
+
+  F1    ExtendedFacility   ExtendedFacility   O          TLV       3-?
+
+                           3.8                                     
+  ---------------------------------------------------------------------------
+
+2.4.2 Register (MS to network direction)
+
+This message is sent by the mobile station to the network to assign a
+new transaction identifier for call independent supplementary service
+control and to request or acknowledge a supplementary service (see table
+2.4). When the MS and network support the ExtendedFacility IE for 5G LCS
+(as specified in 3GPP TS 24.571 [19]) and the length of the component
+cannot be fitted into the Facility IE, i.e. exceeds 255 octets, the
+ExtendedFacility IE shall be used. The Facility IE shall be empty and
+ignored when ExtendedFacility IE is present.
+
+Table 2.4: REGISTER message content (MS to network direction)
+
+  ----------------------------------------------------------------------------
+  IEI   Information        Type / Reference   Presence   Format     Length
+        element                                                     
+  ----- ------------------ ------------------ ---------- ---------- ----------
+        Supplementary      Protocol           M          V          1/2
+        service            discriminator                            
+
+        protocol           3.2                                      
+        discriminator                                               
+
+        Transaction        Transaction        M          V          1/2
+        identifier         identifier                               
+
+                           3.3                                      
+
+        Register           Message type       M          V          1
+
+        message type       3.4                                      
+
+  1C    Facility           Facility           M          TLV        2-?
+
+                           3.6                                      
+
+  7F    SS version         SS version         O          TLV        3
+                           indicator                                
+
+                           3.7.2                                    
+
+  F1    ExtendedFacility   ExtendedFacility   O          TLV        3-?
+
+                           3.8                                      
+  ----------------------------------------------------------------------------
+
+2.4.2.1 SS version
+
+This information element shall be included if the supplementary service
+operation being invoked is implemented according to the phase 2 or
+higher protocol version.
+
+2.5 Release complete
+
+This message is sent by the mobile station or the network to release a
+transaction used for call independent supplementary service control. It
+may also request or acknowledge a supplementary service (see table 2.5).
+
+Table 2.5: RELEASE COMPLETE message content
+
+  ----------------------------------------------------------------------------
+  IEI   Information        Type / Reference   Presence    Format    Length
+        element                                                     
+  ----- ------------------ ------------------ ----------- --------- ----------
+        Supplementary      Protocol           M           V         1/2
+        service            discriminator                            
+
+        protocol           3.2                                      
+        discriminator                                               
+
+        Transaction        Transaction        M           V         1/2
+        identifier         identifier                               
+
+                           3.3                                      
+
+        Release Complete   Message type       M           V         1
+
+        message type       3.4                                      
+
+  08    Cause              Cause              O           TLV       4-32
+
+                           TS 24.008                                
+
+  1C    Facility           Facility           O           TLV       2-?
+
+                           3.6                                      
+
+  F1    ExtendedFacility   ExtendedFacility   O           TLV       3-?
+
+                           3.8                                      
+  ----------------------------------------------------------------------------
+
+2.5.1 Cause
+
+This information element shall be included when the functional handling
+of the Cause IE is specified in the service description or TS 29.011. If
+the functional handling of the Cause IE is not specified, the receiving
+entity may ignore the IE.
+
+2.5.2 Facility
+
+This information element shall be included as required by the service
+description and the procedures defined in TS 24.010. When the MS and
+network support the ExtendedFacility IE for 5G LCS (as specified in
+3GPP TS 24.571 [19]) and the length of the component cannot be fitted
+into the Facility IE, i.e. exceeds 255 octets, the ExtendedFacility IE
+shall be used. The Facility IE shall be empty and ignored when
+ExtendedFacility IE is present.
+
+3 General message format and information elements coding
+
+The figures and text in this clause describe message contents. Within
+each octet, the bit designated "bit 1" is transmitted first, followed by
+bits 2, 3, 4, etc. Similarly, the octet shown at the top of each figure
+is sent first.
+
+3.1 Overview
+
+Within the layer 3 protocol defined in TS 24.080, every message is a
+standard L3 message as defined in TS 24.007. This means that the message
+consists of the following parts:
+
+a) protocol discriminator;
+
+b) transaction identifier;
+
+c) message type;
+
+d) other information elements, as required.
+
+Unless specified otherwise, a particular information element may be
+present only once in a given message.
+
+When a field extends over more than one octet, the order of bit values
+progressively decreases as the octet number increases. The least
+significant bit of the field is represented by the lowest numbered bit
+of the highest numbered octet of the field.
+
+3.2 Protocol discriminator
+
+The Protocol Discriminator (PD) and its use are defined in TS 24.007.
+TS 24.080 defines the protocols relating to the PD values:
+
+1 0 1 1 supplementary services (call independent).
+
+3.3 Transaction identifier
+
+For general rules, format and coding of transaction identifier values,
+see TS 24.008.
+
+3.4 Message type
+
+The message type IE and its use are defined in TS 24.007. Table 3.1
+defines the value part of the message type IE used in the supplementary
+service protocol.
+
+Table 3.1: Message types
+
+  --- --- --- --- --- --- --- --- ------- --------------------------------------------
+  8   7   6   5   4   3   2   1           Message types
+
+  x   x   1   0   .   .   .   .           Clearing messages:
+
+                  1   0   1   0           - RELEASE COMPLETE
+
+                                          
+
+  x   x   1   1   .   .   .   .           Miscellaneous message group:
+
+                  1   0   1   0           - FACILITY
+
+                  1   0   1   1           - REGISTER
+  --- --- --- --- --- --- --- --- ------- --------------------------------------------
+
+For messages transmitted via CS domain the following applies:
+
+- When the radio connection started with a core network node of earlier
+than R99, bit 8 shall be set to 0 and bit 7 is reserved for the send
+sequence number in messages sent from the mobile station. In messages
+sent from the network, bits 7 and 8 are coded with a "0". See 3GPP
+TS 24.007 [4].
+
+- When the radio connection started with a core network node of R'99 or
+later, bits 7 and 8 are reserved for the send sequence number in
+messages sent from the mobile station. In messages sent from the
+network, bits 7 and 8 are coded with a "0". See 3GPP TS 24.007 [4].
+
+For messages transmitted via PS domain the following applies:
+
+- No sequence number shall be used. Bits 7 and 8 shall be coded with a
+"0". See 3GPP TS 24.007 [4]. If a sequence number is received on the
+network side it shall be ignored.
+
+3.5 Other information elements
+
+These information elements are coded according to the general coding
+rules as defined in TS 24.008.
+
+Table 3.2 contains the code-points allocated to the information elements
+used in messages defined in this specification. All IEs are defined in
+TS 24.008, but the content of the Facility and SS version indicator IEs
+are defined within this specification.
+
+Table 3.2: Information elements specific to call independent
+supplementary service control
+
+  ------------------------------------------------------------------------
+  8 7 6 5 4 3 2 1                                           Reference
+                                                            (IE content)
+  --------------------- ----------------------------------- --------------
+  0 . . . . . . .       Type 3 and 4 information elements   
+
+  0 0 0 1 0 0 0         Cause                               TS 24.008
+
+  0 0 1 1 1 0 0         Facility                            3.6
+
+  1 1 1 1 1 1 1         SS version indicator                3.8.2
+
+  1 . . . . . . .       Type 6 information elements         
+
+  1 1 1 0 0 0 1         ExtendedFacility                    3.8
+  ------------------------------------------------------------------------
+
+3.6 Facility information element
+
+The purpose of the Facility information element is to indicate the
+invocation and operation of supplementary services, identified by the
+corresponding operation code within the Facility information element.
+
+The Facility information element is coded as shown in figure 3.1 and
+tables 3.3 to 3.17.
+
+The Facility is a type 4 information element with no upper length limit
+except that given by the maximum number of octets in a L3 message, see
+3GPP TS 44.006.
+
+  --------------- ------ ------ ------ ------ ------ ------ ------ ------------------
+  8               7      6      5      4      3      2      1      
+
+  0               0      0      1      1      1      0      0      octet 1
+
+  Facility IEI                                                     
+
+  Length of                                                        octet 2
+  Facility                                                         
+  contents                                                         
+
+  Component(s)                                                     octet 3 etc.
+  (note)                                                           
+
+  NOTE: One or                                                     
+  more components                                                  
+  may be included                                                  
+  depending on                                                     
+  specific                                                         
+  service                                                          
+  requirements.                                                    
+  --------------- ------ ------ ------ ------ ------ ------ ------ ------------------
+
+Figure 3.1: Facility information element
+
+3.6.1 Component (octet 3 etc.)
+
+This clause provides the formats and encoding of components in the
+Facility information element. Formats and encoding methods make use of
+and is a subset of ITU-T Rec. Q.773 (Transaction Capabilities formats
+and Encoding) and T/S 43/BB. The used part of ITU-T Rec. Q.773
+respectively T/S 43/BB is almost the same as the Component Portion of
+TC messages. The only difference is that returnResultNotLast is not
+used.
+
+This clause is further based on:
+
+- ITU-T Rec. X.680 (Abstract Syntax Notation One (ASN.1): Specification
+of Basic Notation);
+
+- ITU-T Rec. X.690 (Specification of Basic Encoding Rules (BER),
+Canonical Encoding Rules (CER) and Distinguished Encoding Rules (DER));
+
+and is consistent with these ITU-T Recommendations.
+
+The parameters in tables 3.3 to 3.6 may be one of the following:
+
+- a Sequence of Parameters;
+
+- a Set of Parameters;
+
+- a specific Parameter with its own tag (i.e. not part of a Sequence or
+Set);
+
+- nothing at all (i.e. absent).
+
+NOTE: Concerning the general rules for encoding (structure of encoding,
+identifier octets, length octets, etc.) see ITU-T Rec. X.690. For these
+general rules the same exceptions apply as stated in TS 29.002. This
+holds also for tables 3.3 to 3.6.
+
+Table 3.3: Invoke component
+
+  ------------------------------- --------------- ------------------------
+  Invoke component                Reference       Mandatory indication
+
+  Component type tag              3.6.2           M
+
+  Component length                X.690           
+
+  Invoke ID tag                   3.6.3           
+
+  Invoke ID length                X.690           M
+
+  Invoke ID                       3.6.3           
+
+  Linked ID tag                   3.6.3           
+
+  Linked ID length                X.690           O
+
+  Linked ID                       3.6.3           
+
+  Operation Code tag              3.6.4           
+
+  Operation Code length           X.690           M
+
+  Operation Code                  3.6.4           
+
+  Parameters                      4               O
+  ------------------------------- --------------- ------------------------
+
+Table 3.4: Return Result component
+
+  ------------------------------ ---------------- ------------------------
+  Return Result component        Reference        Mandatory indication
+
+  Component type tag             3.6.2            M
+
+  Component length               X.690            
+
+  Invoke ID tag                  3.6.3            
+
+  Invoke ID length               X.690            M
+
+  Invoke ID                      3.6.3            
+
+  Sequence tag                   3.6.5            O (note)
+
+  Sequence length                X.690            
+
+  Operation Code tag             3.6.4            
+
+  Operation Code length          X.690            O (note)
+
+  Operation Code                 3.6.4            
+
+  Parameters                     4                O (note)
+
+  NOTE: Omitted if the Return                     
+  Result component does not                       
+  include any parameters.                         
+  ------------------------------ ---------------- ------------------------
+
+Table 3.5: Return Error component
+
+  ------------------------------ ---------------- ------------------------
+  Return Error component         Reference        Mandatory indication
+
+  Component type tag             3.6.2            M
+
+  Component length               X.690            
+
+  Invoke ID tag                  3.6.3            
+
+  Invoke ID length               X.690            M
+
+  Invoke ID                      3.6.3            
+
+  Error Code tag                 3.6.6            
+
+  Error Code length              X.690            M
+
+  Error Code                     3.6.6            
+
+  Parameters                     4                O
+  ------------------------------ ---------------- ------------------------
+
+Table 3.6: Reject component
+
+  ------------------------------ ----------------- -----------------------
+  Reject component               Reference         Mandatory indication
+
+  Component type tag             3.6.2             M
+
+  Component length               X.690             
+
+  Invoke ID tag (note)           3.6.3             
+
+  Invoke ID length               X.690             M
+
+  Invoke ID                      3.6.3             
+
+  Problem Code tag               3.6.7             
+
+  Problem Code length            X.690             M
+
+  Problem Code                   3.6.7             
+
+  NOTE: If the Invoke ID is not                    
+  available, Universal Null                        
+  (table 3.9) with length = 0                      
+  shall be used.                                   
+  ------------------------------ ----------------- -----------------------
+
+3.6.2 Component type tag
+
+The Component type tag is coded context-specific, constructor as
+indicated in table 3.7.
+
+Table 3.7: Coding of Component type tag
+
+  -------------------------------------------- --------------------------
+  Component type tag                           8 7 6 5 4 3 2 1
+
+  Invoke                                       1 0 1 0 0 0 0 1
+
+  Return Result                                1 0 1 0 0 0 1 0
+
+  Return Error                                 1 0 1 0 0 0 1 1
+
+  Reject                                       1 0 1 0 0 1 0 0
+  -------------------------------------------- --------------------------
+
+3.6.3 Component ID tag
+
+The term Component ID refers to the Invoke ID or the Linked ID. The
+Component ID tag is coded as shown in table 3.8.
+
+Table 3.8: Coding of Component ID tag
+
+  -------------------------------------------- --------------------------
+  Component ID tag                             8 7 6 5 4 3 2 1
+
+  Invoke ID                                    0 0 0 0 0 0 1 0
+
+  Linked ID (note)                             1 0 0 0 0 0 0 0
+
+  NOTE: This tag differs from the Invoke ID    
+  tag, which is coded as a Universal INTEGER,  
+  in order to distinguish it from the          
+  following tag (Operation Code) which is also 
+  coded as a Universal INTEGER.                
+  -------------------------------------------- --------------------------
+
+The length of a Component ID is 1 octet.
+
+An Invoke Component has one or two Component IDs: an Invoke ID, and if
+it is desired to associate the Invoke with a previous Invoke, then the
+Linked ID is provided in addition to the Invoke ID.
+
+Return Result and Return Error Components have one Component ID, called
+an Invoke ID which is the reflection of the Invoke ID of the Invoke
+Component to which they are responding.
+
+The Reject Component uses as its Invoke ID, the Invoke ID in the
+Component being rejected. If this ID is unavailable (e.g. due to
+mutilation of the message not detected by lower layers), then the Invoke
+ID tag is replaced with a universal NULL tag as shown in table 3.9.
+Universal NULL has always length = 0.
+
+Any kind of component, except a reject component, may be rejected.
+
+Table 3.9: Coding of NULL tag
+
+  ------------------------------------------------ ----------------------
+                                                   8 7 6 5 4 3 2 1
+
+  NULL tag                                         0 0 0 0 0 1 0 1
+  ------------------------------------------------ ----------------------
+
+If an Invoke containing both Invoke and Linked IDs is being rejected,
+only the Invoke ID is used in the Reject Component.
+
+3.6.4 Operation Code
+
+Each Operation is assigned an Operation Code to identify it. An
+Operation Code follows an Operation Code tag and Operation Code length.
+The Operation Code tag is coded as shown in table 3.10.
+
+Table 3.10: Coding of Operation Code tag
+
+  ------------------------------------------------ ----------------------
+                                                   8 7 6 5 4 3 2 1
+
+  Operation Code tag                               0 0 0 0 0 0 1 0
+  ------------------------------------------------ ----------------------
+
+The Operation Codes for the different Operations are defined in
+clause 4.5.
+
+3.6.5 Sequence and Set tags
+
+When there is more than one parameter in a Component (applicable to all
+Component types), they follow the Sequence or Set tag, which are coded
+universal, constructor as shown in table 3.11.
+
+Table 3.11: Coding of Sequence and set tags
+
+  ------------------------------------------------ ----------------------
+  Sequence and set tags                            8 7 6 5 4 3 2 1
+
+  Sequence tag                                     0 0 1 1 0 0 0 0
+
+  Set tag                                          0 0 1 1 0 0 0 1
+  ------------------------------------------------ ----------------------
+
+3.6.6 Error Code
+
+Each Error is assigned a value (Error Code) to identify it.
+
+An Error Code follows an Error Code tag and Error Code length. The Error
+Code tag is coded as shown in table 3.12.
+
+Table 3.12: Coding of Error Code tag
+
+  ------------------------------------------------ ----------------------
+                                                   8 7 6 5 4 3 2 1
+
+  Error Code tag                                   0 0 0 0 0 0 1 0
+  ------------------------------------------------ ----------------------
+
+The Error Codes for the different Errors are defined in clause 4.5.
+
+3.6.7 Problem Code
+
+The Problem Code consists of one of the four elements: General Problem,
+Invoke Problem, Return Result Problem or Return Error Problem. The tags
+for these elements are coded as shown in table 3.13.
+
+Table 3.13: Coding of Problem tags
+
+  ------------------------------------------------ ----------------------
+  Problem tags                                     8 7 6 5 4 3 2 1
+
+  General Problem tag                              1 0 0 0 0 0 0 0
+
+  Invoke Problem tag                               1 0 0 0 0 0 0 1
+
+  Return Result Problem tag                        1 0 0 0 0 0 1 0
+
+  Return Error Problem tag                         1 0 0 0 0 0 1 1
+  ------------------------------------------------ ----------------------
+
+The Problem Codes for the different Problems are shown in tables 3.14 to
+3.17.
+
+Table 3.14: Coding of General Problem Codes
+
+  ------------------------------------------------ ----------------------
+  General Problem Codes                            8 7 6 5 4 3 2 1
+
+  Unrecognized Component                           0 0 0 0 0 0 0 0
+
+  Mistyped Component                               0 0 0 0 0 0 0 1
+
+  Badly Structured Component                       0 0 0 0 0 0 1 0
+  ------------------------------------------------ ----------------------
+
+Table 3.15: Coding of Invoke Problem Codes
+
+  ------------------------------------------------ ----------------------
+  Invoke Problem Codes                             8 7 6 5 4 3 2 1
+
+  Duplicate Invoke ID                              0 0 0 0 0 0 0 0
+
+  Unrecognized Operation                           0 0 0 0 0 0 0 1
+
+  Mistyped Parameter                               0 0 0 0 0 0 1 0
+
+  Resource Limitation                              0 0 0 0 0 0 1 1
+
+  Initiating Release                               0 0 0 0 0 1 0 0
+
+  Unrecognized Linked ID                           0 0 0 0 0 1 0 1
+
+  Linked Response Unexpected                       0 0 0 0 0 1 1 0
+
+  Unexpected Linked Operation                      0 0 0 0 0 1 1 1
+  ------------------------------------------------ ----------------------
+
+Table 3.16: Coding of Return Result Problem Codes
+
+  ------------------------------------------------ ----------------------
+  Return Result Problem Codes                      8 7 6 5 4 3 2 1
+
+  Unrecognized Invoke ID                           0 0 0 0 0 0 0 0
+
+  Return Result Unexpected                         0 0 0 0 0 0 0 1
+
+  Mistyped Parameter                               0 0 0 0 0 0 1 0
+  ------------------------------------------------ ----------------------
+
+Table 3.17: Coding of Return Error Problem Codes
+
+  ------------------------------------------------ ----------------------
+  Return Error Problem Codes                       8 7 6 5 4 3 2 1
+
+  Unrecognized Invoke ID                           0 0 0 0 0 0 0 0
+
+  Return Error Unexpected                          0 0 0 0 0 0 0 1
+
+  Unrecognized Error                               0 0 0 0 0 0 1 0
+
+  Unexpected Error                                 0 0 0 0 0 0 1 1
+
+  Mistyped Parameter                               0 0 0 0 0 1 0 0
+  ------------------------------------------------ ----------------------
+
+3.7 Version handling for supplementary services
+
+3.7.1 Supplementary service screening indicator
+
+The purpose of the supplementary service screening indicator is to allow
+the network to asses the capabilities of the MS in advance of a network
+initiated SS activity. The SS screening indicator is sent in the mobile
+station classmark 2 as defined in TS 24.008. The handling of the SS
+screening indicator is described in TS 24.010.
+
+  --------- --------- ----------- ---------- --------- ---------- -------- ----
+  8         7         6           5          4         3          2        1
+
+  (note)    (note)    SS                     (note)                        
+                      screening                                            
+                      indicator                                            
+  --------- --------- ----------- ---------- --------- ---------- -------- ----
+
+NOTE: Values not relevant to supplementary services.
+
+Figure 3.2: Coding of SS screening indicator in mobile station classmark
+2
+
+Table 3.18: Coding of SS screening indicator in mobile station classmark
+2
+
++-----------------------------------------------------------+----+----+
+| SS screening indicator in mobile station classmark 2      | 6  | 5  |
++-----------------------------------------------------------+----+----+
+| default value of phase 1                                  | 0  | 0  |
++-----------------------------------------------------------+----+----+
+| capability of handling of ellipsis notation and phase 2   | 0  | 1  |
+| error handling (note 1)                                   |    |    |
++-----------------------------------------------------------+----+----+
+| for future use (note 2)                                   | 1  | 0  |
++-----------------------------------------------------------+----+----+
+| for future use (note 2)                                   | 1  | 1  |
++-----------------------------------------------------------+----+----+
+| NOTE 1: Ellipsis notation is described in TS 24.010 and   |    |    |
+| TS 29.002. SS Error handling is described in TS 24.010.   |    |    |
+|                                                           |    |    |
+| NOTE 2: The network shall interpret these values the same |    |    |
+| as "01".                                                  |    |    |
++-----------------------------------------------------------+----+----+
+
+3.7.2 Supplementary service version indicator
+
+The purpose of the supplementary service version indicator is to allow
+the network to select the correct version of a protocol for a specific
+supplementary service. The SS version indicator is included in messages
+as defined in TS 24.008 and TS 24.080. The coding described in
+table 3.19 refers to the first octet received in the SS version
+indicator. Any other octets received shall be ignored. The handling of
+the SS version indicator is described in TS 24.010.
+
+Table 3.19: Coding of SS version indicator
+
++-----------------------------------------------+----------------------+
+| SS version indicator                          | 8 7 6 5 4 3 2 1      |
++-----------------------------------------------+----------------------+
+| phase 2 service, ellipsis notation, and       |                      |
++-----------------------------------------------+----------------------+
+| phase 2 error handling is supported (note 1)  | 0 0 0 0 0 0 0 0      |
++-----------------------------------------------+----------------------+
+|                                               |                      |
++-----------------------------------------------+----------------------+
+| SS-Protocol version 3 is supported, and       | 0 0 0 0 0 0 0 1      |
+|                                               |                      |
+| phase 2 error handling is supported (note 1)  |                      |
+|                                               |                      |
+| all other values are for future use (note 2)  |                      |
++-----------------------------------------------+----------------------+
+| NOTE 1: Ellipsis notation is described in     |                      |
+| TS 24.010 and TS 29.002. SS Error handling is |                      |
+| described in TS 24.010.                       |                      |
+|                                               |                      |
+| NOTE 2: The network shall interpret all       |                      |
+| higher values of the SS version indicator the |                      |
+| same as "00000001".                           |                      |
++-----------------------------------------------+----------------------+
+
+3.8 ExtendedFacility information element
+
+The purpose of the ExtendedFacility information element is to extend the
+maximum length of Facilty. The ExtendedFacility shall be present when
+the extendedFacilityInd indicated the MS or LMF supports the Extended
+Facility.
+
+The ExtendedFacility information element is coded as shown in figure
+3.8-1 and tables 3.3 to 3.17.
+
+The ExtendedFacility is a type 6 information element with no upper
+length limit.
+
+  --------------------------------------------------------------------------------------
+  8                  7      6      5      4      3      2      1      
+  ------------------ ------ ------ ------ ------ ------ ------ ------ ------------------
+  1                  1      1      1      0      0      0      1      octet 1
+
+  ExtendedFacility                                                    
+  IEI                                                                 
+
+  Length of                                                           octet 2 to 3
+  ExtendedFacility                                                    
+  contents                                                            
+
+  Component(s)                                                        octet 4 etc.
+  (note)                                                              
+
+  NOTE: One or more                                                   
+  components may be                                                   
+  included depending                                                  
+  on specific                                                         
+  service                                                             
+  requirements.                                                       
+  --------------------------------------------------------------------------------------
+
+Figure 3.8-1: ExtendedFacility information element
+
+4 Supplementary services operation specifications
+
+4.1 General
+
+This clause specifies the abstract syntax for the Supplementary Service
+protocol using the Abstract Syntax Notation One (ASN.1), defined in
+ITU-T Rec. X.680 and X.681.
+
+The mapping of OPERATION and ERROR to components is defined in clause 3
+of this specification.
+
+The encoding rules which are applicable to the defined abstract syntax
+are the Basic Encoding Rules for Abstract Syntax Notation One, defined
+in ITU-T Rec. X.690 with the same exceptions as stated in TS 29.002. For
+each Supplementary Service parameter which has to be transferred by a
+Supplementary Service message, there is a PDU field (an ASN.1 NamedType)
+whose ASN.1 identifier has the same name as the corresponding parameter,
+except for the differences required by the ASN.1 notation (blanks
+between words are removed, the first letter of the first word is
+lower-case and the first letter of the following words are capitalized
+(e.g. "bearer service" is mapped to "bearerService"). In addition some
+words may be abbreviated as follows:
+
+- ms mobile subscriber;
+
+- ss supplementary services;
+
+- cug closed user group.
+
+The ASN.1 data type which follows the words "ARGUMENT", "PARAMETER" or
+"RESULT" (for information objects of class "OPERATION" and "ERROR") is
+always optional from a syntactic point of view. However, except specific
+mention, it has to be considered as mandatory from a semantic point of
+view. When in an invoke component, a mandatory element is missing in any
+component or inner data structure, a reject component is returned with
+the problem code "Mistyped Parameter". When an optional element is
+missing in an invoke component or in an inner data structure while it is
+required by the context, an error component is returned; the associated
+type of error is "DataMissing".
+
+In case an element is defined as mandatory in the protocol description
+(TS 24.080 including imports from TS 29.002), but is not present
+according to the service description (stage 1 to stage 3), the ASN.1
+protocol description takes precedence over the diagrams in the TS 24.08x
+and 24.09x-series of technical specifications.
+
+When possible operations and errors are imported from TS 29.002 thereby
+making the MSC transparent to most of the messages sent to or from the
+MS.
+
+Timer values for operations which require timers are shown as ASN.1
+comments.
+
+The extension marker "…" shall be used in the same way as described in
+TS 29.002 and shall be supported on the radio interface by the MS and
+the network for all operations defined in this specification including
+those imported from TS 29.002.
+
+4.2 Operation types
+
+Table 4.1 summarizes the operations defined for supplementary services
+in this specification and shows which of these operations are call
+related and call independent. The terms "call related" and "call
+independent" are defined in 3GPP TS 24.010 [6]. Refer to 3GPP
+TS 24.171 [15] for operations for E-UTRAN LCS, and 3GPP TS 24.571 [19]
+for operation for 5G LCS.
+
+Table 4.1: Relevance of supplementary service operations
+
++----------------------------+-------------------+--------------------+
+| Operation name             | Call related SS   | Call independent   |
+|                            |                   | SS                 |
++----------------------------+-------------------+--------------------+
+| registerSS                 | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| eraseSS                    | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| activateSS                 | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| deactivateSS               | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| interrogateSS              | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| registerPassword           | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| getPassword                | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| processUnstructuredSS-Data | +                 | +                  |
++----------------------------+-------------------+--------------------+
+| forwardCheckSS-Indication  | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| pro                        | -                 | +                  |
+| cessUnstructuredSS-Request |                   |                    |
++----------------------------+-------------------+--------------------+
+| unstructuredSS-Request     | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| unstructuredSS-Notify      | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| forwardChargeAdvice        | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| notifySS                   | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| forwardCUG-Info            | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| buildMPTY                  | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| holdMPTY                   | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| retrieveMPTY               | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| splitMPTY                  | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| explicitCT                 | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| accessRegisterCCEntry      | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| eraseCCEntry               | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| callDeflection             | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| userUserService            | +                 | -                  |
++----------------------------+-------------------+--------------------+
+| lcs-LocationNotification   | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-MOLR                   | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-SLMOLR                 | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-AreaEventRequest       | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-AreaEventReport        | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-AreaEventCancellation  | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| l                          | -                 | +                  |
+| cs-PeriodicLocationRequest |                   |                    |
++----------------------------+-------------------+--------------------+
+| lcs-LocationUpdate         | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-Pe                     | -                 | +                  |
+| riodicLocationCancellation |                   |                    |
+|                            | -                 | +                  |
+| l                          |                   |                    |
+| cs-PeriodicTriggeredInvoke |                   |                    |
++----------------------------+-------------------+--------------------+
+| lcs-EventReport            | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-CancelDeferredLocation | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lc                         | -                 | +                  |
+| s-MSCancelDeferredLocation |                   |                    |
++----------------------------+-------------------+--------------------+
+| lcs-LocationPrivacySetting | -                 | +                  |
+|                            |                   |                    |
+| lcs-PruAssociation         | -                 | +                  |
+|                            |                   |                    |
+| lcs-PruDisassociation      | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-SLMTLR                 | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-DLRSPPTransport        | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| lcs-ULRSPPTransport        | -                 | +                  |
++----------------------------+-------------------+--------------------+
+| NOTE: The                  |                   |                    |
+| processUnstructuredSS-Data |                   |                    |
+| operation may be used call |                   |                    |
+| related by a GSM Phase 1   |                   |                    |
+| MS.                        |                   |                    |
++----------------------------+-------------------+--------------------+
+
+The following ASN.1 module defines operations by allocating them a local
+value. For the involved operations the same local values as in MAP are
+allocated.
+
+.$SS-Operations {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-Operations (0) version18 (18)}
+
+DEFINITIONS ::=
+
+BEGIN
+
+EXPORTS
+
+-- exports operations
+
+-- operations defined in this specification
+
+processUnstructuredSS-Data, notifySS, forwardChargeAdvice,
+forwardCUG-Info, buildMPTY, holdMPTY, retrieveMPTY, splitMPTY,
+explicitCT, accessRegisterCCEntry, callDeflection, userUserService,
+
+lcs-LocationNotification, lcs-MOLR, lcs-SLMOLR, lcs-AreaEventRequest,
+lcs-AreaEventReport, lcs-AreaEventCancellation,
+lcs-PeriodicLocationRequest, lcs-LocationUpdate,
+lcs-PeriodicLocationCancellation,
+
+lcs-PeriodicTriggeredInvoke, lcs-EventReport,
+lcs-CancelDeferredLocation, lcs-MSCancelDeferredLocation,
+lcs-LocationPrivacySetting, lcs-PruAssociation, lcs-PruDisassociation,
+lcs-SLMTLR, lcs-DLRSPPTransport, lcs-ULRSPPTransport;
+
+IMPORTS
+
+OPERATION FROM
+
+Remote-Operations-Information-Objects {
+
+joint-iso-itu-t remote-operations(4)
+
+informationObjects(5) version1(0)}
+
+-- The MAP operations:
+
+-- registerSS, eraseSS, activateSS, deactivateSS, interrogateSS,
+registerPassword,
+
+-- getPassword, processUnstructuredSS-Request, unstructuredSS-Request,
+unstructuredSS-Notify
+
+-- forwardCheckSS-Indication
+
+-- are imported from MAP-Operations in SS-Protocol module.
+
+-- imports SS-data types
+
+NotifySS-Arg,
+
+ForwardChargeAdviceArg,
+
+ForwardCUG-InfoArg,
+
+SS-UserData,
+
+AccessRegisterCCEntryArg,
+
+CallDeflectionArg,
+
+UserUserServiceArg,
+
+LocationNotificationArg,
+
+LocationNotificationRes,
+
+LCS-MOLRArg,
+
+LCS-MOLRRes,
+
+LCS-SLMOLRArg,
+
+LCS-SLMOLRRes,
+
+LCS-AreaEventRequestArg,
+
+LCS-AreaEventReportArg,
+
+LCS-AreaEventCancellationArg,
+
+LCS-PeriodicLocationRequestArg,
+
+LCS-PeriodicLocationRequestRes,
+
+LCS-LocationUpdateArg,
+
+LCS-LocationUpdateRes,
+
+LCS-PeriodicLocationCancellationArg,
+
+LCS-PeriodicTriggeredInvokeArg,
+
+LCS-PeriodicTriggeredInvokeRes,
+
+LCS-EventReportArg,
+
+LCS-EventReportRes,
+
+LCS-CancelDeferredLocationArg,
+
+LCS-LocationPrivacySettingArg,
+
+LCS-PruAssociationArg,
+
+LCS-PruAssociationRes,
+
+LCS-PruDisassociationArg,
+
+LCS-SLMTLRArg,
+
+LCS-SLMTLRRes,
+
+LCS-DLRSPPTransportArg,
+
+LCS-DLRSPPTransportRes,
+
+LCS-ULRSPPTransportArg,
+
+LCS-ULRSPPTransportRes
+
+FROM SS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-DataTypes (2) version18 (18)}
+
+-- imports MAP-SS-data types
+
+RegisterCC-EntryRes
+
+FROM MAP-SS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0)
+
+gsm-Network (1) modules (3) map-SS-DataTypes (14) version21 (21)}
+
+-- imports MAP-errors
+
+illegalSS-Operation, ss-ErrorStatus, ss-NotAvailable,
+ss-SubscriptionViolation,
+
+ss-Incompatibility, systemFailure, facilityNotSupported, callBarred,
+unexpectedDataValue, shortTermDenial, longTermDenial, dataMissing,
+forwardingViolation, forwardingFailed, positionMethodFailure,
+resourceLimitation
+
+FROM MAP-Errors {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-Errors (10) version21 (21)}
+
+-- imports SS-Errors
+
+resourcesNotAvailable, maxNumberOfMPTY-ParticipantsExceeded,
+deflectionToServedSubscriber, invalidDeflectedToNumber,
+specialServiceCode, rejectedByUser, rejectedByNetwork, lcs-invalidPru,
+lcs-PruAssociationRej
+
+FROM SS-Errors {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-Errors (1) version18 (18)}
+
+;
+
+-- operations definition
+
+processUnstructuredSS-Data OPERATION ::= { -- Timer T(PUSSD)= 15s to 30s
+
+ARGUMENT SS-UserData
+
+RESULT SS-UserData
+
+-- optional
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local:19 }
+
+notifySS OPERATION ::= {
+
+ARGUMENT NotifySS-Arg
+
+CODE local:16 }
+
+forwardChargeAdvice OPERATION ::= { -- Timer T(AoC)= 1s to 40s
+
+ARGUMENT ForwardChargeAdviceArg
+
+RETURN RESULT TRUE
+
+CODE local:125 }
+
+forwardCUG-Info OPERATION ::= {
+
+ARGUMENT ForwardCUG-InfoArg
+
+CODE local:120 }
+
+buildMPTY OPERATION ::= { -- Timer T(BuildMPTY)= 5s to 30s
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-NotAvailable |
+
+ss-Incompatibility |
+
+systemFailure |
+
+resourcesNotAvailable |
+
+maxNumberOfMPTY-ParticipantsExceeded}
+
+CODE local:124 }
+
+holdMPTY OPERATION ::= { -- Timer T(HoldMPTY)= 5s to 30s
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure}
+
+CODE local:123 }
+
+retrieveMPTY OPERATION ::= { -- Timer T(RetrieveMPTY)= 5s to 30s
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure}
+
+CODE local:122 }
+
+splitMPTY OPERATION ::= { -- Timer T(SplitMPTY)= 5s to 30s
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure}
+
+CODE local:121 }
+
+explicitCT OPERATION ::= { -- Timer T(ECT)= 5s to 15s
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-NotAvailable |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure |
+
+resourcesNotAvailable |
+
+callBarred}
+
+CODE local:126 }
+
+accessRegisterCCEntry OPERATION ::= { -- Timer T(AccRegCCEntry)= 30s
+
+ARGUMENT AccessRegisterCCEntryArg
+
+RESULT RegisterCC-EntryRes
+
+ERRORS {
+
+systemFailure |
+
+dataMissing |
+
+unexpectedDataValue |
+
+callBarred |
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-Incompatibility |
+
+shortTermDenial |
+
+longTermDenial |
+
+facilityNotSupported}
+
+CODE local:119 }
+
+-- the timer value is defined by T308, see also in TS 24.008 for
+definition of timer T308
+
+callDeflection OPERATION ::= { -- Timer T(CD)= 30s
+
+ARGUMENT CallDeflectionArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-NotAvailable |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure |
+
+resourcesNotAvailable |
+
+forwardingViolation |
+
+callBarred |
+
+deflectionToServedSubscriber |
+
+invalidDeflectedToNumber |
+
+specialServiceCode |
+
+forwardingFailed}
+
+CODE local:117 }
+
+-- the timer value is defined by T305, see also in TS 24.008 for
+definition of timer T305
+
+-- extensionContainer shall not be used with this operation
+
+userUserService OPERATION ::= { -- Timer T(UUS3)= 10s
+
+ARGUMENT UserUserServiceArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+illegalSS-Operation |
+
+ss-ErrorStatus |
+
+ss-NotAvailable |
+
+ss-Incompatibility |
+
+facilityNotSupported |
+
+systemFailure |
+
+resourcesNotAvailable |
+
+rejectedByNetwork |
+
+rejectedByUser}
+
+CODE local:118 }
+
+-- The timer value for UUS3 is 10s; it is applicable only if UUS3 is
+activated by FACILITY
+
+-- message. If UUS service (UUS1, UUS2 or UUS3) is activated by SETUP
+message, no timers are
+
+-- needed. In those cases Return Result or Return Error must be received
+within certain call
+
+-- control messages, see 3GPP TS 24.087.
+
+-- extensionContainer shall not be used with this operation.
+
+lcs-LocationNotification OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LocationNotificationArg
+
+RESULT LocationNotificationRes
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local:116 }
+
+lcs-MOLR OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-MOLRArg
+
+RESULT LCS-MOLRRes
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue |
+
+dataMissing |
+
+facilityNotSupported |
+
+ss-SubscriptionViolation |
+
+positionMethodFailure}
+
+CODE local:115 }
+
+lcs-AreaEventRequest OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-AreaEventRequestArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported |
+
+unexpectedDataValue}
+
+CODE local:114 }
+
+lcs-AreaEventReport OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-AreaEventReportArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue |
+
+facilityNotSupported}
+
+CODE local:113 }
+
+lcs-AreaEventCancellation OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-AreaEventCancellationArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported |
+
+unexpectedDataValue}
+
+CODE local:112 }
+
+lcs-PeriodicLocationRequest OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-PeriodicLocationRequestArg
+
+RESULT LCS-PeriodicLocationRequestRes
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported |
+
+unexpectedDataValue |
+
+dataMissing }
+
+CODE local: 111 }
+
+lcs-LocationUpdate OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-LocationUpdateArg
+
+RESULT LCS-LocationUpdateRes
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 110 }
+
+lcs-PeriodicLocationCancellation OPERATION ::= { -- Timer T(LCSN)= 10s
+to 20s
+
+ARGUMENT LCS-PeriodicLocationCancellationArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 109 }
+
+lcs-PeriodicTriggeredInvoke OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-PeriodicTriggeredInvokeArg
+
+RESULT LCS-PeriodicTriggeredInvokeRes
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported |
+
+unexpectedDataValue |
+
+dataMissing |
+
+resourceLimitation }
+
+CODE local: 108 }
+
+lcs-EventReport OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-EventReportArg
+
+RESULT LCS-EventReportRes
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported |
+
+ss-SubscriptionViolation |
+
+unexpectedDataValue |
+
+dataMissing |
+
+resourceLimitation }
+
+CODE local: 107 }
+
+lcs-CancelDeferredLocation OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-CancelDeferredLocationArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 106 }
+
+lcs-MSCancelDeferredLocation OPERATION ::= { -- Timer T(LCSN)= 10s to
+20s
+
+ARGUMENT LCS-CancelDeferredLocationArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 105 }
+
+lcs-LocationPrivacySetting OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-LocationPrivacySettingArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 104 }
+
+lcs-PruAssociation OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-PruAssociationArg
+
+RESULT LCS-PruAssociationRes
+
+ERRORS {
+
+lcs-invalidPru |
+
+lcs-PruAssociationRej |
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 103 }
+
+lcs-PruDisassociation OPERATION ::= { -- Timer T(LCSN)= 10s to 20s
+
+ARGUMENT LCS-PruDisassociationArg
+
+RETURN RESULT TRUE
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue}
+
+CODE local: 102 }
+
+lcs-SLMOLR OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-SLMOLRArg
+
+RESULT LCS-SLMOLRRes
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue |
+
+dataMissing |
+
+facilityNotSupported |
+
+ss-SubscriptionViolation |
+
+positionMethodFailure}
+
+CODE local:101 }
+
+lcs-SLMTLR OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-SLMTLRArg
+
+RESULT LCS-SLMTLRRes
+
+ERRORS {
+
+systemFailure |
+
+unexpectedDataValue |
+
+dataMissing |
+
+facilityNotSupported }
+
+CODE local:100 }
+
+lcs-DLRSPPTransport OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-DLRSPPTransportArg
+
+RESULT LCS-DLRSPPTransportRes
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported }
+
+CODE local: 99 }
+
+lcs-ULRSPPTransport OPERATION ::= { -- Timer T(LCSL)= 10s to 300s
+
+ARGUMENT LCS-ULRSPPTransportArg
+
+RESULT LCS-ULRSPPTransportRes
+
+ERRORS {
+
+systemFailure |
+
+facilityNotSupported }
+
+CODE local: 98 }
+
+.#END
+
+4.2.1 Void
+
+4.2.2 Operations description
+
+For each operation this clause provides a brief prose description.
+
+4.2.2.1 registerSS (MS --> network)
+
+This operation is invoked by an MS to register data related to a
+supplementary service in the network. When no BasicService parameter is
+provided, the registration applies to all provisioned and applicable
+basic services.
+
+4.2.2.2 eraseSS (MS --> network)
+
+This operation is invoked by an MS to erase data related to a
+supplementary service in the network. When no BasicService parameter is
+provided, the erasure applies to all provisioned and applicable basic
+services.
+
+4.2.2.3 activateSS (MS --> network)
+
+This operation is invoked by an MS to request the network for a
+supplementary service activation. When no BasicService parameter is
+provided, the activation applies to all provisioned and applicable basic
+services.
+
+4.2.2.4 deactivateSS (MS --> network)
+
+This operation is invoked by an MS to request the network for a
+supplementary service deactivation. When no BasicService parameter is
+provided, the deactivation applies to all provisioned and applicable
+basic services.
+
+4.2.2.5 interrogateSS (MS --> network)
+
+This operation is invoked by an MS to request the network for a
+supplementary service interrogation. When no BasicService parameter is
+provided, the interrogation applies to all provisioned and applicable
+basic services.
+
+4.2.2.6 notifySS (network --> MS)
+
+This operation is invoked by the network to forward a supplementary
+service notification towards a mobile subscriber.
+
+4.2.2.7 registerPassword (MS --> network)
+
+This operation is invoked by an MS to register a new password related to
+the management by the subscriber himself of subscription data in the
+HLR. The operation "Register password" will be successful if the
+subscriber can provide the old password, the new password and the new
+password again as results of 3 subsequent operations "Get password".
+
+4.2.2.8 getPassword (network --> MS)
+
+This operation is invoked by the network to request a password from the
+mobile subscriber. It may be used to allow the registration of a new
+password or the management of subscription data by the subscriber
+himself (e.g. modification of call barring activation status).
+
+4.2.2.9 processUnstructuredSS-Data (MS --> network)
+
+This operation is invoked by an MS to relay unstructured information in
+order to allow end to end SS operation between the MS and the network
+following specific rules (e.g. embedding of keypad commands). The
+operation is used in order to provide backward compatibility (see
+TS 24.090).
+
+4.2.2.10 processUnstructuredSS-Request (MS --> network)
+
+This operation is invoked by an MS to start an unstructured
+supplementary service data application in the network.
+
+4.2.2.11 unstructuredSS-Request (network --> MS)
+
+This operation is invoked by the network to request unstructured
+information from the MS in order to perform an unstructured
+supplementary service data application.
+
+4.2.2.12 unstructuredSS-Notify (network --> MS)
+
+This operation is invoked by the network to give an unstructured
+supplementary service notification to the mobile user.
+
+4.2.2.13 forwardCheckSSIndication (network --> MS)
+
+This operation is invoked by the network to indicate to the mobile
+subscriber that the status of supplementary services may not be correct
+in the network. The procedures for initiating ForwardCheckSSIndication
+are specified in TS 29.002.
+
+4.2.2.14 forwardChargeAdvice (network --> MS)
+
+This operation is invoked by the network to forward Advice of Charge
+information to the mobile subscriber.
+
+4.2.2.15 buildMPTY (MS --> network)
+
+This operation is invoked by an MS to request the network to connect
+calls in a multi party call.
+
+4.2.2.16 holdMPTY (MS --> network)
+
+This operation is invoked by an MS to put the MS-connection to a multi
+party call (invoked by that MS) on hold.
+
+4.2.2.17 retrieveMPTY (MS --> network)
+
+This operation is invoked by an MS to request retrieval of a multi party
+call held by that MS.
+
+4.2.2.18 splitMPTY (MS --> network)
+
+This operation is invoked by an MS to request a private communication
+with one of the remote parties in a multi party call invoked by that MS.
+
+4.2.2.19 forwardCUG-Info (MS --> network)
+
+This operation is used by an MS to explicitly invoke a CUG call.
+
+4.2.2.20 explicitCT (MS --> Network)
+
+This operation is invoked by an MS to request the network to connect the
+two calls of the subscriber.
+
+4.2.2.21 accessRegisterCCEntry (MS --> Network)
+
+This operation is invoked by an MS to activate a CCBS request in the
+network.
+
+4.2.2.22 callDeflection (MS --> Network)
+
+This operation is invoked by an MS to request the network to deflect the
+incoming call to a specified destination.
+
+4.2.2.23 userUserService (MS --> Network, Network --> MS)
+
+This operation is invoked by an MS to request the network to allow an MS
+to send/receive information to/from another subscriber in association
+with a call.
+
+4.2.2.24 lcs-LocationNotification (network --> MS)
+
+This operation is invoked by the network to request a verification from
+the mobile subscriber for the attempted location request or to notify
+the subscriber about authorized location request.
+
+Refer to 3GPP TS 24.171 [15] for lcs-LocationNotification operations for
+E-UTRAN LCS.
+
+Refer to 3GPP TS 24.571 [19] for lcs-LocationNotification operations for
+5G LCS.
+
+4.2.2.25 lcs-MOLR (MS --> Network)
+
+This operation is invoked by an MS to request the network to start
+location procedure, which is used to provide the MS location estimate,
+location assistance data or deciphering keys for broadcast assistance
+data.
+
+Refer to 3GPP TS 24.171 [15] for lcs-MOLR operations for E-UTRAN LCS.
+
+Refer to 3GPP TS 24.571 [19] for lcs-MOLR operations for 5G LCS.
+
+4.2.2.26 lcs-AreaEventRequest (network --> MS)
+
+This operation is invoked by the network to request a mobile to start
+the deferred MT-LR Area Event procedure.
+
+4.2.2.27 lcs-AreaEventReport (MS --> network)
+
+This operation is invoked by an MS to respond that the requested Area
+Event has occurred.
+
+4.2.2.28 lcs-AreaEventCancellation (network --> MS)
+
+This operation is invoked by the network to request a mobile to cancel
+the deferred MT-LR Area Event procedure.
+
+4.2.2.29 lcs-PeriodicLocationRequest (network --> MS)
+
+This operation is invoked by the network to request a mobile to start
+periodic reporting procedure.
+
+4.2.2.30 lcs-LocationUpdate (network --> MS)
+
+This operation is invoked by the network to notify the mobile about the
+delivery of location estimates to an external LCS Client, or to deliver
+a location estimate to the mobile in a periodic location procedure.
+
+4.2.2.31 lcs-PeriodicLocationCancellation (network --> MS)
+
+This operation is invoked by the network to request a mobile to cancel
+the periodic or triggered reporting procedure. This operation is
+applicable to EPS.
+
+4.2.2.32 lcs-PeriodicTriggeredInvoke (network --> MS)
+
+This operation is invoked by the network to request a mobile to start a
+periodic and triggered reporting procedure. This operation is applicable
+to EPS and 5GS.
+
+4.2.2.33 lcs-EventReport (MS --> Network)
+
+This operation is invoked by an MS to report a periodic or triggered
+location related event to the network or to cancel location related
+event reporting. This operation is applicable to 5GS.
+
+4.2.2.34 lcs-CancelDeferredLocation (network --> MS)
+
+This operation is invoked by the network to request a mobile to cancel a
+periodic or triggered reporting procedure. This operation is applicable
+to 5GS.
+
+4.2.2.35 lcs-MSCancelDeferredLocation (MS -->network)
+
+This operation is invoked by an MS to request the network to cancel a
+periodic or triggered reporting procedure. This operation is applicable
+to 5GS.
+
+4.2.2.36 lcs-LocationPrivacySetting (MS --> network)
+
+This operation is invoked by an MS to request network to update its
+Location Privacy Indication information. This operation is applicable to
+5GS.
+
+4.2.2.37 lcs-PruAssociation (MS -->network)
+
+This operation is invoked by a MS (PRU) to request to associate with
+serving LMF, as specified in clause 5.2.2.7 of 3GPP TS 24.571 [19].
+
+4.2.2.38 lcs-PruDisassociation (MS --> network, network --> MS)
+
+This operation is invoked by a MS (PRU) or a LMF to disassociate a PRU
+from a serving LMF, as specified in clause 5.2.1.5 and clause 5.2.2.8 of
+3GPP TS 24.571 [19].
+
+4.2.2.39 lcs-SLMOLR (MS --> Network)
+
+This operation is invoked by an MS to request the network to start
+ranging and sidelink positioning procedure, as specified in
+clause 5.2.2.9 of 3GPP TS 24.571 [19].
+
+4.2.2.40 lcs-SLMTLR (Network --> MS)
+
+This operation is invoked by the network to request a mobile to start
+ranging and sidelink positioning procedure, as specified in
+clause 5.2.1.x of 3GPP TS 24.571 [19].
+
+4.2.2.41 lcs-DLRSPPTransport (Network --> MS)
+
+This operation is invoked by the network to transfer RSPP supplementary
+information to a mobile, as specified in clause 5.2.1.x of
+3GPP TS 24.571 [19].
+
+4.2.2.42 lcs-ULRSPPTransport (MS -->Network)
+
+This operation is invoked by a mobile to transfer RSPP supplementary
+information to the network, as specified in clause 5.2.2.x of
+3GPP TS 24.571 [19].
+
+4.3 Errors
+
+4.3.1 Errors ASN.1 specification
+
+The following ASN.1 module provides an ASN.1 specification of errors.
+Errors from MAP are imported in the SS‑Protocol module in clause 4.5.
+The module defines errors by allocating them a local value. For the
+involved errors the same local values as in MAP are allocated.
+
+.$SS-Errors {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-Errors (1) version18 (18)}
+
+DEFINITIONS ::=
+
+BEGIN
+
+IMPORTS
+
+ERROR FROM
+
+Remote-Operations-Information-Objects {joint-iso-itu-t
+remote-operations(4)
+
+informationObjects(5) version1(0)};
+
+-- The MAP errors
+
+-- unknownSubscriber, bearerServiceNotProvisioned,
+teleserviceNotProvisioned,
+
+-- illegalSS-Operation, ss-ErrorStatus, ss-NotAvailable,
+ss-SubscriptionViolation,
+
+-- ss-Incompatibility, systemFailure, dataMissing, unexpectedDataValue,
+facilityNotSupported,
+
+-- pw-RegistrationFailure, negativePW-Check, callBarred,
+numberOfPW-AttemptsViolation,
+
+-- absentSubscriber, illegalSubscriber, illegalEquipment, ussd-Busy,
+unknownAlphabet,
+
+-- forwardingViolation, forwardingFailed, resourceLimitation
+
+-- are imported from MAP-Errors in SS-Protocol module.
+
+DUMMYCLASS ::= CLASS {&dummyID INTEGER}
+
+-- errors definition
+
+resourcesNotAvailable ERROR ::= {
+
+CODE local:127 }
+
+maxNumberOfMPTY-ParticipantsExceeded ERROR ::= {
+
+CODE local:126 }
+
+invalidDeflectedToNumber ERROR ::= {
+
+CODE local:125 }
+
+specialServiceCode ERROR ::= {
+
+CODE local:124 }
+
+deflectionToServedSubscriber ERROR ::= {
+
+CODE local:123 }
+
+rejectedByNetwork ERROR ::= {
+
+CODE local:122 }
+
+rejectedByUser ERROR ::= {
+
+CODE local:121 }
+
+lcs-invalidPru ERROR ::= {
+
+CODE local:120 }
+
+lcs-PruAssociationRej ERROR ::= {
+
+PARAMETER
+
+PruAssociationRejParam
+
+CODE local:119 }
+
+PruAssociationRejParam ::= SEQUENCE {
+
+newLmfRoutingId [0] OCTET STRING OPTIONAL,
+
+... }
+
+.#END
+
+4.3.2 Errors description
+
+For each error this clause provides a brief prose description.
+
+4.3.2.1 unknownSubscriber
+
+This error is returned by the network when it is requested to perform an
+operation concerning an unknown subscriber.
+
+4.3.2.2 bearerServiceNotProvisioned
+
+This error is returned by the network when it is requested to perform an
+operation on a supplementary service and not even a subset of the
+requested bearer service group has been subscribed to.
+
+4.3.2.3 teleServiceNotProvisioned
+
+This error is returned by the network when it is requested to perform an
+operation on a supplementary service and not even a subset of the
+requested teleservice group has been subscribed to.
+
+4.3.2.4 illegalSS-Operation
+
+This error is returned by the network when it is requested to perform an
+illegal operation which is defined as not applicable for the relevant
+supplementary service(s) (e.g. registration request for a service which
+must be registered by the administration). For the definition of the
+allowed operations for the individual supplementary services, see
+TS 24.08x and 24.09x-series of technical specifications.
+
+4.3.2.5 ss-ErrorStatus
+
+This error is returned by the network when it is requested to perform an
+operation which is not compatible with the current status of the
+relevant supplementary service. The current status may be given as
+additional information by use of the SS-parameter.
+
+4.3.2.6 ss-NotAvailable
+
+This error is returned by the network when it is requested to perform an
+operation on a supplementary service which is not available in the
+current location area.
+
+4.3.2.7 ss-SubscriptionViolation
+
+This error is returned by the network when it is requested to perform an
+operation on a supplementary service, transgressing the subscription
+restrictions. The nature of the restriction or the transgressed options
+may be sent as parameters.
+
+4.3.2.8 ss-Incompatibility
+
+This error is returned by the network when it is requested for a
+supplementary service operation incompatible with the status of an other
+supplementary service or with the teleservice or bearer service for
+which the operation is requested. This error shall only be used if the
+operation is not compatible for even a subset of the teleservice group
+or bearer service group specified in the request. The identity and
+status of the conflicting service may also be indicated. The additional
+information may contain the SS-code parameter, the Basic Service Group
+parameter and the SS-status parameter.
+
+4.3.2.9 systemFailure
+
+This error is returned by the network, when it cannot perform an
+operation because of a failure in the network.
+
+4.3.2.10 dataMissing
+
+This error is returned by the network when an optional parameter is
+missing in an invoke component or an inner data structure, while it is
+required by the context of the request.
+
+4.3.2.11 unexpectedDataValue
+
+This error is returned by the network when it receives a parameter with
+an unexpected value, without type violation.
+
+4.3.2.12 passwordRegistrationFailure
+
+This error is returned when a password registration procedure fails
+because of abnormal subscriber inputs. A more specific diagnostic may be
+passed as error parameter and indicates situations such as:
+
+- invalid password format;
+
+- new passwords mismatch.
+
+4.3.2.13 negativePasswordCheck
+
+This error is returned to indicate the negative result of a password
+check because the subscriber has not provided the required password or
+has provided a password which does not match the valid one.
+
+4.3.2.14 facilityNotSupported
+
+This error is returned by the network receiving a request about a
+facility which is not supported in the PLMN.
+
+4.3.2.15 resourcesNotAvailable
+
+This error is returned by the network to the MS if temporarily there are
+no resources to support e.g. a multi party call available in the
+network.
+
+4.3.2.16 maxNumberOfMPTY-ParticipantsExceeded
+
+This error is returned by the network to the MS if the request must be
+rejected because the number of subscribers to join a multi party call
+would exceed the maximum value.
+
+4.3.2.17 callBarred
+
+This error is returned by the network to the MS when call independent
+subscriber control procedures are barred by the operator. The parameter
+"operator barring" shall be included.
+
+4.3.2.18 numberOfPW-AttemptsViolation
+
+This error is returned by the network to the MS when the maximum number
+of wrong password attempts is exceeded.
+
+4.3.2.19 absentSubscriber
+
+This error is returned when the subscriber has activated the detach
+service or the system detects the absence condition. This error is not
+used on the radio interface but only between network entities.
+
+4.3.2.20 illegalSubscriber
+
+This error is returned when illegality of the access has been
+established by use of authentication procedure. This error is not used
+on the radio interface but only between network entities.
+
+4.3.2.21 illegalEquipment
+
+This error is returned when the IMEI check procedure has shown that the
+IMEI is prohibited listed or not permitted listed. This error is not
+used on the radio interface but only between network entities.
+
+4.3.2.22 ussd-Busy
+
+This error is returned by the MS to the network when the MS is not able
+to process the unstructured supplementary service data operation due to
+an on-going MMI input of the user or an already existing call
+independent supplementary service transaction.
+
+4.3.2.23 unknownAlphabet
+
+This error is returned by the MS or the network when the
+alphabet/language used for the unstructured supplementary service data
+operation is not known by the network or the MS.
+
+4.3.2.24 invalidDeflectedToNumber
+
+This error is returned if the requested deflected-to number is invalid.
+
+4.3.2.25 specialServiceCode
+
+This error is returned if diversion to a special service code was
+requested.
+
+4.3.2.26 deflectionToServedSubscriber
+
+This error is returned if a diversion to the served subscriber's number
+was requested.
+
+4.3.2.27 rejectedByNetwork
+
+This error is returned by the network when the network rejects
+User-to-User Signalling service request.
+
+4.3.2.28 rejectedByUser
+
+This error is returned by the remote party when the remote party rejects
+User-to-User Signalling service request.
+
+4.3.2.29 positionMethodFailure
+
+This error is returned by the network when the network is unable to
+obtain any of the location information requested or none of the
+information obtained satisfies the requested LCS QoS or if requested LCS
+assistance data could not be transferred or requested deciphering keys
+for broadcast assistance data could not be returned.
+
+4.3.2.30 resourceLimitation
+
+This error is returned when a requested operation cannot be performed
+due to insufficient resources.
+
+4.3.2.31 lcs-invalidPru
+
+This error is returned when a requested operation is from a invalid PRU.
+
+4.3.2.32 lcs-PruAssociationRej
+
+This error is returned when a requested operation cannot be accepted by
+the network, e.g., the target LMF is not the correct serving LMF of the
+PRU, and the routing ID of a new serving LMF may be returned to the PRU.
+
+4.4 Data types and identifiers
+
+4.4.1 General
+
+The data types used in the SS protocol specifications are described in
+the ASN.1 module provided in clause 4.4.2, while clause 4.4.3 provides
+an overview of the identifiers used in SS ASN.1 specifications.
+
+Named values have been defined in the following module for the upper
+boundaries of the value ranges associated to several sub-type
+specifications.
+
+4.4.2 ASN.1 data types
+
+This clause provides an ASN.1 module defining the abstract data types in
+operations and errors specification. Only data types which are specific
+for this specification are defined. All other data types are imported
+from MAP together with the import of operations and errors.
+
+.$SS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-DataTypes (2) version18 (18)}
+
+DEFINITIONS
+
+IMPLICIT TAGS ::=
+
+BEGIN
+
+-- exports all data types defined in this module
+
+IMPORTS
+
+SS-Code
+
+FROM MAP-SS-Code {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-SS-Code (15) version21 (21)}
+
+-- imports MAP-SS-DataTypes
+
+SS-Status, USSD-DataCodingScheme, USSD-String, CCBS-Feature
+
+-- USSD-DataCodingScheme, USSD-String were introduced because of CNAP.
+
+FROM MAP-SS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-SS-DataTypes (14) version21 (21)}
+
+CUG-Index,
+
+NotificationToMSUser
+
+FROM MAP-MS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-MS-DataTypes (11) version21 (21)}
+
+maxSignalInfoLength,
+
+ISDN-AddressString,
+
+ISDN-SubaddressString,
+
+AlertingPattern,
+
+LCSClientExternalID,
+
+AddressString,
+
+LCSServiceTypeID,
+
+AgeOfLocationInformation,
+
+GSN-Address
+
+FROM MAP-CommonDataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-CommonDataTypes (18) version21 (21)}
+
+LocationType,
+
+DeferredLocationEventType,
+
+LCSClientName,
+
+LCS-QoS,
+
+Horizontal-Accuracy,
+
+ResponseTime,
+
+Ext-GeographicalInformation,
+
+VelocityEstimate,
+
+SupportedGADShapes,
+
+Add-GeographicalInformation,
+
+LCSRequestorID,
+
+LCS-ReferenceNumber,
+
+LCSCodeword,
+
+AreaEventInfo,
+
+ReportingPLMNList,
+
+PeriodicLDRInfo,
+
+SequenceNumber,
+
+OccurrenceInfo,
+
+IntervalTime
+
+FROM MAP-LCS-DataTypes {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0)
+
+gsm-Network (1) modules (3) map-LCS-DataTypes (25) version21 (21)}
+
+;
+
+-- data types definition
+
+SS-UserData ::= IA5String (SIZE (1.. maxSignalInfoLength))
+
+NotifySS-Arg ::= SEQUENCE{
+
+ss-Code [1] SS-Code OPTIONAL,
+
+ss-Status [4] SS-Status OPTIONAL,
+
+ss-Notification [5] SS-Notification OPTIONAL,
+
+callIsWaiting-Indicator [14] NULL OPTIONAL,
+
+callOnHold-Indicator [15] CallOnHold-Indicator OPTIONAL,
+
+mpty-Indicator [16] NULL OPTIONAL,
+
+cug-Index [17] CUG-Index OPTIONAL,
+
+clirSuppressionRejected [18] NULL OPTIONAL,
+
+... ,
+
+ect-Indicator [19] ECT-Indicator OPTIONAL,
+
+nameIndicator [20] NameIndicator OPTIONAL,
+
+ccbs-Feature [21] CCBS-Feature OPTIONAL,
+
+alertingPattern [22] AlertingPattern OPTIONAL,
+
+multicall-Indicator [23] Multicall-Indicator OPTIONAL}
+
+-- The nameIndicator is defined because of CNAP.
+
+Multicall-Indicator ::= ENUMERATED {
+
+nbr-SNexceeded (0),
+
+nbr-Userexceeded (1)}
+
+ForwardChargeAdviceArg ::= SEQUENCE{
+
+ss-Code [0] SS-Code,
+
+chargingInformation [1] ChargingInformation,
+
+...}
+
+SS-Notification ::= OCTET STRING (SIZE (1))
+
+-- Bit 8 7 6 5 4 00000 (Unused)
+
+-- Bit 3 Call is forwarded indication to A-subscriber
+
+-- (calling subscriber)
+
+-- 0 No information content
+
+-- 1 Outgoing call has been forwarded to C
+
+-- Bit 2 Call is forwarded indication to B-subscriber
+
+-- (forwarding subscriber)
+
+-- 0 No information content
+
+-- 1 Incoming call has been forwarded to C
+
+-- Bit 1 Call is forwarded indication to C-subscriber
+
+-- (forwarded-to subscriber)
+
+-- 0 No information content
+
+-- 1 Incoming call is a forwarded call
+
+ChargingInformation ::= SEQUENCE{
+
+e1 [1] E1 OPTIONAL,
+
+e2 [2] E2 OPTIONAL,
+
+e3 [3] E3 OPTIONAL,
+
+e4 [4] E4 OPTIONAL,
+
+e5 [5] E5 OPTIONAL,
+
+e6 [6] E6 OPTIONAL,
+
+e7 [7] E7 OPTIONAL,
+
+...}
+
+E1 ::= INTEGER (0..max10TimesUnitsPerTime)
+
+max10TimesUnitsPerTime INTEGER ::= 8191
+
+E2 ::= INTEGER (0..max10TimesTimeInterval)
+
+max10TimesTimeInterval INTEGER ::= 8191
+
+E3 ::= INTEGER (0..max100TimesScalingFactor)
+
+max100TimesScalingFactor INTEGER ::= 8191
+
+E4 ::= INTEGER (0..max10TimesIncrement)
+
+max10TimesIncrement INTEGER ::= 8191
+
+E5 ::= INTEGER (0..max10TimesIncrementPerDataInterval)
+
+max10TimesIncrementPerDataInterval INTEGER ::= 8191
+
+E6 ::= INTEGER (0..maxNumberOfSegmentsPerDataInterval)
+
+maxNumberOfSegmentsPerDataInterval INTEGER ::= 8191
+
+E7 ::= INTEGER (0..max10TimesInitialTime)
+
+max10TimesInitialTime INTEGER ::= 8191
+
+CallOnHold-Indicator ::= ENUMERATED {
+
+callRetrieved (0),
+
+callOnHold (1)}
+
+ForwardCUG-InfoArg ::= SEQUENCE {
+
+cug-Index [0] CUG-Index OPTIONAL,
+
+suppressPrefCUG [1] NULL OPTIONAL,
+
+suppressOA [2] NULL OPTIONAL,
+
+...}
+
+ECT-Indicator ::= SEQUENCE {
+
+ect-CallState [0] ECT-CallState,
+
+rdn [1] RDN OPTIONAL,
+
+...}
+
+ECT-CallState ::= ENUMERATED {
+
+alerting (0),
+
+active (1)}
+
+NameIndicator ::= SEQUENCE {
+
+callingName [0] Name OPTIONAL,
+
+...}
+
+Name ::= CHOICE {
+
+namePresentationAllowed [0] NameSet,
+
+presentationRestricted [1] NULL,
+
+nameUnavailable [2] NULL,
+
+namePresentationRestricted [3] NameSet}
+
+NameSet ::= SEQUENCE {
+
+dataCodingScheme [0] USSD-DataCodingScheme,
+
+lengthInCharacters [1] INTEGER,
+
+nameString [2] USSD-String,
+
+...}
+
+-- NameIndicator, Name and NameSet are defined because of CNAP.
+
+-- The USSD-DataCodingScheme shall indicate use of the default alphabet
+through the
+
+-- following encoding:
+
+-- bit 7 6 5 4 3 2 1 0
+
+-- | 0 0 0 0 | 1 1 1 1|
+
+RDN ::= CHOICE {
+
+presentationAllowedAddress [0] RemotePartyNumber,
+
+presentationRestricted [1] NULL,
+
+numberNotAvailableDueToInterworking [2] NULL,
+
+presentationRestrictedAddress [3] RemotePartyNumber}
+
+RemotePartyNumber ::= SEQUENCE {
+
+partyNumber [0] ISDN-AddressString,
+
+partyNumberSubaddress [1] ISDN-SubaddressString OPTIONAL,
+
+...}
+
+AccessRegisterCCEntryArg ::= SEQUENCE {
+
+...}
+
+CallDeflectionArg ::= SEQUENCE {
+
+deflectedToNumber [0] AddressString,
+
+deflectedToSubaddress [1] ISDN-SubaddressString OPTIONAL,
+
+...}
+
+UserUserServiceArg ::= SEQUENCE {
+
+uUS-Service [0] UUS-Service,
+
+uUS-Required [1] BOOLEAN,
+
+... }
+
+UUS-Service ::= ENUMERATED {
+
+uUS1 (1),
+
+uUS2 (2),
+
+uUS3 (3),
+
+... }
+
+-- exception handling:
+
+-- In case of UUS-Service with any other value, indicated as "UUS
+required",
+
+-- but not understood by the MS, the call will be cleared.
+
+LocationNotificationArg ::= SEQUENCE {
+
+notificationType [0] NotificationToMSUser,
+
+locationType [1] LocationType,
+
+lcsClientExternalID [2] LCSClientExternalID OPTIONAL,
+
+lcsClientName [3] LCSClientName OPTIONAL,
+
+... ,
+
+lcsRequestorID [4] LCSRequestorID OPTIONAL,
+
+lcsCodeword [5] LCSCodeword OPTIONAL,
+
+lcsServiceTypeID [6] LCSServiceTypeID OPTIONAL,
+
+deferredLocationExt [7] DeferredLocationExt OPTIONAL,
+
+rangingSlExt [8] RangingSlExt OPTIONAL }
+
+-- The notificationType may only be set to notifyLocationAllowed,
+
+-- notifyAndVerify-LocationAllowedIfNoResponse,
+
+-- or notifyAndVerify-LocationNotAllowedIfNoResponse.
+
+-- The locationEstimateType field of the locationType may only be set to
+
+-- currentLocation, currentOrLastKnownLocation,
+
+-- notificationVerificationOnly, or activateDeferredLocation.
+
+-- The deferredLocationEventType field of the locationType may only be
+set to
+
+-- enteringIntoArea, and/or leavingFromArea, and/or beingInsideArea,
+
+-- and/or periodicLDR.
+
+-- For LCS location notification of MT-LR for current location, the
+
+-- locationEstimateType field of the locationType shall be set to
+currentLocation.
+
+-- For LCS location notification of MT-LR for current or last known
+location, the
+
+-- locationEstimateType field of the locationType shall be set to
+currentOrLastKnownLocation.
+
+-- For the LCS location notification for the LDR of MS available event,
+
+-- the locationEstimateType field of the locationType shall be set to
+currentLocation.
+
+-- For LCS location notification for the LDR of change of area event,
+
+-- the locationEstimateType field of the locationType shall be set to
+
+-- activateDeferredLocation, and the deferredLocationEventType shall be
+
+-- set to enteringIntoArea, and/or leavingFromArea, and/or
+beingInsideArea.
+
+-- For the post positioning LCS location notification, the
+locationEstimateType
+
+-- field of the locationType shall be set to
+notificationVerificationOnly.
+
+-- For LCS location notification for the LDR of periodic location event,
+
+-- the locationEstimateType field of the locationType shall be set to
+
+-- activateDeferredLocation, and the
+
+-- deferredLocationEventType shall be set to periodicLDR.
+
+-- For LCS location notification for the LDR of the motion event,
+
+-- the locationEstimateType field of the locationType shall be set to
+
+-- activateDeferredLocation, the deferredLocationEventType shall be
+omitted
+
+-- and the deferredLocationExt shall be set to motionEvent.
+
+-- exception handling:
+
+-- At reception of an unrecognised notificationType value the receiver
+shall reject the
+
+-- operation with a return error cause of unexpected data value.
+
+-- At reception of an unrecognised locationType value the receiver shall
+reject the
+
+-- operation with a return error cause of unexpected data value.
+
+-- At reception of an unallowed notificationType value the receiver
+shall either ignore the
+
+-- received operation or reject the operation with a return error cause
+of unexpected
+
+-- data value.
+
+-- At reception of an unallowed locationType value the receiver shall
+either ignore the
+
+-- received operation or reject the operation with a return error cause
+of unexpected
+
+-- data value.
+
+DeferredLocationExt ::= BIT STRING {
+
+motionEvent (0) } (SIZE (1..16))
+
+-- A bit set to one indicates that the corresponding deferred location
+type is present.
+
+-- A bit set to zero indicates that the corresponding deferred location
+type is absent.
+
+RangingSlExt ::= BIT STRING {
+
+rangingIndication (0) } (SIZE (1..16))
+
+-- A bit set to one indicates that the notification is for ranging and
+sidelink positioning.
+
+LocationNotificationRes ::= SEQUENCE {
+
+verificationResponse [0] VerificationResponse OPTIONAL,
+
+locationPrivacyIndication [1] LCS-LocationPrivacyIndication OPTIONAL,
+
+validTimePeriod [2] LCS-ValidTimePeriod OPTIONAL,
+
+...}
+
+-- Parameters locationPrivacyIndication or validTimePeriod may be
+included by a UE for 5GS
+
+-- access. Parameter validTimePeriod only may be included if parameter
+locatonPrivacyIndication
+
+-- is included.
+
+VerificationResponse::= ENUMERATED {
+
+permissionDenied (0),
+
+permissionGranted (1),
+
+... }
+
+-- exception handling:
+
+-- an unrecognized value shall be treated the same as value 0
+(permissionDenied)
+
+LCS-MOLRArg ::= SEQUENCE {
+
+molr-Type [0] MOLR-Type,
+
+locationMethod [1] LocationMethod OPTIONAL,
+
+lcs-QoS [2] LCS-QoS OPTIONAL,
+
+lcsClientExternalID [3] LCSClientExternalID OPTIONAL,
+
+mlc-Number [4] ISDN-AddressString OPTIONAL,
+
+gpsAssistanceData [5] GPSAssistanceData OPTIONAL,
+
+...,
+
+supportedGADShapes [6] SupportedGADShapes OPTIONAL,
+
+lcsServiceTypeID [7] LCSServiceTypeID OPTIONAL,
+
+ageOfLocationInfo [8] AgeOfLocationInformation OPTIONAL,
+
+locationType [9] LocationType OPTIONAL,
+
+pseudonymIndicator [10] NULL OPTIONAL,
+
+h-gmlc-address [11] GSN-Address OPTIONAL,
+
+locationEstimate [12] Ext-GeographicalInformation OPTIONAL,
+
+velocityEstimate [13] VelocityEstimate OPTIONAL,
+
+referenceNumber [14] LCS-ReferenceNumber OPTIONAL,
+
+periodicLDRInfo [15] PeriodicLDRInfo OPTIONAL,
+
+locationUpdateRequest [16] NULL OPTIONAL,
+
+sequenceNumber [17] SequenceNumber  OPTIONAL,
+
+terminationCause [18] TerminationCause OPTIONAL,
+
+mo-lrShortCircuit [19] NULL OPTIONAL,
+
+ganssAssistanceData [20] GANSSAssistanceData OPTIONAL,
+
+multiplePositioningProtocolPDUs [21] MultiplePositioningProtocolPDUs
+OPTIONAL,
+
+locationInfo [22] LocationInfo OPTIONAL,
+
+scheduledLocTime [23] DateTime OPTIONAL }
+
+-- The parameter locationMethod shall be included if and only if the
+molr-Type is set to value
+
+-- deCipheringKeys or assistanceData.
+
+-- The parameter gpsAssistanceData shall be included if and only if the
+molr-Type is set to value
+
+-- assistanceData and locationMethod is set to value assistedGPS or
+assistedGPSandGANSS.
+
+-- The parameter ganssAssistanceData shall be included if and only if
+the molr-Type is set to value
+
+-- assistanceData and locationMethod is set to value assistedGANSS or
+assistedGPSandGANSS.
+
+-- supportedGADShapes shall not be included for deferred MO-LR
+initiation or deferred MO-LR or MT-LR
+
+-- responses
+
+-- multiplePositioningProtocolPDUs may be included for an EPC-MO-LR and
+for 5GC-MO-LR.
+
+-- locationMethod shall not be included for E-UTRAN and 5G access.
+
+-- gpsAssistanceData shall not be included for E-UTRAN access.
+
+-- velocityEstimate shall not be included for E-UTRAN access.
+
+-- periodicLDRInfo shall not be included for E-UTRAN access.
+
+-- locationUpdateRequest shall not be included for E-UTRAN access.
+
+-- sequenceNumber shall not be included for E-UTRAN access.
+
+-- mo-lrShortCircuit shall not be included for E-UTRAN access.
+
+-- ganssAssistanceData shall not be included for E-UTRAN access.
+
+-- locationInfo shall be included if available for E-UTRAN access for a
+periodic and triggered
+
+-- event report.
+
+-- Only mlc-number could be used to represent the address of H-GMLC of
+the UE, h-gmlc-address shall not be used for this purpose.
+
+-- if mappedQoSEps was received in LCS-PeriodicTriggeredInvokeArg to
+initiate deferred location event reporting from 5GS, lcs-QoS shall be
+set to the value of the received mappedQoSEps when a correspoding event
+is to be reported in EPS.
+
+MOLR-Type::= ENUMERATED {
+
+locationEstimate (0),
+
+assistanceData (1),
+
+deCipheringKeys (2),
+
+... ,
+
+deferredMo-lrTTTPInitiation (3),
+
+deferredMo-lrSelfLocationInitiation (4),
+
+deferredMt-lrOrmo-lrTTTPLocationEstimate (5),
+
+deferredMt-lrOrmo-lrCancellation (6),
+
+periodicEvent (7),
+
+enteringAreaEvent (8),
+
+leavingAreaEvent (9),
+
+beingInsideAreaEvent (10),
+
+motionEvent (11),
+
+maximumIntervalExpirationEvent (12) }
+
+-- exception handling:
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+-- For E-UTRAN access, only locationEstimate, assistanceData,
+periodicEvent,
+
+-- deferredMt-lrOrmo-lrCancellation, enteringAreaEvent,
+leavingAreaEvent, beingInsideAreaEvent,
+
+-- motionEvent or maximumIntervalExpirationEvent shall be included
+
+LocationMethod::= ENUMERATED {
+
+msBasedEOTD (0),
+
+msAssistedEOTD (1),
+
+assistedGPS (2),
+
+...,
+
+msBasedOTDOA (3),
+
+assistedGANSS (4),
+
+assistedGPSandGANSS (5)
+
+}
+
+-- exception handling:
+
+-- When this parameter is received with value msBasedEOTD or
+msAssistedEOTD and the MS
+
+-- is camped on an UMTS Service Area then the receiver shall reject it
+
+-- with a return error cause of unexpected data value.
+
+-- When this parameter is received with value msBasedOTDOA and the MS
+
+-- is camped on a GSM Cell then the receiver shall reject it with a
+return error cause of
+
+-- unexpected data value.
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+GPSAssistanceData::= OCTET STRING (SIZE (1..38))
+
+-- Octets 1 to 38 are coded in the same way as the octets 3 to 7+2n of
+Requested GPS Data IE
+
+-- in 3GPP TS 49.031 [14].
+
+GANSSAssistanceData::= OCTET STRING (SIZE (1..40))
+
+-- Octets 1 to 40 are coded in the same way as the octets 3 to 9+2n of
+Requested GANSS Data IE
+
+-- in 3GPP TS 49.031 [14] .
+
+TerminationCause ::= ENUMERATED {
+
+subscriberTermination (0),
+
+uETermination (1),
+
+...,
+
+normalTermination (2),
+
+networkTermination (3)}
+
+-- normalTermination shall be included for a normal end to periodic or
+triggered event
+
+-- reporting
+
+MultiplePositioningProtocolPDUs ::= SEQUENCE (SIZE (1..maxNumLPPMsg)) OF
+PositioningProtocolPDU
+
+PositioningProtocolPDU ::= OCTET STRING
+-- PositioningProtocolPDU contains a LPP message defined in 3GPP TS
+36.355 [17].
+
+maxNumLPPMsg INTEGER ::= 3
+
+LCS-MOLRRes::= SEQUENCE {
+
+locationEstimate [0] Ext-GeographicalInformation OPTIONAL,
+
+decipheringKeys [1] DecipheringKeys OPTIONAL,
+
+...,
+
+add-LocationEstimate [2] Add-GeographicalInformation OPTIONAL,
+
+velocityEstimate [3] VelocityEstimate OPTIONAL,
+
+referenceNumber [4] LCS-ReferenceNumber OPTIONAL,
+
+h-gmlc-address [5] GSN-Address OPTIONAL,
+
+mo-lrShortCircuit [6] NULL OPTIONAL,
+
+reportingPLMNList [7] ReportingPLMNList OPTIONAL,
+
+timestampOfLocationEstimate [8] DateTime OPTIONAL
+
+}
+
+-- Parameters locationEstimate or add-LocationEstimate (one but not
+both)
+
+-- shall be included if and only if the
+
+-- molr-Type in LocationRequestArg was set to value locationEstimate.
+
+-- Parameter add-LocationEstimate shall not be included if the
+supportedGADShapes
+
+-- parameter was not received in the LCS-MOLRArg.
+
+-- The locationEstimate and the add-locationEstimate parameters shall
+not be sent if
+
+-- the supportedGADShapes parameter has been received in LCS-MOLRArg
+
+-- and the shape encoded in locationEstimate or add-LocationEstimate is
+not marked
+
+-- as supported in supportedGADShapes. In such a case LCS-MOLRArg
+
+-- shall be rejected with error FacilityNotSupported with additional
+indication
+
+-- shapeOfLocationEstimateNotSupported.
+
+-- Parameter decipheringKeys shall be included if and only if the
+molr-Type
+
+-- in LocationRequestArg was set to value deCipheringKeys.
+
+-- Parameter velocityEstimate may only be included if the lcs-QoS in
+LCS-MOLRarg includes
+
+-- velocityRequest
+
+-- decipheringKeys shall not be included for E-UTRAN access.
+
+-- referenceNumber shall not be included for E-UTRAN access.
+
+-- h-gmlc-address shall not be included for E-UTRAN access.
+
+-- mo-lrShortCircuit shall not be included for E-UTRAN access.
+
+-- reportingPLMNList shall not be included for E-UTRAN access.
+
+DecipheringKeys::= OCTET STRING (SIZE (15))
+
+-- Octets in DecipheringKeys are coded in the same way as the octets 3
+to 17 of Deciphering Key IE
+
+-- in 3GPP TS 49.031 [14]. I.e. these octets contain Current Deciphering
+Key, Next Deciphering Key and
+
+-- Ciphering Key Flag.
+
+LCS-AreaEventRequestArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+h-gmlc-address [1] GSN-Address,
+
+deferredLocationEventType [3] DeferredLocationEventType,
+
+areaEventInfo [4] AreaEventInfo,
+
+... }
+
+-- the msAvailableValue in the DeferredLocationEventType is not
+applicable for this procedure
+
+SLMOLR-Type::= ENUMERATED {
+
+rangingSidelink (0),
+
+...}
+
+-- exception handling:
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+LCS-SLMOLRArg ::= SEQUENCE {
+
+slmolr-Type [0] SLMOLR-Type,
+
+lcs-QoS [1] LCS-QoS OPTIONAL,
+
+lcsClientExternalID [2] LCSClientExternalID OPTIONAL,
+
+mlc-Number [3] ISDN-AddressString OPTIONAL,
+
+supportedGADShapes [4] SupportedGADShapes OPTIONAL,
+
+lcsServiceTypeID [5] LCSServiceTypeID OPTIONAL,
+
+pseudonymIndicator [7] NULL OPTIONAL,
+
+h-gmlc-address [8] GSN-Address OPTIONAL,
+
+calculationAssistIndicator [9] BOOLEAN OPTIONAL,
+
+preferredRangingResult [10] PreferredRangingResult OPTIONAL,
+
+relatedUEInfo [11] RelatedUEInfo OPTIONAL,
+
+...}
+
+-- The parameter slmolr-Type shall set to value rangingSidelink.
+
+-- Only mlc-number could be used to represent the address of H-GMLC of
+the UE, h-gmlc-address shall not be used for this purpose.
+
+PreferredRangingResult ::= SEQUENCE {
+
+absoluteLocationIndicator [0] BOOLEAN OPTIONAL,
+
+absoluteVelocityIndicator [1] BOOLEAN OPTIONAL,
+
+relativeLocationIndicator [2] BOOLEAN OPTIONAL,
+
+rangeDirection [3] BOOLEAN OPTIONAL,
+
+relativeVelocityIndicator [4] BOOLEAN OPTIONAL,
+
+... }
+
+RelatedUEInfo ::= SEQUENCE SIZE (1..maxRelatedUE) OF RangingUEInfo
+
+maxRelatedUE INTEGER ::= 16
+
+RangingUEInfo ::= SEQUENCE {
+
+applicationLayerID [0] OCTET STRING,
+
+rangingRole [1] RangingRole OPTIONAL,
+
+... }
+
+RangingRole ::= ENUMERATED {
+
+targetUE (0),
+
+locatedUE (1),
+
+slReferenceUE (2),
+
+slServerUE (3),
+
+slClientUE (4),
+
+... }
+
+LCS-SLMOLRRes::= SEQUENCE {
+
+absoluteLocation [0] Ext-GeographicalInformation OPTIONAL,
+
+absoluteVelocity [1] VelocityEstimate OPTIONAL,
+
+relativeResult [2] RelativeResult OPTIONAL,
+
+ueOnlyRSLPosAllowed [4] Duration OPTIONAL,
+
+timestamp [5] DateTime OPTIONAL,
+
+... }
+
+RelativeResult ::= SEQUENCE SIZE (1..maxRelatedUE) OF
+SingleRelativeResult
+
+SingleRelativeResult ::= SEQUENCE {
+
+relatedUEInfo [0] RelatedUEInfo OPTIONAL,
+
+relativeLocation [1] RelativeLocationCoordinates OPTIONAL,
+
+rangeDirection [2] RangeDirection OPTIONAL,
+
+relativeVelocity [3] RelVelocityEstimate OPTIONAL,
+
+... }
+
+RelativeLocationCoordinates ::= SEQUENCE {
+
+relative2D-LocationWithUncertaintyEllipse [0]
+Relative2D-LocationWithUncertaintyEllipse OPTIONAL,
+
+relative3D-LocationWithUncertaintyEllipsoid [1]
+Relative3D-LocationWithUncertaintyEllipsoid OPTIONAL,
+
+...}
+
+Relative2D-LocationWithUncertaintyEllipse ::= SEQUENCE {
+
+xCoordinates [0] RangeXYCoordinates,
+
+yCoordinates [1] RangeXYCoordinates,
+
+uncertaintySemiMajor [2] Uncertainty,
+
+uncertaintySemiMinor [3] Uncertainty,
+
+orientationMajorAxis [4] OrientationMajorAxis,
+
+confidence [5] Confidence OPTIONAL,
+
+...}
+
+Relative3D-LocationWithUncertaintyEllipsoid ::= SEQUENCE {
+
+xCoordinates [0] RangeXYCoordinates,
+
+yCoordinates [1] RangeXYCoordinates,
+
+zCoordinates [2] RangeZCoordinates,
+
+uncertaintySemiMajor [3] Uncertainty,
+
+uncertaintySemiMinor [4] Uncertainty,
+
+orientationMajorAxis [5] OrientationMajorAxis,
+
+uncertaintyAltitude [6] Uncertainty,
+
+confidence [7] Confidence OPTIONAL,
+
+...}
+
+RangeXYCoordinates ::= INTEGER (-134217728..134217727)
+
+RangeZCoordinates ::= INTEGER (-16777216..16777215)
+
+Uncertainty ::= INTEGER (0..255)
+
+OrientationMajorAxis ::= INTEGER (0..179)
+
+Confidence ::= INTEGER (0..100)
+
+RangeDirection ::= SEQUENCE {
+
+range [0] Range OPTIONAL,
+
+azimuth [1] Azimuth OPTIONAL,
+
+elevation [2] Elevation OPTIONAL,
+
+...}
+
+Range ::= SEQUENCE {
+
+rangeResult [0] RangeResult,
+
+uncertainty [1] Uncertainty,
+
+confidence [2] Confidence OPTIONAL,
+
+...}
+
+Azimuth::= SEQUENCE {
+
+azimuthResult [0] AzimuthResult,
+
+uncertainty [1] Uncertainty,
+
+confidence [2] Confidence OPTIONAL,
+
+...}
+
+Elevation ::= SEQUENCE {
+
+elevationResult [0] ElevationResult,
+
+uncertainty [1] Uncertainty,
+
+confidence [2] Confidence OPTIONAL,
+
+...}
+
+RangeResult ::= INTEGER (0..1048575)
+
+AzimuthResult ::= INTEGER (0..3599)
+
+ElevationResult ::= INTEGER (0..1800)
+
+RelVelocityEstimate ::= SEQUENCE {
+
+rVelocity [0] RadialVelocity OPTIONAL,
+
+rUncertainty [1] Uncertainty OPTIONAL,
+
+aTransverseVelocity [2] AngularVelocity OPTIONAL,
+
+aVelocityUncertainty [3] AngularVelocityUncertainty OPTIONAL,
+
+eTransverseVelocity [4] AngularVelocity OPTIONAL,
+
+eVelocityUncertainty [5] AngularVelocityUncertainty OPTIONAL,
+
+unitsRVelocity [6] UnitsLinearVelocity OPTIONAL,
+
+unitsAVelocity [7] UnitsAngularVelocity OPTIONAL,
+
+unitsEVelocity [8] UnitsAngularVelocity OPTIONAL,
+
+...}
+
+RadialVelocity ::= INTEGER (-2048..2047)
+
+AngularVelocity ::= INTEGER (-1024..1023)
+
+AngularVelocityUncertainty ::= INTEGER (0..255)
+
+UnitsLinearVelocity::= ENUMERATED {
+
+mpers (0),
+
+cmpers (1),
+
+... }
+
+UnitsAngularVelocity::= ENUMERATED {
+
+degpersec1 (0),
+
+degpersec01 (1),
+
+... }
+
+LCS-AreaEventReportArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+h-gmlc-address [1] GSN-Address,
+
+... }
+
+LCS-AreaEventCancellationArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+h-gmlc-address [1] GSN-Address,
+
+... }
+
+LCS-PeriodicLocationRequestArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+periodicLDRInfo [1] PeriodicLDRInfo,
+
+lcsClientExternalID [2] LCSClientExternalID,
+
+qoS [3] LCS-QoS OPTIONAL,
+
+h-gmlc-address [4] GSN-Address OPTIONAL,
+
+mo-lrShortCircuit [5] NULL OPTIONAL,
+
+reportingPLMNList [6] ReportingPLMNList OPTIONAL,
+
+... }
+
+LCS-PeriodicLocationRequestRes ::= SEQUENCE {
+
+mo-lrShortCircuit [0] NULL OPTIONAL,
+
+... }
+
+LCS-LocationUpdateArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber OPTIONAL,
+
+add-LocationEstimate[1] Add-GeographicalInformation OPTIONAL,
+
+velocityEstimate [2] VelocityEstimate OPTIONAL,
+
+sequenceNumber [3] SequenceNumber OPTIONAL,
+
+... }
+
+-- add-LocationEstimate shall be included if and only if a location
+estimate was successfully
+
+-- transferred towards an External LCS Client or was successfully
+obtained for UE self location
+
+-- velocityEstimate may only be included if add-LocationEstimate is
+included
+
+LCS-LocationUpdateRes ::= SEQUENCE {
+
+terminationCause [0] TerminationCause OPTIONAL,
+
+... }
+
+LCS-PeriodicLocationCancellationArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+h-gmlc-address [1] GSN-Address OPTIONAL,
+
+... }
+
+LCS-PeriodicTriggeredInvokeArg ::= SEQUENCE {
+
+referenceNumber [0] LCS-ReferenceNumber,
+
+h-gmlc-address [1] GSN-Address,
+
+qoS [2] LCS-QoS OPTIONAL,
+
+reportingPLMNList [3] ReportingPLMNList OPTIONAL,
+
+periodicLocation [4] PeriodicLocation OPTIONAL,
+
+areaEventReporting [5] AreaEventReporting OPTIONAL,
+
+motionEventReporting [6] MotionEventReporting OPTIONAL,
+
+...,
+
+referenceNumberExt [7] LCS-ReferenceNumberExt OPTIONAL,
+
+h-gmlc-callBackUri [8] UTF8String OPTIONAL,
+
+supportedGADShapes [9] SupportedGADShapes OPTIONAL,
+
+deferredRoutingIdentifier [10] OCTET STRING OPTIONAL,
+
+reportingAccessTypes [11] ReportingAccessTypes OPTIONAL,
+
+multiplePositioningProtocolPDUs [12] MultiplePositioningProtocolPDUs
+OPTIONAL,
+
+controlPlane-CIoT-5GS-Optimisation [13]
+ControlPlane-CIoT-5GS-Optimisation OPTIONAL,
+
+scheduledLocTime [14] DateTime,
+
+eventReportAllowedArea [15] AreaList OPTIONAL,
+
+reportingInd [16] ReportingInd OPTIONAL,
+
+mappedQoS [17] LCS-QoS OPTIONAL,
+
+userPlaneReportAFAddr [18] LCS-UserPlaneReportAFAddr OPTIONAL,
+
+cumulativeReportCriteria [19] LCS-CumulativeReportCriteria OPTIONAL }
+
+-- Only one of periodicLocation, areaEventReporting and
+motionEventReporting shall be included.
+
+-- responseTime and velocityRequest are not applicable in LCS-QoS.
+
+-- reportingPLMNList provides a list of PLMNs in which event reporting
+is allowed.
+
+-- If referenceNumberExt is included, an MS shall ignore
+referenceNumber.
+
+-- h-gmlc-address shall be ignored by a UE for 5GS access.
+
+-- referenceNumberExt, h-gmlc-callBackUri, supportedGADShapes,
+deferredRoutingIdentifier,
+
+-- reportingAccessTypes, multiplePositioningProtocolPDUs and
+controlPlane-CIoT-5GS-Optimisation
+
+-- shall not be included for E-UTRA access to EPC.
+
+-- reportingPLMNList shall not be included for 5GS access.
+
+-- scheduledLocTime is only applicable for periodic location reporting,
+which indicates a time in future for the first periodic location to be
+reported.
+
+-- If mappedQoS is included, it indicates UE to send the mapped QoS
+which appliable to EPS to MME when
+
+-- UE has moved from 5GS to EPS and detected an event to report to MME,
+for the service continuity from
+
+-- 5GS to EPS scenario with deferred MT-LR initiated in 5GS with
+multiple QoS calss case.
+
+PeriodicLocation ::= SEQUENCE {
+
+periodicLDRInfo [0] PeriodicLDRInfo,
+
+... }
+
+AreaEventReporting ::= SEQUENCE {
+
+deferredLocationEventType [0] DeferredLocationEventType,
+
+areaList [1] AreaList,
+
+occurrenceInfo [2] OccurrenceInfo OPTIONAL,
+
+intervalTime [3] IntervalTime OPTIONAL,
+
+maximumInterval [4] MaximumInterval OPTIONAL,
+
+samplingInterval [5] SamplingInterval OPTIONAL,
+
+duration [6] Duration OPTIONAL,
+
+locationInfo [7] LocationInfo OPTIONAL,
+
+... }
+
+-- msAvailable and periodicLDR in DeferredLocationEventType are not
+applicable.
+
+-- intervalTime and maximumInterval are not applicable when
+OccurenceInfo is present with
+
+-- the value of oneTimeEvent.
+
+AreaList ::= SEQUENCE SIZE (1..maxAreas) OF Area
+
+maxAreas INTEGER ::= 250
+
+Area ::= SEQUENCE {
+
+areaType [0] AreaType,
+
+areaIdentification [1] AreaIdentification,
+
+...,
+
+areaIdentificationExt [2] AreaIdentificationExt }
+
+AreaType ::= ENUMERATED {
+
+trackingArea (0),
+
+ecgi (1),
+
+...,
+
+trackingArea5GS (2),
+
+ncgi (3) }
+
+-- trackingArea5GS and ncgi shall not be included for an MS without 5GS
+access
+
+AreaIdentification ::= OCTET STRING (SIZE (5..7))
+
+-- The internal structure is defined as follows:
+
+-- octet 1 bits 4321 Mobile Country Code 1^(st) digit
+
+-- bits 8765 Mobile Country Code 2^(nd) digit
+
+-- octet 2 bits 4321 Mobile Country Code 3^(rd) digit
+
+-- bits 8765 Mobile Network Code 3^(rd) digit if 3 digit MNC included
+
+-- or filler (1111)
+
+-- octet 3 bits 4321 Mobile Network Code 1^(st) digit
+
+-- bits 8765 Mobile Network Code 2^(nd) digit
+
+-- octets 4 and 5 Tracking Area Code for an EPS Tracking Area (bit 8 of
+octet 4 is the
+
+-- most significant bit and bit 1 of octet 5 the least significant bit)
+
+-- octets 4 until 7 E-UTRAN Cell Identity for an ECGI (bit 8 of octet 4
+is the most
+
+-- significant bit and bit 5 of octet 7 the least significant bit)
+
+-- octets 4 until 6 Tracking Area Code for a 5GS Tracking Area (bit 8 of
+octet 4 is the
+
+-- most significant bit and bit 1 of octet 6 the least significant bit)
+
+-- octets 4 until 7 Cell Identity for an NCGI (bit 8 of octet 4 is the
+most
+
+-- significant bit and bit 1 of octet 7 the fifth least significant bit.
+The 4 least
+
+-- significant bits are included in areaIdentificationExt)
+
+AreaIdentificationExt ::= OCTET STRING (SIZE (1))
+
+-- contains the 4 least significant bits of an NCGI in bits 8765 with
+bit 8 containing the
+
+-- the most significant bit
+
+OccurrenceInfo ::= ENUMERATED {
+
+oneTimeEvent (0),
+
+multipleTimeEvent (1),
+
+... }
+
+-- exception handling:
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+MaximumInterval ::= INTEGER (1..86400)
+
+-- maximum time interval between consecutive event reports in seconds.
+
+SamplingInterval ::= INTEGER (1..3600)
+
+-- maximum time interval between consecutive evaluations by a UE of a
+trigger event,
+
+-- in seconds.
+
+Duration ::= INTEGER (1..8640000)
+
+-- maximum duration of event reporting by a UE, in seconds
+
+LocationInfo ::= BIT STRING {
+
+locationEstimate (0) } (SIZE (1..32))
+
+-- A bit set to one indicates that the corresponding requirement is
+present.
+
+-- A bit set to zero indicates that the corresponding requirement is
+absent.
+
+-- The locationEstimate is a requirement to provide the UE location for
+an event report to
+
+-- the external client, but the location may be provided by either the
+UE or network.
+
+MotionEventReporting ::= SEQUENCE {
+
+linearDistance [0] LinearDistance,
+
+occurrenceInfo [1] OccurrenceInfo OPTIONAL,
+
+intervalTime [2] IntervalTime OPTIONAL,
+
+maximumInterval [3] MaximumInterval OPTIONAL,
+
+samplingInterval [4] SamplingInterval OPTIONAL,
+
+duration [5] Duration OPTIONAL,
+
+locationInfo [6] LocationInfo OPTIONAL,
+
+... }
+
+-- intervalTime and maximumInterval are not applicable when
+OccurenceInfo is present with
+
+-- the value of oneTimeEvent.
+
+LinearDistance ::= INTEGER (1..10000)
+
+-- the minimum straight line distance moved by a UE to trigger a motion
+event report, in meters.
+
+LCS-ReferenceNumberExt ::= OCTET STRING (SIZE (1..255))
+
+ReportingAccessTypes ::= BIT STRING {
+
+nR (0),
+
+eUTRAConnectedTo5GC (1),
+
+non3GPPConnectedTo5GC (2),
+
+eUTRAConnectedToEPC (3),
+
+nR-LEO (4),
+
+nR-MEO (5),
+
+nR-GEO (6),
+
+nR-OTHER-SAT (7) } (SIZE (1..16))
+
+-- A bit set to one indicates that the access type is allowed for event
+reporting.
+
+-- A bit set to zero or omitted indicates that the access types is not
+allowed.
+
+ReportingInd ::= ENUMERATED {
+
+insideReporting (0),
+
+outsideReporting (1),
+
+... }
+
+LCS-PeriodicTriggeredInvokeRes ::= SEQUENCE {
+
+...}
+
+LCS-EventReportArg ::= SEQUENCE {
+
+eventType [0] EventType,
+
+referenceNumberExt [1] LCS-ReferenceNumberExt,
+
+h-gmlc-callBackUri [2] UTF8String,
+
+locationInfo [3] LocationInfo OPTIONAL,
+
+supportedGADShapes [4] SupportedGADShapes OPTIONAL,
+
+lcs-QoS [5] LCS-QoS OPTIONAL,
+
+multiplePositioningProtocolPDUs [6] MultiplePositioningProtocolPDUs
+OPTIONAL,
+
+terminationCause [7] TerminationCause OPTIONAL,
+
+...,
+
+userPlaneEventReportStat [8] LCS-UserPlaneEventReportStat OPTIONAL }
+
+-- inclusion of the terminationCause signifies termination of event
+reporting by the MS
+
+EventType ::= ENUMERATED {
+
+periodicEvent (0),
+
+enteringAreaEvent (1),
+
+leavingAreaEvent (2),
+
+beingInsideAreaEvent (3),
+
+motionEvent (4),
+
+maximumIntervalExpirationEvent (5),
+
+locationCancellationEvent (6),
+
+...,
+
+cumulativeEventReport (7) }
+
+-- exception handling:
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+ControlPlane-CIoT-5GS-Optimisation ::= SEQUENCE {
+
+maximumDuration [0] MaximumDuration OPTIONAL,
+
+maximumConsecutiveEventReports [1] MaximumConsecutiveEventReports
+OPTIONAL,
+
+... }
+
+MaximumDuration ::= INTEGER (1..10080)
+
+-- maximum duration for use of Control Plane CIoT 5GS Optimisation in
+minutes.
+
+MaximumConsecutiveEventReports ::= INTEGER (1..1023)
+
+-- maximum number of consecutive event reports for Control Plane CIoT
+5GS Optimisation.
+
+LCS-UserPlaneEventReportStat ::= INTEGER (1..8639999)
+
+LCS-UserPlaneReportAFAddr ::= SEQUENCE {
+
+af-Ipv4-Addrs [0] Ipv4Addrs OPTIONAL,
+
+af-Ipv6-Addrs [1] Ipv6Addrs OPTIONAL,
+
+af-Fqdn [2] FQDN OPTIONAL }
+
+Ipv4Addrs ::= SEQUENCE SIZE (1..16) OF
+
+Ipv4Addr
+
+Ipv6Addrs ::= SEQUENCE SIZE (1..16) OF
+
+Ipv6Addr
+
+Ipv4Addr ::= OCTET STRING (SIZE (4))
+
+Ipv6Addr ::= OCTET STRING (SIZE (16))
+
+LCS-CumulativeReportCriteria ::= SEQUENCE {
+
+timerCriteria [0] LCS-CumulativeReportTimerCriteria OPTIONAL,
+
+counterCriteria [1] LCS-CumulativeReportCounterCriteria OPTIONAL }
+
+LCS-CumulativeReportTimerCriteria ::= INTEGER (1..8639999)
+
+LCS-CumulativeReportCounterCriteria ::= INTEGER (1..8639999)
+
+FQDN ::= OCTET STRING (SIZE (4..253))
+
+LCS-EventReportRes::= SEQUENCE {
+
+deferredRoutingIdentifier [0] OCTET STRING OPTIONAL,
+
+terminationCause [1] TerminationCause OPTIONAL,
+
+... }
+
+LCS-CancelDeferredLocationArg ::= SEQUENCE {
+
+referenceNumberExt [0] LCS-ReferenceNumberExt,
+
+h-gmlc-callBackUri [2] UTF8String,
+
+... }
+
+LCS-LocationPrivacySettingArg ::= SEQUENCE {
+
+locationPrivacyIndication [0] LCS-LocationPrivacyIndication,
+
+validTimePeriod [1] LCS-ValidTimePeriod OPTIONAL,
+
+eventReportExpectedArea [2] Ext-GeographicalInformation OPTIONAL,
+
+areaUsageInd [3] ReportingInd OPTIONAL,
+
+... }
+
+LCS-LocationPrivacyIndication ::= ENUMERATED {
+
+locationDisallowed (0),
+
+locationAllowed (1),
+
+...,
+
+rangingDisallowed (2),
+
+rangingAllowed (3) }
+
+LCS-ValidTimePeriod ::= SEQUENCE {
+
+startTime [0] DateTime OPTIONAL,
+
+endTime [1] DateTime OPTIONAL,
+
+... }
+
+DateTime ::= OCTET STRING (SIZE (30))
+
+-- The timestamp at which certain event occurs. Octets are coded
+according to RFC 3339 [18]
+
+LCS-PruAssociationArg ::= SEQUENCE {
+
+associationType [0] LCS-AssociationType,
+
+positioningCapabilities [1] OCTET STRING,
+
+locationOfPru [2] Ext-GeographicalInformation OPTIONAL,
+
+stateOfPru [3] LCS-StateOfPru OPTIONAL,
+
+... }
+
+LCS-AssociationType ::= ENUMERATED {
+
+initialAssociation (0),
+
+associationUpdate (1),
+
+... }
+
+LCS-StateOfPru ::= ENUMERATED {
+
+on (0),
+
+off (1),
+
+... }
+
+LCS-PruAssociationRes ::= SEQUENCE {
+
+periodicUpdateTimer [0] LCS-PeriodicUpdateTimer OPTIONAL,
+
+updateTrigger [1] LCS-PruUpdateTrigger OPTIONAL,
+
+... }
+
+LCS-PeriodicUpdateTimer ::= INTEGER (1..4294967295)
+
+LCS-PruUpdateTrigger ::= BIT STRING {
+
+taiChange (0),
+
+servingAmfChange (1),
+
+pruStateChange (2) } (SIZE (1..16))
+
+LCS-PruDisassociationArg ::= SEQUENCE {
+
+ackIndication [0] BOOLEAN OPTIONAL,
+
+newLmfRoutingId [1] OCTET STRING OPTIONAL,
+
+... }
+
+SLMTLR-Type::= ENUMERATED {
+
+rangingSidelink (0),
+
+periodictriggeredrangingSidelink (1),
+
+...}
+
+-- exception handling:
+
+-- an unrecognized value shall be rejected by the receiver with a return
+error cause of
+
+-- unexpected data value.
+
+LCS-SLMTLRArg ::= SEQUENCE {
+
+slmtlr-Type [0] SLMTLR-Type,
+
+supportedGADShapes [1] SupportedGADShapes OPTIONAL,
+
+relatedUEInfo [2] RelatedUEInfo OPTIONAL,
+
+locatedUEselect [3] LocatedUEselect OPTIONAL,
+
+coordinateID [4] CoordinateID OPTIONAL,
+
+lcs-QoS [5] LCS-QoS OPTIONAL,
+
+requestedRangingResult [6] PreferredRangingResult OPTIONAL,
+
+referenceNumber [7] LCS-ReferenceNumber OPTIONAL,
+
+h-gmlc-address [8] GSN-Address OPTIONAL,
+
+periodicLocation [9] PeriodicLocation OPTIONAL,
+
+areaEventReporting [10] AreaEventReporting OPTIONAL,
+
+motionEventReporting [11] MotionEventReporting OPTIONAL,
+
+deferredRoutingIdentifier [12] OCTET STRING OPTIONAL,
+
+...}
+
+-- The parameter slmtlr-Type shall set to value rangingSidelink.
+
+LocatedUEselect ::= ENUMERATED {
+
+targetUESelect (0),
+
+lmfselect (1),
+
+... }
+
+CoordinateID ::= INTEGER (0.. 511)
+
+LCS-SLMTLRRes::= SEQUENCE {
+
+relatedUEInfo [0] RelatedUEInfo,
+
+rangingSLPPList [1] RangingSLPPList OPTIONAL,
+
+... }
+
+RangingSLPPList ::= SEQUENCE (SIZE (1..maxNumSLPPMsg)) OF
+RangingSLPPInfo
+
+maxNumSLPPMsg INTEGER ::= 63
+
+RangingSLPPInfo ::= SEQUENCE {
+
+sLPPMsg [0] SlPosProtocolPDU,
+
+relatedUE [1] OCTET STRING OPTIONAL }
+
+SlPosProtocolPDU::= OCTET STRING
+-- SlPosProtocol contains a SLPP message defined in 3GPP TS 38.355.
+
+UEBased ::= ENUMERATED {
+
+notcalculatedbyUE (0),
+
+calculatedbyUE (1),
+
+... }
+
+LCS-DLRSPPTransportArg ::= SEQUENCE {
+
+rangingSLPPList [0] RangingSLPPList OPTIONAL,
+
+scheduledLocTime [1] DateTime OPTIONAL,
+
+ueBased [2] UEBased OPTIONAL,
+
+relatedUEInfo [3] RelatedUEInfo OPTIONAL,
+
+...}
+
+LCS-DLRSPPTransportRes::= SEQUENCE {
+
+}
+
+LCS-ULRSPPTransportArg ::= SEQUENCE {
+
+rangingSLPPList [0] RangingSLPPList OPTIONAL,
+
+...}
+
+LCS-ULRSPPTransportRes::= SEQUENCE {
+
+}
+
+.#END
+
+4.4.3 Identifiers definition
+
+The parameters which are described in the following clauses correspond
+to the identifiers used in operation and error descriptions.
+
+4.4.3.1 chargingInformation
+
+The chargingInformation identifier refers to the necessary information
+for the Advice of Charge supplementary service (see TS 22.024).
+
+4.4.3.2 e1
+
+The e1 identifier refers to 10 times the number of LPLMN units per time
+interval in connection with the Advice of Charge supplementary service,
+see TS 22.024.
+
+4.4.3.3 e2
+
+The e2 identifier refers to 10 times the length of the time interval in
+seconds in connection with the Advice of Charge supplementary service,
+see TS 22.024.
+
+4.4.3.4 e3
+
+The e3 identifier refers to 100 times the scaling factor to convert from
+LPLMN units to HPLMN units in connection with the Advice of Charge
+supplementary service, see TS 22.024.
+
+4.4.3.5 e4
+
+The e4 identifier refers to 10 times the LPLMN increment in connection
+with the Advice of Charge supplementary service, see TS 22.024.
+
+4.4.3.6 e5
+
+The e5 identifier refers to 10 times the number of LPLMN units
+incremented per data interval in connection with the Advice of Charge
+supplementary service, see TS 22.024.
+
+4.4.3.7 e6
+
+The e6 identifier refers to the number of segments per data interval in
+connection with the Advice of Charge supplemen­tary service, see
+TS 22.024.
+
+4.4.3.8 e7
+
+The e7 identifier refers to 10 times the length of the initial time
+interval in seconds in connection with the Advice of Charge
+supplementary service, see TS 22.024.
+
+4.4.3.9 ss-Code
+
+The ss-Code identifier refers to the code which identify a supplementary
+service or a group of supplementary services.
+
+4.4.3.10 ss-Notification
+
+The ss-Notification identifier refers to one or several supplementary
+service notifications which have to be forwarded to a mobile subscriber.
+
+4.4.3.11 ss-Status
+
+The ss-Status identifier refers to the status of a supplementary
+service.
+
+4.4.3.12 callIsWaiting-Indicator
+
+The callIsWaiting-Indicator identifier refers to the indication given to
+the mobile station that the call is waiting.
+
+4.4.3.13 callOnhold-Indicator
+
+The callOnHold-Indicator identifier refers to the indication given to
+the mobile station that the call has been put on hold or has been
+retrieved.
+
+4.4.3.14 mpty-Indicator
+
+The mpty-Indicator identifier refers to the indication given to the
+mobile station that the multi party call has been invoked.
+
+4.4.3.15 forwardCUG-InfoArg
+
+The forwardCUG-InfoArg identifier refers to the indication given from
+the mobile subscriber to the network in connection with explicit
+invocation of a CUG call.
+
+4.4.3.16 cug-Index
+
+The cug-Index identifier refers to the index of a CUG given in an
+explicit invocation of a CUG call.
+
+4.4.3.17 suppressPrefCUG
+
+The suppressPrefCUG identifier refers to the mobile subscribers request
+to the network to prohibit the use of the preferential CUG.
+
+4.4.3.18 suppressOA
+
+The suppressOA identifier refers to the mobile subscribers request to
+the network to prohibit the use of the subscriber option "OA allowed".
+
+4.4.3.19 clirSuppressionRejected
+
+The clirSuppressionRejected identifier refers to the indication given to
+the mobile station that the CLIR suppression request has been rejected.
+
+4.4.3.20 ect-Indicator
+
+The ect-Indicator identifier refers to the indication given to the
+mobile station that the call was transferred.
+
+4.4.3.21 ect-CallState
+
+The ect-CallState identifier refers to the state of the call to the
+other remote party in which Explicit Call Transfer was invoked.
+
+4.4.3.22 rdn
+
+The Rdn identifier refers to the line identity information of the other
+remote party.
+
+4.4.3.23 presentationAllowedAddress
+
+The presentationAllowedAddress identifier refers to the line identity of
+the other remote party that is allowed to be presented.
+
+4.4.3.24 presentationRestricted
+
+The presentationRestricted identifier refers to the restriction of
+presentation of the line identity of the other remote party.
+
+Also, the identifier refers to the restriction of presentation of the
+name identity of the calling party to the called party.
+
+4.4.3.25 numberNotAvailableDueToInterworking
+
+The numberNotAvailableDueToInterworking identifier refers to the
+unavailability of the line identity of the other remote party.
+
+4.4.3.26 presentationRestrictedAddress
+
+The presentationRestrictedAddress identifier refers to the line identity
+of the other remote party which presentation restriction is overridden.
+
+4.4.3.27 partyNumber
+
+The partyNumber identifier refers to the remote party number.
+
+4.4.3.28 partyNumberSubaddress
+
+The partyNumberSubaddress identifier refers to remote party number
+subaddress.
+
+4.4.3.29 nameIndicator
+
+The nameIndicator identifier refers to the indication given to the
+mobile station that the name presentation has been invoked.
+
+4.4.3.30 namePresentationAllowed
+
+The namePresentationAllowed identifier refers to the presentation of the
+calling party's name identity to the called party.
+
+4.4.3.31 nameUnavailable
+
+The nameUnavailable identifier refers to the unavailability of the
+calling party's name identity to be offered to the called party.
+
+4.4.3.32 namePresentationRestricted
+
+The namePresentationRestricted identifier refers to the calling party's
+name identity to be offered to the called party with which presentation
+restriction is overridden.
+
+4.4.3.33 deflectedToNumber
+
+The DeflectedToNumber identifier refers to a party an incoming shall be
+deflected to.
+
+4.4.3.34 deflectedToSubaddress
+
+The DeflectedToSubaddress identifier refers to a subaddress an incoming
+call shall be deflected to.
+
+4.4.3.35 uUS-Service
+
+The uUS-Service identifier refers to the UUS service (service 1, service
+2 or service 3) to be requested.
+
+4.4.3.36 uUS-Required
+
+The uUS-Required identifier refers to the option ("UUS required" or "UUS
+not required") given when requesting the UUS service.
+
+4.4.3.37 locationNotificationArg
+
+The locationNotificationArg identifier refers to the location
+notification request which is sent to the MS by the network.
+
+4.4.3.38 notificationType
+
+The notificationType identifier refers to the type of location
+notification (notification or privacy verification).
+
+4.4.3.39 locationNotificationRes
+
+The locationNotificationRes identifier refers to the location
+notification response which is sent to the network by the MS.
+
+4.4.3.40 verificationResponse
+
+The VerificationResponse identifier refers to the privacy verification
+response given by the MS user.
+
+4.4.3.41 lcs-MOLRArg
+
+The lcs-MOLRArg identifier refers to the MO-LR request parameters which
+are sent to the network by the MS.
+
+4.4.3.42 molr-Type
+
+The molr-Type identifier refers to the type of MO-LR.
+
+4.4.3.43 locationMethod
+
+The locationMethod identifier refers to the location method, for which
+assistance data is requested by the MS.
+
+4.4.3.44 gpsAssistanceData
+
+The gpsAssistanceData identifier refers to the indication, which GPS
+assistance data is requested by the MS.
+
+4.4.3.45 lcs-MOLRRes
+
+The lcs-MOLRRes identifier refers to the MO-LR response parameters which
+are sent to the MS by the network.
+
+4.4.3.46 decipheringKeys
+
+The decipheringKeys identifier refers to the set of deciphering keys,
+that contains Current Deciphering Key, Next Deciphering Key and
+Ciphering Key Flag.
+
+4.4.3.47 multicall-Indicator
+
+The multicall-Indicator identifier refers to the indication given to the
+mobile station that the number of active bearers has exceeded the
+maximum number.
+
+4.4.3.48 pseudonymIndicator
+
+The pseudonymIndicator identifier refers to the indication given to the
+LCS server that the pseudonym is needed.
+
+4.4.3.49 LCS-PeriodicLocationRequestArg
+
+The LCS-PeriodicLocationRequestArg identifier refers to the LCS periodic
+location request sent to the MS by the network.
+
+4.4.3.50 LCS-PeriodicLocationRequestRes
+
+The LCS-PeriodicLocationRequestRes identifier refers to the LCS Periodic
+Location response sent by the MS to the network.
+
+4.4.3.51 LCS-LocationUpdateArg
+
+The LCS-LocationUpdagteArg identifier refers to the location update
+request sent to the MS by the network.
+
+4.4.3.52 LCS-LocationUpdateRes
+
+The LCS-LocationUpdateRes identifier refers to the location update
+response sent to the network by the MS.
+
+4.4.3.53 LCS-PeriodicLocationCancellationArg
+
+The LCS-PeriodicLocationCancellationArg identifier refers to the
+periodic location cancel request sent to the MS by the network.
+
+4.4.3.54 terminationCause
+
+The terminationCause identifier refers to the cause of cancellation or
+termination of the periodic or triggered location procedure by the MS or
+by the network.
+
+4.4.3.55 mo-lrShortCircuit
+
+The mo-lrShortCircuit identifier indicates use of MO-LR Short Circuit.
+
+4.4.3.56 locationUpdateRequest
+
+The locationUpdateRequest identifier indicates location update are
+required.
+
+4.4.3.57 ganssAssistanceData
+
+The ganssAssistanceData identifier refers to the indication, which GANSS
+assistance data is requested by the MS.
+
+4.4.3.58 positioningProtocolPDU
+
+The positioningProtocolPDU identifier refers to the positioning
+information (in LPP message format see 3GPP TS 36.355 [17]) passed in a
+lcs-MOLR Invoke to EPC LCS or 5GS LCS or in an
+lcs-PeriodicTriggeredInvoke or lcs-EventReport for 5GS.
+
+4.4.3.59 multiplePositioningProtocolPDUs
+
+The multiplePositioningProtocolPDUs identifier refers to a set of
+Positioning Protocol PDUs passed in a lcs-MOLRInvoke to EPC LCS or 5GS
+LCS or in an lcs-PeriodicTriggeredInvoke or lcs-EventReport for 5GS.
+
+4.4.3.60 LCS-PeriodicTriggeredInvokeArg
+
+The LCS-PeriodicTriggeredInvokeArg identifier refers to the LCS periodic
+and triggered location invoke sent to the MS by the network for EPS or
+5GS.
+
+4.4.3.61 LCS-PeriodicTriggeredInvokeRes
+
+The LCS-PeriodicTriggeredInvokeRes identifier refers to the LCS periodic
+and triggered location response sent by the MS to the network for EPS or
+5GS.
+
+4.4.3.62 periodicLocation
+
+The periodicLocation identifier refers to parameters for periodic
+location of the MS.
+
+4.4.3.63 areaEventReporting
+
+The areaEventReporting identifier refers to parameters for periodic and
+triggered area event reporting for the MS.
+
+4.4.3.64 areaList
+
+The areaList identifier refers to a set of one or more areas for
+periodic and triggered area event reporting for the MS.
+
+4.4.3.65 area
+
+The area identifier refers to parameters for a single area for periodic
+and triggered area event reporting for the MS.
+
+4.4.3.66 areaType
+
+The areaType identifier refers to the type of an area for periodic and
+triggered area event reporting for the MS.
+
+4.4.3.67 areaIdentification
+
+The areaIdentification identifier refers to an identification of an area
+for periodic and triggered area event reporting for the MS.
+
+4.4.3.68 maximumInterval
+
+The maximumInterval identifier refers to the maximum time interval
+between consecutive periodic and triggered event reports for the MS.
+
+4.4.3.69 samplingInterval
+
+The samplingInterval identifier refers to the maximum evaluation
+interval for determining periodic and triggered event reports for the
+MS.
+
+4.4.3.70 duration
+
+The duration identifier refers to the maximum duration for periodic and
+triggered event reports for the MS.
+
+4.4.3.71 location-Info
+
+The location-Info identifier refers to requirements for obtaining
+location information for periodic and triggered event reports for the MS
+for EPS or 5GS.
+
+4.4.3.72 motionEventReporting
+
+The motionEventReporting identifier refers to parameters for periodic
+and triggered motion event reporting for the MS.
+
+4.4.3.73 linearDistance
+
+The linearDistance identifier refers to a minimum linear distance for
+periodic and triggered motion event reporting for the MS.
+
+4.4.3.74 LCS-EventReportArg
+
+The LCS-EventReportArg identifier refers to the LCS event report invoke
+sent to the MS by the network for 5GS for periodic and triggered
+location.
+
+4.4.3.75 LCS-EventReportRes
+
+The LCS-EventReportRes identifier refers to the LCS event report
+response sent by the MS to the network for 5GS for periodic and
+triggered location.
+
+4.4.3.76 LCS-CancelDeferredLocationArg
+
+The LCS-CancelDeferredLocationArg identifier refers to the location
+cancel request sent to the MS by the network or sent to the network by
+the MS for deferred periodic or triggered location for 5GS.
+
+4.4.3.77 eventType
+
+The eventType identifier refers to the type of event report.
+
+4.4.3.78 referenceNumberExt
+
+The referenceNumberExt identifier refers to the LDR reference number for
+a 5GC GMLC.
+
+4.4.3.79 h-gmlc-callBackUri
+
+The h-gmlc-callBackUri identifier refers to the UTF-8 encoded URI for a
+5GC GMLC.
+
+4.4.3.80 supportedGADShapes
+
+The supportedGADShapes identifier refers to GAD shapes supported by a
+GMLC.
+
+4.4.3.81 lcs-QoS
+
+The lcs-QoS identifier refers to the QoS requirements for a location
+estimate.
+
+4.4.3.82 controlPlane-CIoT-5GS-Optimisation
+
+The controlPlane-CIoT-5GS-Optimisation identifier indicates the MS is
+allowed to use Control Plane CIoT 5GS Optimisation for sending event
+reports for triggered and periodic location.
+
+4.4.3.83 LCS-LocationPrivacySettingArg
+
+TheLCS-LocationPrivacySettingArg identifier refers to parameters(s) for
+the MS indicated Location Privacy Indication information and optional
+validity time for the indication sent to the network by the MS.
+
+The parameters may also include the event report expected area sent by
+the MS.
+
+4.4.3.84 locationPrivacyIndication
+
+The LocationPrivacyIndication identifier refers to MS indicated Location
+Privacy Indication.
+
+4.4.3.85 validTimePeriod
+
+The validTimePeriod identifier refers to validity period for the MS
+indicated Location Privacy Indication.
+
+4.4.3.86 endTime
+
+The endTime identifier refers to the validity time (in UTC time) when MS
+indicated Location Privacy Indication become invalid.
+
+4.4.3.86 timestampOfLocationEstimate
+
+The timestampOfLocationEstimate identifier refers to the time stamp of
+the estimate location of the MS.
+
+4.4.3.87 scheduledLocTime
+
+The scheduledLocTime identifier refers to the scheduled time that the UE
+needs to be located.
+
+4.4.3.88 eventReportAllowedArea
+
+The eventReportAllowedArea identifier refers to the event report allowed
+area containing a list of cell(s)/TA(s).
+
+4.4.3.89 eventReportExpectedArea
+
+The eventReportExpectedArea identifier refers to the event report
+expected area that is a geographical area.
+
+4.4.3.90 associationType
+
+The associationType identifier refers to the type of the PRU
+association, e.g., initial PRU Association, PRU Association Update.
+
+4.4.3.91 positioningCapabilities
+
+The positioningCapabilities identifier refers to the positioning
+capabilities of the PRU.
+
+4.4.3.92 locationOfPru
+
+The locationOfPru identifier refers to the location information of the
+PRU.
+
+4.4.3.93 periodicUpdateTimer
+
+The periodicUpdateTimer identifier refers to the periodic timer in
+seconds for PRU Association Update.
+
+4.4.3.94 updateTrigger
+
+The updateTrigger identifier refers to the conditions for PRU
+Association Update, e.g., change of PRU TAI, change of PRU's serving
+AMF.
+
+4.4.3.95 ackIndication
+
+The ackIndication identifier refers to an indication of whether
+acknowledgment is expected during the PRU-initiated Disassociation
+procedure.
+
+4.4.3.96 stateOfPru
+
+The stateOfPru identifier refers to the PRU state, that is, ON or OFF.
+
+4.4.3.97 reportingInd
+
+The reportingInd identifier refers to an indication determined by the
+network on how to report periodic and triggered area event when the UE
+is inside or outside the event report allowed area for the MS.
+
+4.4.3.98 lcs-SLMOLRArg
+
+The lcs-SLMOLRArg identifier refers to the SL-MO-LR request parameters
+which are sent to the network by the MS.
+
+4.4.3.99 slmolr-Type
+
+The slmolr-Type identifier refers to the type of SL-MO-LR.
+
+4.4.3.100 calculationAssistIndicator
+
+The calculationAssistIndicator identifier refers to the whether the
+network is requested to assist the location calculation during the
+SL-MO-LR procedure.
+
+4.4.3.101 preferredRangingResult
+
+The preferredRangingResult identifier refers to the preferred type of
+sidelink positioning/ranging location results.
+
+4.4.3.102 relatedUEInfo
+
+The relatedUEInfo identifier refers to one or more UE information, which
+participates the sidelink positioning/ranging location procedure.
+
+4.4.3.103 maxRelatedUE
+
+The maxRelatedUE identifier refers to the maximum number of the UE
+participating the sidelink positioning/ranging location procedure.
+
+4.4.3.104 rangingUEInfo
+
+The rangingUEInfo identifier refers to the application ID and the role
+of related UEs participating the sidelink positioning/ranging location
+procedure.
+
+4.4.3.105 rangingRole
+
+The rangingRole identifier refers to the type of the UE participating
+the sidelink positioning/ranging location procedure.
+
+4.4.3.106 lcs-SLMOLRRes
+
+The lcs-SLMOLRRes identifier refers to the SL-MO-LR response parameters
+which are sent to the MS by the network.
+
+4.4.3.107 mappedQoS
+
+The mappedQoS is an LCS QoS applible to EPS mapped from the LCS QoS
+included in a deferred MT-LR request initiated in 5GS with multiple LCS
+QoS calss case.
+
+4.4.3.108 userPlaneEventReportStat
+
+The userPlaneEventReportStat identifier refers to the number of the
+events reported over user plane since the last cumulative event report
+was sent.
+
+4.4.3.109 userPlaneReportAFAddr
+
+The userPlaneReportAFAddr identifier refers to the AF's user plane
+addressing information for location reporting.
+
+4.4.3.110 cumulativeReportCriteria
+
+The cumulativeReportCriteria identifier refers to criteria for sending
+cumulative events reports over control plane.
+
+4.4.3.111 af-Ipv4-Addrs
+
+The af-Ipv4-Addrs identifier refers to AF's IPv4 address(es) for
+receiving event reports from UE over user plane.
+
+4.4.3.112 af-Ipv6-Addrs
+
+The af-Ipv6-Addrs identifier refers to AF's IPv6 address(es) for
+receiving event reports from UE over user plane.
+
+4.4.3.113 af-Fqdn
+
+The af-Fqdn identifier refers to AF's FQDN for receiving event reports
+from UE over user plane.
+
+4.4.3.114 timerCriteria
+
+The timerCriteria identifier refers to a timer in seconds to trigger
+cumulative event report over control plane when location reporting over
+user plane is ongoing.
+
+4.4.3.115 counterCriteria
+
+The counterCriteria identifier refers to a number to trigger cumulative
+event report over control plane when location reporting over user plane
+is ongoing.
+
+4.4.3.116 areaUsageInd
+
+The areaUsageInd identifier refers to an indication provided by the MS
+on how to report periodic and triggered area event when the UE is inside
+or outside the event report allowed area for the MS.
+
+4.4.3.117 absoluteLocation
+
+The absoluteLocation identifier refers to the absolute location
+information of the target UE.
+
+4.4.3.118 absoluteVelocity
+
+The absoluteVelocity identifier refers to the absolute velocity
+information of the MS.
+
+4.4.3.119 relativeResult
+
+The relativeResult identifier refers to one or more relative information
+between the MS and other related UEs.
+
+4.4.3.120 singleRelativeResult
+
+The relativeResult identifier refers to one relative information between
+the MS and other related UE.
+
+4.4.3.121 relativeLocation
+
+The relativeLocation identifier refers to the relative location
+information between the MS and other related UE.
+
+4.4.3.122 rangeDirection
+
+The rangeDirection identifier refers to the rang and direction
+information between the MS and other related UE.
+
+4.4.3.123 relativeVelocity
+
+The relativeVelocity identifier refers to the relative velocity
+information between the MS and other related UE.
+
+4.4.3.124 ueOnlyRSLPosAllowed
+
+The ueOnlyRSLPosAllowed identifier refers to the time duration when the
+MS is permitted to operate for ranging and sidelink positioning.
+
+4.4.3.125 lcs-SLMTLRArg
+
+The lcs-SLMTLRArg identifier refers to the SL-MT-LR request parameters
+which are sent to the MS by the network.
+
+4.4.3.126 slmtlr-Type
+
+The slmtlr-Type identifier refers to the type of SL-MT-LR.
+
+4.4.3.127 locatedUEselect
+
+The locatedUEselect identifier refers to whether the target UE or the
+LMF is to select the located UE(s) when the required location result is
+absolute location.
+
+4.4.3.128 coordinateID
+
+The coordinateID identifier refers to the local coordinate when the
+required location result is absolute location.
+
+4.4.3.129 lcs-SLMTLRRes
+
+The lcs-SLMTLRRes identifier refers to the SL-MT-LR response parameters
+which are sent to the network by the MS.
+
+4.4.3.130 multipleRangingSlPosProtocolPDUs
+
+The multipleRangingSlPosProtocolPDUs identifier refers to a set of
+ranging and sidelink positioning protocol PDUs.
+
+4.4.3.131 lcs-DLRSPPTransportRArg
+
+The lcs-DLRSPPTransportArg identifier refers to the network initiated
+RSPP supplementary information transport request parameters which are
+sent to the MS by the network.
+
+4.4.3.132 lcs-DLRSPPTransportRes
+
+The lcs- DLRSPPTransportRes identifier refers to the acknowledgement to
+a network initiated RSPP supplementary information transport which are
+sent to the network by the MS.
+
+4.4.3.133 lcs-ULRSPPTransportRArg
+
+The lcs-ULRSPPTransportArg identifier refers to the UE initiated RSPP
+supplementary information transport request parameters which are sent to
+the network by the MS.
+
+4.4.3.134 lcs-ULRSPPTransportRes
+
+The lcs- ULRSPPTransportRes identifier refers to the acknowledgement to
+a UE initiated RSPP supplementary information transport which are sent
+to the MS by the network.
+
+4.4.3.135 ueBased
+
+The ueBased identifier refers to the indication of UE based sidelink
+positioning to indicate whether the UE performs the calculation or the
+LMF performs the calculation.
+
+4.4.3.136 requestedRangingResult
+
+The requestedRangingResult identifier refers to the requested type of
+ranging and sidelink positioning location results.
+
+4.5 Operations and errors implementation
+
+For the actual implementation of supplementary services, operations and
+errors have to be defined by value. The following ASN.1 module, imports
+operation from the ASN.1 module described in clause 4.2 and operations
+and errors from MAP.
+
+.$SS-Protocol {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0)
+
+gsm-Access (2) modules (3) ss-Protocol (3) version18 (18)}
+
+DEFINITIONS ::=
+
+BEGIN
+
+IMPORTS
+
+OPERATION
+
+FROM Remote-Operations-Information-Objects {
+
+joint-iso-itu-t remote-operations(4) informationObjects(5) version1(0)}
+
+-- imports operations
+
+-- imports operation from MAP-MobileServiceOperations
+
+forwardCheckSS-Indication
+
+FROM MAP-MobileServiceOperations {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-MobileServiceOperations (5) version21 (21)}
+
+-- imports operations from MAP-SupplementaryServiceOperations
+
+registerSS, eraseSS, activateSS, deactivateSS, interrogateSS,
+registerPassword, getPassword,
+
+processUnstructuredSS-Request, unstructuredSS-Request,
+unstructuredSS-Notify, eraseCC-Entry
+
+FROM MAP-SupplementaryServiceOperations {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Network
+(1) modules (3)
+
+map-SupplementaryServiceOperations (8) version21 (21)}
+
+-- imports operations from SS-Operations
+
+processUnstructuredSS-Data, notifySS, forwardChargeAdvice, buildMPTY,
+holdMPTY, retrieveMPTY,
+
+splitMPTY, explicitCT, forwardCUG-Info, accessRegisterCCEntry,
+callDeflection, userUserService,
+
+lcs-LocationNotification, lcs-MOLR, lcs-SLMOLR, lcs-AreaEventRequest,
+lcs-AreaEventReport,
+
+lcs-AreaEventCancellation, lcs-PeriodicLocationRequest,
+lcs-LocationUpdate,
+
+lcs-PeriodicLocationCancellation, lcs-PeriodicTriggeredInvoke,
+lcs-EventReport,
+
+lcs-CancelDeferredLocation, lcs-SLMTLR, lcs-DLRSPPTransport,
+lcs-ULRSPPTransport
+
+FROM SS-Operations {
+
+itu-t identified-organization (4) etsi (0) mobileDomain (0) gsm-Access
+(2) modules (3)
+
+ss-Operations (0) version18 (18)}
+
+;
+
+Supported-SS-Operations OPERATION ::= {forwardCheckSS-Indication |
+registerSS | eraseSS |
+
+activateSS | deactivateSS | interrogateSS | registerPassword |
+getPassword |
+
+processUnstructuredSS-Request | unstructuredSS-Request |
+unstructuredSS-Notify | eraseCC-Entry |
+
+processUnstructuredSS-Data | notifySS | forwardChargeAdvice | buildMPTY
+| holdMPTY |
+
+retrieveMPTY | splitMPTY | explicitCT | forwardCUG-Info |
+accessRegisterCCEntry |
+
+callDeflection | userUserService | lcs-LocationNotification | lcs-MOLR |
+lcs-SLMOLR | lcs-AreaEventRequest |
+
+lcs-AreaEventReport | lcs-AreaEventCancellation |
+lcs-PeriodicLocationRequest |
+
+lcs-LocationUpdate | lcs-PeriodicLocationCancellation |
+lcs-PeriodicTriggeredInvoke |
+
+lcs-EventReport | lcs-CancelDeferredLocation | lcs-SLMTLR |
+lcs-DLRSPPTransport | lcs-ULRSPPTransport }
+
+.#END
+
+ Annex A (informative): Expanded ASN.1 Module "SS-Protocol"
+
+The fully expanded ASN.1 sources of the SS protocol is provided for
+information at
+http://www.3gpp.org/ftp/Specs/archive/24_series/24.080/ASN.1/.
+
+ Annex B (informative): Change history
+
+  --------- --------- ----------- ------- ----- ----- ------------------------------------ ---------
+  Change                                                                                   
+  history                                                                                  
+
+  Date      Meeting   TDoc        CR      Rev   Cat   Subject/Comment                      New
+                                                                                           version
+
+  Apr 1999                                            Transferred to 3GPP CN1              
+
+  CN#03     CN#03                         1           Approved at CN#03                    3.0.0
+
+  CN#06     CN#06                 001                 Addition of LCS operations           3.1.0
+
+  CN#07     CN#07                 002r1   1           Correction to Location Notification  3.2.0
+                                                      Type and LCS-MOLR errors             
+
+  CN#08     CN#08                 004                 Correction of definition of          3.3.0
+                                                      Deflected-to number                  
+
+  CN#09     CN#09                 005r1               Message type: Alignment to 24.007    3.4.0
+                                                      and 24.008                           
+
+  CN#09     CN#09                 006                 Addition of error type description   3.4.0
+                                                      for PositionMethodFailure            
+
+                                                      Update of Annex A                    3.4.1
+
+  CN#11     CN#11                                     Release 4 after CN#11                4.0.0
+
+  CN#12     CN#12                 008     -           Add support in DTAP for all shapes   4.1.0
+                                                      defined in 23.032                    
+
+  CN#12     CN#12                 009     -           OTDOA location method to be added    4.1.0
+
+  CN#12     CN#12                 011r1   1           Addition of the description for      4.1.0
+                                                      Multicall missing from 24.080        
+
+  CN#14     CN#14                 014     -           Message type: completion of          4.2.0
+                                                      alignment to 24.007 and 24.008       
+
+  Cn~15     Cn~15                 015r1   1           Introduction of the "Requestor ID"   5.0.0
+
+  CN#16     CN#16                 023     -           LCS: error handling if shape not     5.1.0
+                                                      supported by MS                      
+
+  CN#16     CN#16                 018     -           LCS: Error handling if wrong method  5.1.0
+                                                      requested in LCS-MOLR                
+
+  CN#16     CN#16                 016     -           LCS: Codeword and Service Type       5.1.0
+
+  CN#16     CN#16                 020     -           Correction of Object Identifiers for 5.1.0
+                                                      ASN.1 modules                        
+
+  CN#17     CN#17                 019r3   3           Compatible upgrade to ASN.1:1997 of  5.2.0
+                                                      24.080                               
+
+  CN#17     CN#17                 024     -           Correction of references to FACILITY 5.2.0
+                                                      information element                  
+
+  CN#18     CN#18                 026     2           LCS: Exception handling for          5.3.0
+                                                      positioning methods MS Assisted      
+                                                      E-OTD and MS Assisted OTDOA          
+
+  CN#21     CN#21                 029     -           Reduce maximum length of "LCS        5.4.0
+                                                      Requestor ID" and "LCS Codeword".    
+
+  CN#21     CN#21                         -           A wrong SS version indicator link    5.4.0
+                                                      corrected in table 2.4.              
+
+  CN#22     CN#22                 031     2           Deferred MT-LR Area Event            6.0.0
+
+  CN#23     CN#23                 034     -           Removal of R-GMLC Address            6.1.0
+
+  CN#23     CN#23                 033     1           MO-LR Service Identity support       6.1.0
+
+  CN#26     CN#26                 042     1           Sequence numbering for SS via PS     6.2.0
+
+  CN#26     CN#26                 038     -           Correction of setting for timer      6.2.0
+                                                      T(LCSL)                              
+
+  CN#27     CN#27                 043     1           Miss alignment with stage 2 on reuse 6.3.0
+                                                      mechanism                            
+
+  CN#27     CN#27                 0441    -           Pseudonym indicator support in MO-LR 6.3.0
+
+  CT#29     CT#29                 0045    2           Enabling the Providing of Velocity   7.0.0
+
+  CT#29     CT#29                 0046    -           ASN.1 module version update          7.0.0
+
+  CT#31     CT#31                 0047    -           Addition of Periodic Location        7.1.0
+                                                      Feature Support                      
+
+  CT#33     CT#33                 0048    1           Removal of ASN.1 Expanded Source     7.2.0
+
+  CT#36     CT#36                 0053    2           Add Assisted GANSS as a New          7.30
+                                                      Positioning Method                   
+
+  CT#37     CT#37                 0057    1           Clarification of SS LCS Location     7.4.0
+                                                      Notification                         
+
+  CT#37     CT#37                 0056    1           Correction to GANSS Location Method  7.4.0
+
+  CT#42     CT#42                         -           Upgraded unchanged from Rel-7        8.0.0
+
+  2009-12                         -       -           Update to Rel-9 version (MCC)        9.0.0
+
+  CT#47                           0059    1           E-UTRAN LCS Support                  9.1.0
+
+  CT#48                           0063    -           ASN.1 Module Version Update          9.2.0
+
+  2011-03                         -       -           Update to Rel-10 version (MCC)       10.0.0
+
+  2012-06                         -       -           Update to Rel-11 version (MCC)       11.0.0
+
+  2014-09                         -       -           Update to Rel-12 version (MCC)       12.0.0
+
+  2015-12                                 -           Update to Rel-13 version (MCC)       13.0.0
+
+  2017-03   CT#75                 -       -           Update to Rel-14 version (MCC)       14.0.0
+
+  2017-06   CT#76                 0064    2           Enhancements to Location Services    14.1.0
+                                                      for CIoT                             
+
+  2018-06   CT#80                 -       -           Update to Rel-15 version (MCC)       15.0.0
+
+  2019-06   CT#84                 0066    -           ASN.1 corrections                    15.1.0
+
+  2019-09   CT#85                 0067    1           Supplementary services for a         16.0.0
+                                                      deferred 5GC-MT-LR                   
+
+  2020-06   CT#88e                0068    1     B     Supplementary LCS Service Operations 16.1.0
+
+  2020-09   CT#89e    CP-202112   0069    -     F     ASN.1 Corrections                    16.2.0
+
+  2021-03   CT#91e    CP-210027   0070    -     D     Use of inclusive terminology         17.0.0
+
+  2021-03   CT#91e    CP-210036   0071    -     F     Reference change                     17.0.0
+
+  2021-06   CT#92e    CP-211075   0073          F     ASN.1 module version update          17.1.0
+
+  2021-12   CT#94e    CP-213135   0075    1     A     Reference to 24.571                  17.2.0
+
+  2021-12   CT#94e    CP-213096   0076    1     B     Add timestamp of location estimate   17.2.0
+
+  2021-12   CT#94e    CP-213096   0077    1     B     Update allowed access type for event 17.2.0
+                                                      report                               
+
+  2022-03   CT#95e    CP-220083   0089    1     A     Remove h-gmlc-address from           17.3.0
+                                                      LCS-MOLRArg                          
+
+  2022-03   CT#95e    CP-220083   0092    1     A     locationMethod in LCS-MOLRArg        17.3.0
+
+  2022-03   CT#95e    CP-220034   0078    1     B     Scheduled location time              17.3.0
+
+  2022-03   CT#95e    CP-220034   0093    -     B     Add scheduled location time in       17.3.0
+                                                      LCS-MOLRArg                          
+
+  2023-06   CT#100    CP-221031   0095    2     B     Support of Event Report Allowed Area 18.0.0
+
+  2023-09   CT#101    CP-222025   0101    1     B     Support of PRU Association and       18.1.0
+                                                      Disassociation procedures            
+
+  2023-09   CT#101    CP-222058   0100    -     F     ASN.1 module version update          18.1.0
+
+  2023-12   CT#102    CP-233037   0102    1     B     Add PRU state in the association     18.2.0
+                                                      procedure                            
+
+  2023-12   CT#102    CP-233037   0103    1     B     Add reporting Indication in          18.2.0
+                                                      LCS-PeriodicTriggeredInvokeArg       
+
+  2023-12   CT#102    CP-233037   0105          F     Support of Multiple PRU Update       18.2.0
+                                                      Triggers                             
+
+  2023-12   CT#102    CP-233050   0107    2     B     Addition of the LCS-SLMOLR           18.2.0
+
+  2023-12   CT#102    CP-233037   0108    1     B     Update of the                        18.2.0
+                                                      LCS-PeriodicTriggeredInvokeArg       
+
+  2023-12   CT#102    CP-233037   0109    1     B     Support of cumulative event report   18.2.0
+
+  2023-12   CT#102    CP-233037   0110    1     B     Support of user plane positioning    18.2.0
+                                                      between UE and AF                    
+
+  2024-03   CT#103    CP-240030   0112    1     F     Support of area usage indication     18.3.0
+
+  2024-03   CT#103    CP-240045   0113    1     F     Resolve the EN for SL-MO-LR message  18.3.0
+
+  2024-03   CT#103    CP-240045   0114          F     Application Layer Id Data Type       18.3.0
+
+  2024-03   CT#103    CP-240045   0115    2     B     Addition of the supplementary        18.3.0
+                                                      message for ranging_SL               
+
+  2024-06   CT#104    CP-241045   0116    2     F     Resolve the EN on describing the     18.4.0
+                                                      relativeLocation and rangeDirection  
+
+  2024-06   CT#104    CP-241045   0117    1     F     Remove support of RangingSL          18.4.0
+                                                      Positioning service exposure to      
+                                                      Client UE through 5GC                
+
+  2024-06   CT#104    CP-241045   0118    2     F     Notification for privacy check on UE 18.4.0
+                                                      for RangingSl                        
+
+  2024-09   CT#105    CP-242049   0119    1     F     Correction on the maximum number of  18.5.0
+                                                      devices in one SLPP message          
+
+  2024-12   CT#106    CP-243026   0120    1     F     Updates on relative velocity         18.6.0
+
+  2024-12   CT#106    CP-243032   0121    2     F     Updates on SL-MT-LR for periodic     19.0.0
+                                                      triggered Location Events            
+
+  2025-02   CT#107    CP-250027   0124    2     A     Updates data type and data values on 19.1.0
+                                                      relative velocity                    
+
+  2025-02   CT#107    CP-250046   0122          F     ASN.1 module version update          19.1.0
+
+  2025-06   CT#108    CP-251067   0125    1     F     Correction of lcs-MOLR               19.2.0
+
+  2026-03   CT#111    CP-260031   0130    2     F     Add ExtendedFacility and Capability  19.3.0
+  --------- --------- ----------- ------- ----- ----- ------------------------------------ ---------

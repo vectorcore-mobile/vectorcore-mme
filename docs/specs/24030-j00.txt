@@ -1,0 +1,915 @@
++--------------------------------+-------------------------------------+
+| 3GPP TS 24.030 V19.0.0         |                                     |
+| (2025-10)                      |                                     |
++================================+=====================================+
+| Technical Specification        |                                     |
++--------------------------------+-------------------------------------+
+| 3rd Generation Partnership     |                                     |
+| Project;                       |                                     |
+|                                |                                     |
+| Technical Specification Group  |                                     |
+| Core Network and Terminals;    |                                     |
+|                                |                                     |
+| Location Services (LCS);       |                                     |
+|                                |                                     |
+| Supplementary service          |                                     |
+| operations; Stage 3            |                                     |
+|                                |                                     |
+| (Release 19)                   |                                     |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| []                             | []                                  |
++--------------------------------+-------------------------------------+
+|                                |                                     |
++--------------------------------+-------------------------------------+
+| The present document has been  |                                     |
+| developed within the 3rd       |                                     |
+| Generation Partnership Project |                                     |
+| (3GPP ^(TM)) and may be        |                                     |
+| further elaborated for the     |                                     |
+| purposes of 3GPP.              |                                     |
+| The present document has not   |                                     |
+| been subject to any approval   |                                     |
+| process by the 3GPP            |                                     |
+| Organizational Partners and    |                                     |
+| shall not be implemented.      |                                     |
+| This Specification is provided |                                     |
+| for future development work    |                                     |
+| within 3GPP only. The          |                                     |
+| Organizational Partners accept |                                     |
+| no liability for any use of    |                                     |
+| this Specification.            |                                     |
+| Specifications and Reports for |                                     |
+| implementation of the 3GPP     |                                     |
+| ^(TM) system should be         |                                     |
+| obtained via the 3GPP          |                                     |
+| Organizational Partners'       |                                     |
+| Publications Offices.          |                                     |
++--------------------------------+-------------------------------------+
+
++-----------------------------------------------------------------------+
+|                                                                       |
++=======================================================================+
+|   3GPP                                                                |
+|                                                                       |
+|   Postal address                                                      |
+|                                                                       |
+|   3GPP support office address                                         |
+|                                                                       |
+|   650 Route des Lucioles - Sophia Antipolis                           |
+|                                                                       |
+|   Valbonne - FRANCE                                                   |
+|                                                                       |
+|   Tel.: +33 4 92 94 42 00 Fax: +33 4 93 65 47 16                      |
+|                                                                       |
+|   Internet                                                            |
+|                                                                       |
+|   http://www.3gpp.org                                                 |
++-----------------------------------------------------------------------+
+| Copyright Notification                                                |
+|                                                                       |
+| No part may be reproduced except as authorized by written permission. |
+| The copyright and the foregoing restriction extend to reproduction in |
+| all media.                                                            |
+|                                                                       |
+| © 2025, 3GPP Organizational Partners (ARIB, ATIS, CCSA, ETSI, TSDSI,  |
+| TTA, TTC).                                                            |
+|                                                                       |
+| All rights reserved.                                                  |
+|                                                                       |
+| UMTS™ is a Trade Mark of ETSI registered for the benefit of its       |
+| members                                                               |
+|                                                                       |
+| 3GPP™ is a Trade Mark of ETSI registered for the benefit of its       |
+| Members and of the 3GPP Organizational Partners                       |
+| LTE™ is a Trade Mark of ETSI registered for the benefit of its        |
+| Members and of the 3GPP Organizational Partners                       |
+|                                                                       |
+| GSM® and the GSM logo are registered and owned by the GSM Association |
++-----------------------------------------------------------------------+
+
+ Contents
+
+Foreword 4
+
+1 Scope 5
+
+2 References 5
+
+3 Definitions and abbreviations 5
+
+4 Network initiated location services operations 6
+
+4.1 Location Notification 6
+
+4.1.1 Normal operation 6
+
+4.2 Deferred MT-LR Area Event 6
+
+4.2.1 Area Event Request 6
+
+4.2.2 Area Event Report 7
+
+4.2.3 Area Event Cancellation 9
+
+4.3 Deferred MT-LR Periodic Location Event 9
+
+4.3.1 MT-LR LCS Periodic Location 9
+
+4.3.2 LCS Location Update 10
+
+4.3.3 Periodic Event Cancellation 10
+
+5 Mobile initiated location services operations 11
+
+5.1 Mobile Originated Location Request (MO-LR) 11
+
+5.1.1 Normal operation 11
+
+Annex A (informative): Change History 14
+
+ Foreword
+
+This Technical Specification (TS) has been produced by the 3^(rd)
+Generation Partnership Project (3GPP).
+
+The contents of the present document are subject to continuing work
+within the TSG and may change following formal TSG approval. Should the
+TSG modify the contents of the present document, it will be re-released
+by the TSG with an identifying change of release date and an increase in
+version number as follows:
+
+Version x.y.z
+
+where:
+
+x the first digit:
+
+1 presented to TSG for information;
+
+2 presented to TSG for approval;
+
+3 or greater indicates TSG approved document under change control.
+
+y the second digit is incremented for all changes of substance, i.e.
+technical enhancements, corrections, updates, etc.
+
+z the third digit is incremented when editorial only changes have been
+incorporated in the document.
+
+ 1 Scope
+
+The present document gives the stage 3 description of the Location
+Service (LCS) operations for mobile station. These operations shall
+apply to both CS and PS domain.
+
+The group of location services operations is divided into two different
+classes:
+
+‑ Network initiated location services operations (clause 4);
+
+‑ Mobile initiated location services operations (clause 5).
+
+2 References
+
+The following documents contain provisions which, through reference in
+this text, constitute provisions of the present document.
+
+- References are either specific (identified by date of publication,
+edition number, version number, etc.) or non‑specific.
+
+- For a specific reference, subsequent revisions do not apply.
+
+- For a non-specific reference, the latest version applies. In the case
+of a reference to a 3GPP document (including a GSM document), a
+non-specific reference implicitly refers to the latest version of that
+document in the same Release as the present document.
+
+[1] 3GPP TS 21.905: "Abbreviations and acronyms".
+
+[2] 3GPP TS 23.271: "Functional stage 2 description of LCS".
+
+[3] 3GPP TS 24.080: "Mobile radio interface layer 3 supplementary
+services specification; Formats and coding".
+
+[4] 3GPP TS 23.032: "Universal Geographical Area Description (GAD)"
+
+3 Definitions and abbreviations
+
+Abbreviations used in the present document are listed in 3GPP TS 21.905
+and 3GPP TS 23.271.
+
+The following terms are used in the present document:
+
+- MS, Mobile Station. The present document makes no distinction between
+MS and UE.
+
+4 Network initiated location services operations
+
+4.1 Location Notification
+
+4.1.1 Normal operation
+
+The network invokes a location notification procedure by sending a
+REGISTER message containing a LCS-LocationNotification invoke component
+to the MS. This may be sent either to request verification for MT-LR or
+to notify about already authorized MT-LR.
+
+In case of privacy verification the MS shall respond to the request by
+sending a RELEASE COMPLETE message containing the mobile subscriber's
+response in a return result component (figure 4.1).
+
+If the timer T(LCSN) expires in the network before any response from the
+MS (e.g. due to no response from the user), the network shall interprete
+this by applying the default treatment defined in TS 23.271
+(i.e. dissallow location if barred by subscription and allow location if
+allowed by subscription).
+
+In the case of location notification no response is required from the
+MS, the MS shall terminate the dialoque by sending a RELEASE COMPLETE
+message containing a LocationNotification return result.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080
+
+MS Network
+
+REGISTER
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-LocationNotification (notificationType,
+locationType, lcsClientExternalID, lcsClientName, lcsRequestorID,
+lcsCodeword, lcsServiceTypeId))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result = LCS-LocationNotification
+(verificationResponse))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.1: Location Notification
+
+4.2 Deferred MT-LR Area Event
+
+4.2.1 Area Event Request
+
+The network invokes a Deferred MT-LR Area Event procedure by sending a
+REGISTER message containing an LCS-Area Event invoke component to the
+MS.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080
+
+MS Network
+
+REGISTER
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-AreaEventRequest (referenceNumber,
+h-gmlc-address, deferredLocationEventType, areaEventInfo))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.2: Area Event Request
+
+4.2.2 Area Event Report
+
+The MS invokes an Area Event Report by sending a REGISTER message to the
+network containing an LCS-AreaEventReport invoke component. SS Version
+Indicator value 1 or above shall be used.
+
+The MS may use the Area Event Report also when cancelling the Area Event
+Request while monitoring the event.
+
+The receiving network entity shall forward the Area Event Report to the
+H-GMLC which was included in the invoke component directly or via its
+associated V-GMLC.
+
+The MS may terminate the dialogue by sending a RELEASE COMPLETE message
+for a single location request (see figure 4.3). The MS may also initiate
+another Area Event Report operation by sending a FACILITY message to the
+network containing an LCS-AreaEventReport invoke component (see figure
+4.4). After the Area Event Report operation the MS shall terminate the
+dialogue by sending a RELEASE COMPLETE message.
+
+If the network cannot successfully process the Area Event Report
+received from the MS, it shall clear the transaction by sending a
+RELEASE COMPLETE message containing a return error component. Error
+values are specified in 3GPP TS 24.080.
+
+If the network has returned a result to the MS in a FACILITY message
+but, after some PLMN administered time period has elapsed, the network
+has not received either a new Area Event Report operation in a FACILITY
+message or a RELEASE COMPLETE message from the MS, the network may clear
+the transaction by sending a RELEASE COMPLETE message.
+
+MS Network
+
+REGISTER
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-AreaEventReport (referenceNumber,
+h-gmlc-address))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Figure 4.3: Single Area Event Report
+
+MS Network
+
+REGISTER
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-AreaEventReport (referenceNumber,
+h-gmlc-address))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-AreaEventReport (referenceNumber,
+h-gmlc-address))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Figure 4.4: Multiple Area Event Reports
+
+4.2.3 Area Event Cancellation
+
+The network invokes a Deferred MT-LR Area Event Cancellation procedure
+by sending a REGISTER message containing an LCS-Area Event Cancellation
+invoke component to the MS.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080
+
+MS Network
+
+REGISTER
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-AreaEventCancellation (referenceNumber,
+h-gmlc-address))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.5: Area Event Cancellation
+
+4.3 Deferred MT-LR Periodic Location Event 
+
+4.3.1 MT-LR LCS Periodic Location
+
+The network invokes a Deferred MT-LR Periodic Location Event by sending
+a REGISTER message containing an LCS Periodic Location invoke component
+to the MS.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080.
+
+MS Network
+
+REGISTER
+
+<---------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-PeriodicLocationRequest (referenceNumber,
+periodicLDRInfo, lcsClientExternalID,
+
+qoS, h-gmlc-address, mo-lrShortCircuit, reportingPLMNList))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result = LCS-PeriodicLocationRequest
+(mo-lrShortCircuit))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.6: Periodic Location Request
+
+4.3.2 LCS Location Update
+
+The network invokes a location update procedure by sending a REGISTER
+message containing an LCS Location Update invoke component to the MS.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080.
+
+MS Network
+
+REGISTER
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-LocationUpdate (referenceNumber,
+add-LocationEstimate,
+
+velocityEstimate, sequenceNumber))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result = LCS-LocationUpdate (terminationCause))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.7: Location Update
+
+4.3.3 Periodic Event Cancellation
+
+The network invokes a Deferred MT-LR Periodic Location Cancellation
+procedure by sending a REGISTER message containing an LCS-Periodic
+Location Cancellation invoke component to the MS.
+
+If the MS is unable to process the request received from the network, it
+shall return an error indication by sending a RELEASE COMPLETE message
+containing a return error component. Error values are specified in
+3GPP TS 24.080.
+
+MS Network
+
+REGISTER
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Invoke = LCS-PeriodicLocationCancellation (referenceNumber,
+h-gmlc-address))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Return result)
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+->
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Figure 4.8: Periodic Location Cancellation
+
+5 Mobile initiated location services operations
+
+5.1 Mobile Originated Location Request (MO-LR)
+
+5.1.1 Normal operation
+
+The MS invokes a MO-LR by sending a REGISTER message to the network
+containing a LCS-MOLR invoke component. SS Version Indicator value 1 or
+above shall be used.
+
+The receiving network entity shall initiate the handling of location
+request in the network. The network shall pass the result of the
+location procedure to the MS by sending a FACILITY message to the MS
+containing a LCS-MOLR return result component. When location estimate is
+kept in the network entity and this information satisfies the requested
+accuracy and the requested maximum age of location, then the network may
+reuse this information and the positioning measurement procedure may be
+skipped.
+
+The network shall pass the result of the location procedure to the MS
+only if the location estimate is given in a format that the MS supports,
+as indicated by either the presence (and content) or the absence of the
+parameter supportedGADShapes, which may be sent by the MS in the
+LCS-MOLR operation.
+
+The MS may terminate the dialogue by sending a RELEASE COMPLETE message
+in the case of single location request (see figure 5.1). The MS may also
+initiate another location request operation by sending a FACILITY
+message to the network containing a LCS-MOLR invoke component (see
+figure 5.2). After the last location request operation the MS shall
+terminate the dialogue by sending a RELEASE COMPLETE message.
+
+If the network is unable to successfully fulfil the request received
+from the MS (e.g. to provide a location estimate or location assistance
+information), it shall clear the transaction by sending a RELEASE
+COMPLETE message containing a return error component. Error values are
+specified in 3GPP TS 24.080. If the network is unable to provide a
+location estimate due to lack of support in the MS for the type of shape
+of the location estimate, then it shall use the error Facility Not
+Supported.
+
+If the network has returned a result to the MS in a FACILITY message
+but, after some PLMN administered time period has elapsed, has not
+received either a new location request operation in a FACILITY message
+or a RELEASE COMPLETE message from the MS, the network may clear the
+transaction by sending a RELEASE COMPLETE message.
+
+During the MO-LR operation the MS shall run a timer T(LCSL). This timer
+is started when the operation is sent, and stopped when a response is
+received from the network. If this timer expires the MS shall assume
+that the operation has failed, and may terminate the dialogue by sending
+a RELEASE COMPLETE message, and shall inform the user of the failure.
+
+To support Periodic Location features (see TS 23.271 for details), the
+LCS-MOLR Invoke and the LCS-MOLR Return Result components carry the
+periodic location information between the MS and the network. These
+information are applicable to the instigation, cancellation, and
+reporting of the periodic location event and the location estimates.
+
+MS Network
+
+REGISTER
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-MOLR (molr-Type, locationMethod, lcs-QoS,
+lcsClientExternalID, mlc-Number, gpsAssistanceData, supportedGADShapes,
+lcsServiceTypeID, ageOfLocationInfo, locationType, pseudonymIndicator,
+
+h-gmlc-address, locationEstimate, velocityEstimate, referenceNumber,
+periodicLDRInfo,
+
+locationUpdateRequest, sequenceNumber, terminationCause,
+mo-lrShortCircuit,
+
+ganssAssistanceData))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result = LCS-MOLR (locationEstimate, velocityEstimate,
+decipheringKeys, add-LocationEstimate,
+
+referenceNumber, h-gmlc-address, mo-lrShortCircuit, reportingPLMNList))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Figure 5.1: Single mobile originated location request
+
+MS Network
+
+REGISTER
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-MOLR (molr-Type, locationMethod, lcs-QoS,
+lcsClientExternalID, mlc-Number, gpsAssistanceData, supportedGADShapes,
+lcsServiceTypeID, ageOfLocationInfo, locationType, pseudonymIndicator,
+
+h-gmlc-address, locationEstimate, velocityEstimate, referenceNumber,
+periodicLDRInfo,
+
+locationUpdateRequest, sequenceNumber, terminationCause,
+mo-lrShortCircuit,
+
+ganssAssistanceData))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result = LCS-MOLR (locationEstimate, velocityEstimate,
+decipheringKeys, add-LocationEstimate,
+
+referenceNumber, h-gmlc-address, mo-lrShortCircuit, reportingPLMNList))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+FACILITY
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Facility (Invoke = LCS-MOLR (molr-Type, locationMethod, lcs-QoS,
+lcsClientExternalID, mlc-Number, gpsAssistanceData, supportedGADShapes,
+lcsServiceTypeID, ageOfLocationInfo, locationType, pseudonymIndicator,
+
+h-gmlc-address, locationEstimate, velocityEstimate, referenceNumber,
+periodicLDRInfo,
+
+locationUpdateRequest, sequenceNumber, terminationCause,
+mo-lrShortCircuit,
+
+ganssAssistanceData))
+
+FACILITY
+
+<------------------------------------------------------------------------------------------------------------------------
+
+Facility (Return result = LCS-MOLR (locationEstimate, velocityEstimate,
+decipheringKeys, add-LocationEstimate,
+
+referenceNumber, h-gmlc-address, mo-lrShortCircuit, reportingPLMNList))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Return error (Error))
+
+RELEASE COMPLETE
+
+<- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+-
+
+Facility (Reject (Invoke_problem))
+
+RELEASE COMPLETE
+
+------------------------------------------------------------------------------------------------------------------------>
+
+Figure 5.2: Multiple mobile originated location requests
+
+ Annex A (informative): Change History
+
+  --------- --------- -------- ------ ----- ----- ------------------------------------ ---------
+  Change                                                                               
+  history                                                                              
+
+  Date      Meeting   TDoc     CR     Rev   Cat   Subject/Comment                      New
+                                                                                       version
+
+  CN#07                        -                  04.30 v7.1.0 - Transferred to 3GPP   3.0.0
+
+  CN#08                        001    1           Clarifications on GSM vs. UMTS       3.1.0
+                                                  specific parts                       
+
+  CN#08                        002                Correction of MO-LR procedure for    3.1.0
+                                                  LCS                                  
+
+  CN#11                                           Version increased from R99 to Rel-4  4.0.0
+                                                  after CN#11                          
+
+  CN#11                        003    1           Adaptation of SS to PS domain        4.0.0
+
+  CN#12                        005                Handle new parameters in LCS-MOLR    4.1.0
+
+  CN#14                        009                Specify usage of SS Version          4.2.0
+                                                  Indicator                            
+
+  CN#14                        011                Correction of MO-LR procedure        4.2.0
+
+  CN#15                        012                Introduction of the "Requestor ID"   5.0.0
+
+  CN#16                        013                LCS: Codeword and Service Type       5.1.0
+
+  CN#22                        014    1           Deferred MT-LR Area Event            6.0.0
+
+  CN#23                        015                Removal of R-GMLC Address            6.1.0
+
+  CN#23                        016                MO-LR Service Identity support       6.1.0
+
+  CN#26                        020    1           Correction of missing description    6.2.0
+                                                  for T(LCSN) and T(LCSL)              
+
+  CN#27                        023    1           Pseudonym indicator support in MO-LR 6.3.0
+
+  CT#29                        024    1           Enabling the Providing of Velocity   7.0.0
+
+  CT#29                        0025               Addition of Periodic Location        7.1.0
+                                                  Feature Support                      
+
+  CT#36                        0026   1           Add Assisted GANSS as a New          7.2.0
+                                                  Positioning Method                   
+
+  CT#36                        0028               Unimplemented CR for Reuse of UEs    7.2.0
+                                                  location                             
+
+  CT#42                                           Upgraded unchanged from Rel-7        8.0.0
+
+  2009-12                      -                  Update to Rel-9 version (MCC)        9.0.0
+
+  2011-03                      -                  Update to Rel-10 version (MCC)       10.0.0
+
+  2012-09                      -                  Update to Rel-11 version (MCC)       11.0.0
+
+  2014-09                      -                  Update to Rel-12 version (MCC)       12.0.0
+
+  2015-12                      -                  Update to Rel-13 version (MCC)       13.0.0
+
+  2017-03                      -                  Update to Rel-14 version (MCC)       14.0.0
+
+  2018-06                      -                  Update to Rel-15 version (MCC)       15.0.0
+
+  2020-07                      -                  Update to Rel-16 version (MCC)       16.0.0
+
+  2022-03   CT#95e             -                  Update to Rel-17 version (MCC)       17.0.0
+
+  2024-03   -         -        -      -     -     Update to Rel-18 version (MCC)       18.0.0
+
+  2025-10   -         -        -      -     -     Update to Rel-19 version (MCC)       19.0.0
+  --------- --------- -------- ------ ----- ----- ------------------------------------ ---------

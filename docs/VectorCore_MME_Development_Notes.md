@@ -460,8 +460,6 @@ Required EN-DC support:
 * Interaction with roaming restrictions
 * Interaction with regional subscription restrictions
 * Per-subscriber EN-DC enablement
-* Per-PLMN EN-DC policy
-* Per-TAC EN-DC policy
 * Logging of EN-DC authorization decisions
 
 Possible configuration:
