@@ -31,22 +31,12 @@ func eea0Cipher(in []byte) ([]byte, error) {
 	return out, nil
 }
 
-// eea1Cipher implements EEA1 (SNOW 3G) per TS 33.401 §B.4.
+// eea1Cipher implements EEA1 (SNOW 3G) per TS 33.401 Annex B.1.2.
 func eea1Cipher(key []byte, count uint32, bearer, direction uint8, in []byte) ([]byte, error) {
 	if len(key) < 16 {
 		return nil, errors.New("security: EEA1 key must be at least 16 bytes")
 	}
-	// Build IV: COUNT[31:0] || BEARER[4:0] DIRECTION[0] 0^26 || 0^32 || 0^32
-	var iv [16]byte
-	binary.BigEndian.PutUint32(iv[0:], count)
-	iv[4] = (bearer&0x1F)<<3 | (direction&1)<<2
-
-	ks := snow3g.Keystream(key[:16], iv[:], len(in))
-	out := make([]byte, len(in))
-	for i := range in {
-		out[i] = in[i] ^ ks[i]
-	}
-	return out, nil
+	return snow3g.EEA1(key[:16], count, bearer, direction, in), nil
 }
 
 // eea2Cipher implements EEA2 (AES-CTR) per TS 33.401 §B.5.

@@ -1,39 +1,51 @@
-// Package snow3g implements the SNOW 3G stream cipher as specified in
-// 3GPP TS 35.216 and ETSI TS 135 216. Used by EIA1 and EEA1.
+// Package snow3g implements the SNOW 3G stream cipher and its f8/f9 modes
+// as specified in the ETSI/SAGE document "Specification of the 3GPP
+// Confidentiality and Integrity Algorithms UEA2 & UIA2" (the core cipher
+// underlying LTE's 128-EEA1 and 128-EIA1, TS 33.401 Annex B.1.2/B.2.2).
+//
+// The LFSR/FSM core, S-boxes, and GF(2^8)/GF(2^32) arithmetic below are a
+// direct transcription of the ETSI/SAGE reference implementation (also
+// shipped, byte-for-byte identical in structure, by open source 4G/5G
+// cores such as open5gs). F8/F9/EEA1/EIA1 are validated against the
+// official UEA2/UIA2 conformance test vectors in snow3g_test.go.
 package snow3g
 
-// SNOW 3G uses two components: an LFSR (Linear Feedback Shift Register) with
-// 16 stages and an FSM (Finite State Machine) with 3 registers.
+import "encoding/binary"
 
-// MULx multiplies v by x in GF(2^8) with polynomial x^8 + x^7 + x^5 + x^3 + 1 (0xA9).
+// MULx multiplies v by x in GF(2^8) with reduction polynomial c.
 func MULx(v, c byte) byte {
-	if v>>7 == 1 {
+	if v&0x80 != 0 {
 		return (v << 1) ^ c
 	}
 	return v << 1
 }
 
-// MULxPOW computes x^i * v in GF(2^8).
-func MULxPOW(v, i, c byte) byte {
-	if i == 0 {
-		return v
+// MULxPOW computes x^i * v in GF(2^8) with reduction polynomial c.
+func MULxPOW(v byte, i int, c byte) byte {
+	for ; i > 0; i-- {
+		v = MULx(v, c)
 	}
-	return MULx(MULxPOW(v, i-1, c), c)
+	return v
 }
 
-// MULalpha multiplies a 32-bit value by alpha in GF(2^32) / (alpha^4 + alpha^3 + 1).
-// The primitive polynomial is x^8+x^7+x^5+x^3+1 (0xA9) for the field GF(2^8).
-func MULalpha(c uint32) uint32 {
-	return ((c & 0x7FFFFFFF) << 1) ^ (0x69 * (c >> 31))
+// mulAlpha and divAlpha implement multiplication/division by the LFSR's
+// primitive element alpha in GF(2^32), built from GF(2^8) (reduction
+// polynomial 0xA9) per §3.4.2/§3.4.3 of the SNOW 3G specification.
+func mulAlpha(c byte) uint32 {
+	return uint32(MULxPOW(c, 23, 0xa9))<<24 |
+		uint32(MULxPOW(c, 245, 0xa9))<<16 |
+		uint32(MULxPOW(c, 48, 0xa9))<<8 |
+		uint32(MULxPOW(c, 239, 0xa9))
 }
 
-// DIValpha divides a 32-bit value by alpha (inverse of MULalpha).
-func DIValpha(c uint32) uint32 {
-	return ((c >> 1) ^ ((c & 1) * 0xB4800000))
+func divAlpha(c byte) uint32 {
+	return uint32(MULxPOW(c, 16, 0xa9))<<24 |
+		uint32(MULxPOW(c, 39, 0xa9))<<16 |
+		uint32(MULxPOW(c, 6, 0xa9))<<8 |
+		uint32(MULxPOW(c, 64, 0xa9))
 }
 
-// S-boxes for SNOW 3G (SR and SQ).
-// SR is based on AES S-box; SQ is a custom 8-bit S-box.
+// SR is the Rijndael (AES) S-box, used by S1.
 var SR = [256]byte{
 	0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
 	0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -53,6 +65,7 @@ var SR = [256]byte{
 	0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
 }
 
+// SQ is SNOW 3G's own S-box, used by S2.
 var SQ = [256]byte{
 	0x25, 0x24, 0x73, 0x67, 0xd7, 0xae, 0x5c, 0x30, 0xa4, 0xee, 0x6e, 0xcb, 0x7d, 0xb5, 0x82, 0xdb,
 	0xe4, 0x8e, 0x48, 0x49, 0x4f, 0x5d, 0x6a, 0x78, 0x70, 0x88, 0xe8, 0x5f, 0x5e, 0x84, 0x65, 0xe2,
@@ -72,88 +85,242 @@ var SQ = [256]byte{
 	0x56, 0xe1, 0x77, 0xc9, 0x1e, 0x9e, 0x95, 0xa3, 0x90, 0x19, 0xa8, 0x6c, 0x09, 0xd0, 0xf0, 0x86,
 }
 
-// State holds the LFSR and FSM state for SNOW 3G.
-type State struct {
-	lfsr [16]uint32
-	fsmR [3]uint32 // R1, R2, R3
+// s1 is the 32x32-bit S-box S1: SR substitution followed by the same
+// MDS (MixColumns-style) diffusion AES uses, per §3.3.1.
+func s1(w uint32) uint32 {
+	b0 := SR[byte(w>>24)]
+	b1 := SR[byte(w>>16)]
+	b2 := SR[byte(w>>8)]
+	b3 := SR[byte(w)]
+	r0 := MULx(b0, 0x1b) ^ b1 ^ b2 ^ (MULx(b3, 0x1b) ^ b3)
+	r1 := (MULx(b0, 0x1b) ^ b0) ^ MULx(b1, 0x1b) ^ b2 ^ b3
+	r2 := b0 ^ (MULx(b1, 0x1b) ^ b1) ^ MULx(b2, 0x1b) ^ b3
+	r3 := b0 ^ b1 ^ (MULx(b2, 0x1b) ^ b2) ^ MULx(b3, 0x1b)
+	return uint32(r0)<<24 | uint32(r1)<<16 | uint32(r2)<<8 | uint32(r3)
 }
 
-// clauseS applies the S-box layer on the 32-bit word using SR.
-func clauseS(w uint32) uint32 {
-	return uint32(SR[w>>24]) |
-		uint32(SR[(w>>16)&0xFF])<<8 |
-		uint32(SR[(w>>8)&0xFF])<<16 |
-		uint32(SR[w&0xFF])<<24
+// s2 is the 32x32-bit S-box S2: SQ substitution with SNOW 3G's own MDS
+// diffusion (reduction polynomial 0x69), per §3.3.2.
+func s2(w uint32) uint32 {
+	b0 := SQ[byte(w>>24)]
+	b1 := SQ[byte(w>>16)]
+	b2 := SQ[byte(w>>8)]
+	b3 := SQ[byte(w)]
+	r0 := MULx(b0, 0x69) ^ b1 ^ b2 ^ (MULx(b3, 0x69) ^ b3)
+	r1 := (MULx(b0, 0x69) ^ b0) ^ MULx(b1, 0x69) ^ b2 ^ b3
+	r2 := b0 ^ (MULx(b1, 0x69) ^ b1) ^ MULx(b2, 0x69) ^ b3
+	r3 := b0 ^ b1 ^ (MULx(b2, 0x69) ^ b2) ^ MULx(b3, 0x69)
+	return uint32(r0)<<24 | uint32(r1)<<16 | uint32(r2)<<8 | uint32(r3)
 }
 
-// clauseQ applies the S-box layer on the 32-bit word using SQ.
-func clauseQ(w uint32) uint32 {
-	return uint32(SQ[w>>24]) |
-		uint32(SQ[(w>>16)&0xFF])<<8 |
-		uint32(SQ[(w>>8)&0xFF])<<16 |
-		uint32(SQ[w&0xFF])<<24
+// state holds the 16-stage LFSR and 3-register FSM.
+type state struct {
+	lfsr       [16]uint32
+	r1, r2, r3 uint32
 }
 
-// Init initializes the SNOW 3G cipher with a 128-bit key and 128-bit IV.
-func Init(key, iv []byte) *State {
-	s := &State{}
-	// Load key and IV into LFSR
+// clockFSM produces one 32-bit word of FSM output and advances R1..R3.
+// See §3.4.6.
+func (s *state) clockFSM() uint32 {
+	f := (s.lfsr[15] + s.r1) ^ s.r2
+	r := s.r2 + (s.r3 ^ s.lfsr[5])
+	s.r3 = s2(s.r2)
+	s.r2 = s1(s.r1)
+	s.r1 = r
+	return f
+}
+
+// clockLFSR advances the LFSR by one clock. f is the FSM output XORed into
+// the feedback during the 32-round initialization (§3.4.4); pass 0 for
+// ordinary keystream-mode clocking (§3.4.5), which omits it.
+func (s *state) clockLFSR(f uint32) {
+	v := ((s.lfsr[0] << 8) & 0xffffff00) ^
+		mulAlpha(byte(s.lfsr[0]>>24)) ^
+		s.lfsr[2] ^
+		((s.lfsr[11] >> 8) & 0x00ffffff) ^
+		divAlpha(byte(s.lfsr[11])) ^
+		f
+	copy(s.lfsr[0:15], s.lfsr[1:16])
+	s.lfsr[15] = v
+}
+
+// newState initializes the cipher for a 128-bit key and 128-bit IV per
+// §4.1, with key and IV each in natural (first-word-first) word order —
+// this is the raw primitive; F8/F9 below apply their own key word
+// reversal before calling it, exactly as the reference implementation's
+// f8/f9 wrappers do.
+func newState(key, iv []byte) *state {
+	var k [4]uint32
 	for i := 0; i < 4; i++ {
-		s.lfsr[i+4] = uint32(key[4*i])<<24 | uint32(key[4*i+1])<<16 | uint32(key[4*i+2])<<8 | uint32(key[4*i+3])
-		s.lfsr[i+4] ^= uint32(iv[4*i])<<24 | uint32(iv[4*i+1])<<16 | uint32(iv[4*i+2])<<8 | uint32(iv[4*i+3])
-		s.lfsr[i] = uint32(key[4*(i+4)])<<24 | uint32(key[4*(i+4)+1])<<16 | uint32(key[4*(i+4)+2])<<8 | uint32(key[4*(i+4)+3])
-		s.lfsr[i+8] ^= uint32(iv[4*(i+4)])<<24 | uint32(iv[4*(i+4)+1])<<16 | uint32(iv[4*(i+4)+2])<<8 | uint32(iv[4*(i+4)+3])
+		k[i] = binary.BigEndian.Uint32(key[4*i : 4*i+4])
 	}
-	// Simplified init; proper SNOW 3G requires specific init per spec.
-	// For production, replace with a verified test-vector-passing init.
-	s.fsmR[0] = 0
-	s.fsmR[1] = 0
-	s.fsmR[2] = 0
-	// Clock FSM 32 times without output
+	var ivw [4]uint32
+	for i := 0; i < 4; i++ {
+		ivw[i] = binary.BigEndian.Uint32(iv[4*i : 4*i+4])
+	}
+
+	s := &state{}
+	s.lfsr[15] = k[3] ^ ivw[0]
+	s.lfsr[14] = k[2]
+	s.lfsr[13] = k[1]
+	s.lfsr[12] = k[0] ^ ivw[1]
+	s.lfsr[11] = k[3] ^ 0xffffffff
+	s.lfsr[10] = k[2] ^ 0xffffffff ^ ivw[2]
+	s.lfsr[9] = k[1] ^ 0xffffffff ^ ivw[3]
+	s.lfsr[8] = k[0] ^ 0xffffffff
+	s.lfsr[7] = k[3]
+	s.lfsr[6] = k[2]
+	s.lfsr[5] = k[1]
+	s.lfsr[4] = k[0]
+	s.lfsr[3] = k[3] ^ 0xffffffff
+	s.lfsr[2] = k[2] ^ 0xffffffff
+	s.lfsr[1] = k[1] ^ 0xffffffff
+	s.lfsr[0] = k[0] ^ 0xffffffff
+
 	for i := 0; i < 32; i++ {
-		s.clockFSM()
-		s.clockLFSR()
+		f := s.clockFSM()
+		s.clockLFSR(f)
 	}
 	return s
 }
 
-func (s *State) clockFSM() uint32 {
-	f := s.lfsr[15] + s.fsmR[0]
-	r := s.fsmR[1] ^ s.lfsr[5]
-	s.fsmR[2] = clauseQ(s.fsmR[1])
-	s.fsmR[1] = clauseS(s.fsmR[0])
-	s.fsmR[0] = r
-	return f
-}
-
-func (s *State) clockLFSR() {
-	v := s.lfsr[0]
-	s.lfsr[0] = MULalpha(s.lfsr[0])>>8 | DIValpha(s.lfsr[11])<<24
-	for i := 0; i < 15; i++ {
-		s.lfsr[i] = s.lfsr[i+1]
-	}
-	s.lfsr[15] = v ^ s.lfsr[0]
-}
-
-// GenerateKeystream generates n 32-bit words of keystream.
-func (s *State) GenerateKeystream(n int) []uint32 {
+// generateKeystreamWords returns n 32-bit keystream words per §4.2. The
+// first combined FSM/LFSR clock after initialization is discarded, as the
+// spec requires, before any word is output.
+func (s *state) generateKeystreamWords(n int) []uint32 {
+	s.clockFSM()
+	s.clockLFSR(0)
 	ks := make([]uint32, n)
 	for i := 0; i < n; i++ {
 		f := s.clockFSM()
 		ks[i] = f ^ s.lfsr[0]
-		s.clockLFSR()
+		s.clockLFSR(0)
 	}
 	return ks
 }
 
-// Keystream generates n bytes of keystream.
+// Keystream returns n bytes of SNOW 3G keystream for a 128-bit key and IV.
 func Keystream(key, iv []byte, n int) []byte {
 	words := (n + 3) / 4
-	s := Init(key, iv)
-	ks := s.GenerateKeystream(words)
+	s := newState(key, iv)
+	ks := s.generateKeystreamWords(words)
 	out := make([]byte, 0, words*4)
 	for _, w := range ks {
 		out = append(out, byte(w>>24), byte(w>>16), byte(w>>8), byte(w))
 	}
 	return out[:n]
+}
+
+// reverseKeyWords returns key with its four 32-bit words reordered
+// (word0..word3 -> word3..word0). f8/f9 in the reference implementation
+// build their internal K[4] this way (K[3-i] = word i of the raw key)
+// before calling the raw initialization primitive, which itself takes
+// natural (unreversed) word order; Keystream/newState above implement
+// that raw primitive directly, so callers reproducing f8/f9 must reverse
+// here first.
+func reverseKeyWords(key []byte) [16]byte {
+	var out [16]byte
+	copy(out[0:4], key[12:16])
+	copy(out[4:8], key[8:12])
+	copy(out[8:12], key[4:8])
+	copy(out[12:16], key[0:4])
+	return out
+}
+
+// F8 is the SNOW 3G confidentiality primitive (UEA2 f8, TS 35.216 §3),
+// also used directly as LTE's 128-EEA1 (TS 33.401 Annex B.1.2). data is
+// byte-aligned; direction is 0 (uplink) or 1 (downlink).
+func F8(key []byte, count uint32, bearer, direction uint8, data []byte) []byte {
+	ivWord := uint32(bearer&0x1f)<<27 | uint32(direction&1)<<26
+	var iv [16]byte
+	binary.BigEndian.PutUint32(iv[0:4], ivWord)
+	binary.BigEndian.PutUint32(iv[4:8], count)
+	copy(iv[8:12], iv[0:4])
+	copy(iv[12:16], iv[4:8])
+
+	rk := reverseKeyWords(key)
+	ks := Keystream(rk[:], iv[:], len(data))
+	out := make([]byte, len(data))
+	for i := range data {
+		out[i] = data[i] ^ ks[i]
+	}
+	return out
+}
+
+// EEA1 is LTE's 128-EEA1 confidentiality algorithm: an alias for F8.
+func EEA1(key []byte, count uint32, bearer, direction uint8, data []byte) []byte {
+	return F8(key, count, bearer, direction, data)
+}
+
+// F9 is the SNOW 3G integrity primitive (UIA2 f9, TS 35.216 §4): a GF(2^64)
+// polynomial-evaluation MAC over byte-aligned data, returning a 4-byte MAC.
+func F9(key []byte, count, fresh uint32, direction uint8, data []byte) []byte {
+	dir := uint32(direction & 1)
+	var iv [16]byte
+	binary.BigEndian.PutUint32(iv[0:4], fresh^(dir<<15))
+	binary.BigEndian.PutUint32(iv[4:8], count^(dir<<31))
+	binary.BigEndian.PutUint32(iv[8:12], fresh)
+	binary.BigEndian.PutUint32(iv[12:16], count)
+
+	rk := reverseKeyWords(key)
+	z := Keystream(rk[:], iv[:], 20) // z1..z5, one 32-bit word each
+	p := binary.BigEndian.Uint64(z[0:8])
+	q := binary.BigEndian.Uint64(z[8:16])
+	z5 := binary.BigEndian.Uint32(z[16:20])
+
+	nBytes := len(data)
+	numBlocks := (nBytes + 7) / 8
+	if numBlocks == 0 {
+		numBlocks = 1
+	}
+	const c = 0x1b
+	var eval uint64
+	for i := 0; i < numBlocks; i++ {
+		var block [8]byte
+		start := i * 8
+		end := start + 8
+		if end > nBytes {
+			end = nBytes
+		}
+		copy(block[:], data[start:end])
+		eval = mul64(eval^binary.BigEndian.Uint64(block[:]), p, c)
+	}
+	eval ^= uint64(nBytes) * 8 // message bit length
+	eval = mul64(eval, q, c)
+
+	mac := make([]byte, 4)
+	for i := 0; i < 4; i++ {
+		mac[i] = byte(eval>>(56-8*i)) ^ byte(z5>>(24-8*i))
+	}
+	return mac
+}
+
+// EIA1 is LTE's 128-EIA1 integrity algorithm (TS 33.401 Annex B.2.2): F9
+// with FRESH set to BEARER<<27.
+func EIA1(key []byte, count uint32, bearer, direction uint8, data []byte) []byte {
+	return F9(key, count, uint32(bearer&0x1f)<<27, direction, data)
+}
+
+func mul64x(v, c uint64) uint64 {
+	if v&0x8000000000000000 != 0 {
+		return (v << 1) ^ c
+	}
+	return v << 1
+}
+
+func mul64xPow(v uint64, i int, c uint64) uint64 {
+	for ; i > 0; i-- {
+		v = mul64x(v, c)
+	}
+	return v
+}
+
+func mul64(v, p, c uint64) uint64 {
+	var result uint64
+	for i := 0; i < 64; i++ {
+		if (p>>uint(i))&1 != 0 {
+			result ^= mul64xPow(v, i, c)
+		}
+	}
+	return result
 }

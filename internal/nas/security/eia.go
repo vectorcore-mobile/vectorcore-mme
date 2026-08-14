@@ -52,60 +52,12 @@ func eia0MAC() ([]byte, error) {
 	return []byte{0, 0, 0, 0}, nil
 }
 
-// eia1MAC implements EIA1 (SNOW 3G based) per TS 33.401 §B.2 / TS 35.215.
+// eia1MAC implements EIA1 (SNOW 3G based) per TS 33.401 Annex B.2.2.
 func eia1MAC(key []byte, count uint32, bearer, direction uint8, msg []byte) ([]byte, error) {
 	if len(key) < 16 {
 		return nil, errors.New("security: EIA1 key must be at least 16 bytes")
 	}
-
-	// Build IV per TS 33.401 Annex B.2:
-	// iv[0:4]  = COUNT
-	// iv[4]    = BEARER[4:0]||DIRECTION[0]||0b00
-	// iv[5:8]  = 0x000000
-	// iv[8:12] = COUNT  (same as first half)
-	// iv[12]   = BEARER[4:0]||DIRECTION[0]||0b00  (same as iv[4], NOT inverted)
-	// iv[13:16]= 0x000000
-	var iv [16]byte
-	binary.BigEndian.PutUint32(iv[0:], count)
-	iv[4] = (bearer & 0x1F) << 3
-	if direction != 0 {
-		iv[4] |= 0x04
-	}
-	copy(iv[8:12], iv[0:4])
-	iv[12] = iv[4] // same direction bit as first half (CRIT-4 fix)
-
-	// Need ceil(len(msg)/4)+1 32-bit words of keystream.
-	// snow3g.Keystream returns raw bytes; we request nWords*4 bytes.
-	nWords := (len(msg)+3)/4 + 1
-	ksBytes := snow3g.Keystream(key[:16], iv[:], nWords*4)
-
-	// Reconstruct keystream as big-endian uint32 words (CRIT-3 fix).
-	ks := make([]uint32, nWords)
-	for i := range ks {
-		ks[i] = uint32(ksBytes[i*4])<<24 | uint32(ksBytes[i*4+1])<<16 |
-			uint32(ksBytes[i*4+2])<<8 | uint32(ksBytes[i*4+3])
-	}
-
-	// Compute MAC-I per TS 35.215 §4.3:
-	// T = (XOR of each 32-bit message word AND-ed with corresponding keystream word)
-	//     XOR keystream word at index ceil(L/32)
-	// where L = len(msg)*8 (message bit length).
-	// Word-level: for each 32-bit chunk of msg (zero-padded), T ^= msgWord & ks[i].
-	// Then T ^= ks[nWords-1] unconditionally.
-	nMsgWords := (len(msg) + 3) / 4
-	var t uint32
-	for i := 0; i < nMsgWords; i++ {
-		var msgWord uint32
-		for j := 0; j < 4 && i*4+j < len(msg); j++ {
-			msgWord |= uint32(msg[i*4+j]) << uint((3-j)*8)
-		}
-		t ^= msgWord & ks[i]
-	}
-	t ^= ks[nMsgWords] // final unconditional keystream word
-
-	mac := make([]byte, 4)
-	binary.BigEndian.PutUint32(mac, t)
-	return mac, nil
+	return snow3g.EIA1(key[:16], count, bearer, direction, msg), nil
 }
 
 // eia2MAC implements EIA2 (AES-CMAC based) per TS 33.401 §B.3.

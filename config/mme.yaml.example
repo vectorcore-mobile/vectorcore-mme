@@ -278,8 +278,9 @@ gateway_selection:
 
 database:
   mode: "persistent"   # memory | persistent
-  # SQLite file path for the UE/session recovery store. 
-  database: "mme.db"
+  # SQLite file path for the UE/session recovery store. Each MME instance
+  # owns its own file; inter-MME context transfer uses S10, not a shared DB.
+  database: "/opt/vectorcore/var/mme.db"
   pool_size: 30
   pool_idle: 10
 

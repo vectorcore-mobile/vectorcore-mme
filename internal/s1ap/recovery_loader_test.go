@@ -213,12 +213,10 @@ func TestHandleIdleTAUMessage_RecoversUEFromPersistedStoreOnGUTIMiss(t *testing.
 	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 0x1357}
 	gutiStr := uecontext.SerialiseGUTI(guti)
 	rec := testGUTIRecord("001010000000077", gutiStr, models.RecoveryStateDisconnected)
-	// EIA0/EEA0 (null algorithms): this test exercises the real TAU Accept
-	// encode path (encrypted+integrity-protected), unlike the unit tests
-	// above. EIA1/EEA1 is deliberately avoided here — see the EEA1/SNOW3G
-	// panic noted separately; it is unrelated to the recovery loader.
-	rec.NASIntegrityAlg = 0
-	rec.NASCipheringAlg = 0
+	// NASIntegrityAlg/NASCipheringAlg = 1 (EIA1/EEA1, SNOW 3G): this test
+	// exercises the real, encrypted+integrity-protected TAU Accept encode
+	// path with a genuinely derived (non-null) key, which is exactly the
+	// scenario that used to panic in snow3g.Init before it was fixed.
 	srv.store = fakeRecoveryStore{ueRec: rec}
 
 	tempUE := srv.ueManager.Allocate()
