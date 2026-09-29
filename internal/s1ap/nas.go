@@ -886,10 +886,16 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		zap.String("t3412_encoded_octet", fmt.Sprintf("0x%02x", t3412)),
 		zap.Int("t3412_effective_seconds", nastimer.DecodeGPRSTimer(t3412)))
 
+	// E-RAB QoS must match the EPS bearer QoS sent to the UE in the Attach
+	// Accept, the same subscribed values Service Request and handover use.
 	bearer := &BearerInfo{
-		EBI:       ebi,
-		SGWU_TEID: sgwuTEID,
-		SGWU_IP:   sgwuIP.To4(),
+		EBI:                     ebi,
+		QCI:                     apnPolicy.QCI,
+		ARPPriority:             apnPolicy.ARPPriority,
+		PreemptionCapability:    apnPolicy.PreemptionCapability,
+		PreemptionVulnerability: apnPolicy.PreemptionVulnerability,
+		SGWU_TEID:               sgwuTEID,
+		SGWU_IP:                 sgwuIP.To4(),
 	}
 	if err := s.SendInitialContextSetup(mmeID, protected, bearer); err != nil {
 		log.Error("s1ap: SendInitialContextSetup failed", zap.Error(err))

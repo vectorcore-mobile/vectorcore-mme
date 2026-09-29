@@ -1090,3 +1090,81 @@ func TestSendInitialContextSetup_OmitsCSFallbackIndicatorWhenSMSOnly(t *testing.
 		}
 	}
 }
+
+// User field log: the subscription, Create Session and Attach Accept all
+// carried QCI 7 / ARP 7 for the internet bearer, but the Initial Context
+// Setup E-RAB fell back to QCI 9 / ARP 8.
+func TestHandleCSRResultAttachICSUsesSubscribedDefaultBearerQoS(t *testing.T) {
+	srv := newTAUTestServer()
+	const remoteAddr = "192.0.2.11:36412"
+	ch := setupSendCapture(srv, remoteAddr)
+	ue := allocateTestUE(srv, remoteAddr, 0, false)
+	ue.ENBS1APID = 1
+	plmn, _ := ies.EncodePLMN("001", "01")
+	tai := &emm.TAI{TAC: 1}
+	copy(tai.PLMN[:], plmn)
+	ue.Lock()
+	ue.TAI = tai
+	ue.KASME = make([]byte, 32)
+	ue.KNASint = fakeKeys()
+	ue.KNASenc = make([]byte, 16)
+	ue.IntAlg = security.AlgIDEIA2
+	ue.DLNASCount = 1
+	ue.PDNRequestPTI = 1
+	ue.APN = "internet"
+	ue.UEAMBRDown = 264000000
+	ue.UEAMBRUp = 12800000
+	ue.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"internet": {
+			ServiceSelection:        "internet",
+			PDNType:                 gtpv2.PDNTypeIPv4,
+			QCI:                     7,
+			ARPPriority:             7,
+			PreemptionCapability:    false,
+			PreemptionVulnerability: true,
+			APNAMBRUp:               100000,
+			APNAMBRDown:             100000,
+		},
+	}
+	ue.Unlock()
+
+	srv.HandleCSRResult(ue.MMEUES1APID, &gtpv2.CreateSessionResponse{
+		Cause:     gtpv2.CauseRequestAccepted,
+		SGWC_TEID: 0x3e9,
+		SGWC_IP:   net.ParseIP("10.0.2.3"),
+		SGWU_TEID: 0x6173,
+		SGWU_IP:   net.ParseIP("10.0.2.6"),
+		UEIPv4:    net.ParseIP("10.45.0.12"),
+		EBI:       5,
+	}, nil)
+
+	msg := readCapturedPDU(t, ch)
+	if msg.ProcedureCode != pdu.ProcInitialContextSetup {
+		t.Fatalf("procedure: got %d, want InitialContextSetup", msg.ProcedureCode)
+	}
+	container, err := pdu.DecodeProcedureIEContainer(msg.Value)
+	if err != nil {
+		t.Fatalf("DecodeProcedureIEContainer: %v", err)
+	}
+	var items []normalizedERABSetupItem
+	for _, ie := range container {
+		if ie.ID == pdu.IEERABToBeSetupListCtxtSUReq {
+			items = decodeResumeICSErabList(t, ie.Value)
+		}
+	}
+	if len(items) != 1 {
+		t.Fatalf("ICS E-RAB items got %d, want 1", len(items))
+	}
+	item := items[0]
+	if item.EBI != 5 || item.QCI != 7 || item.ARPPriority != 7 {
+		t.Fatalf("ICS E-RAB QoS got ebi=%d qci=%d arp=%d, want 5/7/7", item.EBI, item.QCI, item.ARPPriority)
+	}
+	if item.PreemptionCapability || !item.PreemptionVulnerability {
+		t.Fatalf("ICS E-RAB pre-emption got capability=%t vulnerability=%t, want false/true", item.PreemptionCapability, item.PreemptionVulnerability)
+	}
+
+	esmContainer := decodeAttachAcceptESMContainer(t, decodeNASPDUFromInitialContextSetup(t, msg)[6:])
+	if got := esmContainer[4]; got != item.QCI {
+		t.Fatalf("Attach Accept EPS QoS QCI %d does not match E-RAB QCI %d", got, item.QCI)
+	}
+}
