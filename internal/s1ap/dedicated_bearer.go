@@ -1749,8 +1749,31 @@ func deleteBearerResponseMetaFromUE(ue *uecontext.Context, gtpPLMN [3]byte) *gtp
 	}
 }
 
-func (s *Server) sendCreateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer) {
-	s.sendCreateBearerResponseWithMeta(peer, teid, seq, cause, bearers, nil)
+// sendCreateBearerResponse answers a Create Bearer Request addressed to the
+// MME's local S11 TEID; the response header carries the S-GW's TEID.
+func (s *Server) sendCreateBearerResponse(peer string, localTEID uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer) {
+	s.sendCreateBearerResponseWithMeta(peer, s.s11PeerTEID(localTEID), seq, cause, bearers, nil)
+}
+
+// s11PeerTEID maps the MME's local S11 TEID to the S-GW's S11 TEID, which a
+// response must carry in its header (TS 29.274 §5.5.1). It returns 0 when the
+// local TEID is unknown, as required with cause Context Not Found (§5.5.2).
+func (s *Server) s11PeerTEID(localTEID uint32) uint32 {
+	ue, pdn := s.findUEByLocalS11TEID(localTEID, 0)
+	if ue == nil {
+		return 0
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if pdn != nil && pdn.SGWC_TEID != 0 {
+		return pdn.SGWC_TEID
+	}
+	for _, p := range ue.PDNs {
+		if p != nil && p.LocalS11TEID == localTEID && p.SGWC_TEID != 0 {
+			return p.SGWC_TEID
+		}
+	}
+	return ue.SGWC_TEID
 }
 
 func (s *Server) sendCreateBearerResponseWithMeta(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.CreateBearerBearer, meta *gtpv2.CreateBearerResponseMeta) {
@@ -1771,32 +1794,36 @@ func (s *Server) sendCreateBearerResponseWithMeta(peer string, teid uint32, seq 
 		zap.Uint8("response_cause", cause))
 }
 
-func (s *Server) sendUpdateBearerResponse(peer string, teid uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer) {
+// sendUpdateBearerResponse answers an Update Bearer Request addressed to the
+// MME's local S11 TEID; the response header carries the S-GW's TEID.
+func (s *Server) sendUpdateBearerResponse(peer string, localTEID uint32, seq uint32, cause uint8, bearers []gtpv2.UpdateBearerBearer) {
 	responder, ok := s.s11.(S11BearerResponder)
 	if !ok {
 		s.log.Warn("s1ap: S11 client cannot send Update Bearer Response")
 		return
 	}
 	var meta *gtpv2.UpdateBearerResponseMeta
-	if ue, _ := s.findUEByLocalS11TEID(teid, 0); ue != nil {
+	if ue, _ := s.findUEByLocalS11TEID(localTEID, 0); ue != nil {
 		meta = updateBearerResponseMetaFromUE(ue, s.buildPLMN())
 	}
-	if err := responder.SendUpdateBearerResponse(peer, teid, seq, cause, bearers, meta); err != nil {
+	if err := responder.SendUpdateBearerResponse(peer, s.s11PeerTEID(localTEID), seq, cause, bearers, meta); err != nil {
 		s.log.Warn("s1ap: Update Bearer Response send failed", zap.String("peer", peer), zap.Uint32("seq", seq), zap.Error(err))
 	}
 }
 
-func (s *Server) sendDeleteBearerResponse(peer string, teid uint32, seq uint32, cause uint8, ebis []uint8) {
+// sendDeleteBearerResponse answers a Delete Bearer Request addressed to the
+// MME's local S11 TEID; the response header carries the S-GW's TEID.
+func (s *Server) sendDeleteBearerResponse(peer string, localTEID uint32, seq uint32, cause uint8, ebis []uint8) {
 	responder, ok := s.s11.(S11BearerResponder)
 	if !ok {
 		s.log.Warn("s1ap: S11 client cannot send Delete Bearer Response")
 		return
 	}
 	var meta *gtpv2.DeleteBearerResponseMeta
-	if ue, _ := s.findUEByLocalS11TEID(teid, 0); ue != nil {
+	if ue, _ := s.findUEByLocalS11TEID(localTEID, 0); ue != nil {
 		meta = deleteBearerResponseMetaFromUE(ue, s.buildPLMN())
 	}
-	if err := responder.SendDeleteBearerResponse(peer, teid, seq, cause, ebis, meta); err != nil {
+	if err := responder.SendDeleteBearerResponse(peer, s.s11PeerTEID(localTEID), seq, cause, ebis, meta); err != nil {
 		s.log.Warn("s1ap: Delete Bearer Response send failed", zap.String("peer", peer), zap.Uint32("seq", seq), zap.Error(err))
 	}
 }

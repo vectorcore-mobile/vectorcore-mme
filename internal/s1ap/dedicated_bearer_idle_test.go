@@ -1309,3 +1309,62 @@ func decodeReleaseRequestEBIsForTest(data []byte) ([]uint8, error) {
 	}
 	return out, nil
 }
+
+// Lab capture (frames 67, 111, 123): Update and Delete Bearer Responses went
+// out with the MME's own S11 TEID (1) in the header instead of the S-GW's
+// (0x9cb50f87). TS 29.274 §5.5.1 requires the peer's TEID.
+func TestBearerResponsesCarrySGWS11TEIDInHeader(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.APN = "internet"
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {APN: "internet", DefaultEBI: 5, LocalS11TEID: 1, SGWC_TEID: 0x9cb50f87, State: "active"},
+		"ims":      {APN: "ims", DefaultEBI: 6, LocalS11TEID: 1, SGWC_TEID: 0x9cb50f87, State: "active"},
+	}
+	ue.Unlock()
+	const peer = "10.90.250.59:2123"
+
+	srv.sendCreateBearerResponse(peer, 1, 0x3b8, gtpv2.CauseRequestDenied, nil)
+	srv.sendUpdateBearerResponse(peer, 1, 0x3b9, gtpv2.CauseRequestAccepted, nil)
+	srv.sendDeleteBearerResponse(peer, 1, 0x3c3, gtpv2.CauseRequestAccepted, []uint8{8})
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.createResponses) != 1 || mock.createResponses[0].TEID != 0x9cb50f87 {
+		t.Fatalf("Create Bearer Response header TEID: got %+v, want 0x9cb50f87", mock.createResponses)
+	}
+	if len(mock.updateResponses) != 1 || mock.updateResponses[0].TEID != 0x9cb50f87 {
+		t.Fatalf("Update Bearer Response header TEID: got %+v, want 0x9cb50f87", mock.updateResponses)
+	}
+	if len(mock.deleteResponses) != 1 || mock.deleteResponses[0].TEID != 0x9cb50f87 {
+		t.Fatalf("Delete Bearer Response header TEID: got %+v, want 0x9cb50f87", mock.deleteResponses)
+	}
+}
+
+// TS 29.274 §5.5.2: a request for an unknown TEID is answered with Context
+// Not Found and header TEID 0.
+func TestBearerRequestForUnknownTEIDRespondsWithTEIDZero(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	const peer = "10.90.250.59:2123"
+
+	srv.HandleUpdateBearerRequest(peer, &gtpv2.UpdateBearerRequest{TEID: 0x77, SeqNum: 1})
+	srv.HandleDeleteBearerRequest(peer, &gtpv2.DeleteBearerRequest{TEID: 0x77, SeqNum: 2, EBIs: []uint8{7}})
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.updateResponses) != 1 {
+		t.Fatalf("Update Bearer Responses got %d, want 1", len(mock.updateResponses))
+	}
+	if got := mock.updateResponses[0]; got.TEID != 0 || got.Cause != gtpv2.CauseContextNotFound {
+		t.Fatalf("Update Bearer Response got TEID %#x cause %d, want 0 / Context Not Found", got.TEID, got.Cause)
+	}
+	if len(mock.deleteResponses) != 1 {
+		t.Fatalf("Delete Bearer Responses got %d, want 1", len(mock.deleteResponses))
+	}
+	if got := mock.deleteResponses[0]; got.TEID != 0 || got.Cause != gtpv2.CauseContextNotFound {
+		t.Fatalf("Delete Bearer Response got TEID %#x cause %d, want 0 / Context Not Found", got.TEID, got.Cause)
+	}
+}
