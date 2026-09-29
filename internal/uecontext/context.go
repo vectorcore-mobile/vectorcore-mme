@@ -422,6 +422,12 @@ type Context struct {
 	// SGsAP-IMSI-DETACH-ACK; see the type's doc comment.
 	SGsPendingDetachAccept *SGsPendingDetachAccept
 
+	// DetachS1ReleasePending is set when a UE-initiated detach still owes the
+	// eNB a UE Context Release (TS 36.413 §8.3.3). While set, a Delete Session
+	// Response must not remove the context: the eNB's Release Complete (or
+	// the TimerDetachS1Release guard) finalizes it instead.
+	DetachS1ReleasePending bool
+
 	// SGsPendingNewTMSI holds a VLR-assigned TMSI (from SGsAP-LOCATION-
 	// UPDATE-ACCEPT's optional Mobile identity IE) awaiting relay to the UE
 	// via the next Attach/TAU Accept (TS 29.118 §5.2.2.3). Once included in
@@ -911,4 +917,5 @@ const (
 	TimerMobileReachable       = "MME-MobileReachable"
 	TimerImplicitDetach        = "MME-ImplicitDetach"
 	TimerImplicitDetachCleanup = "MME-ImplicitDetachCleanup"
+	TimerDetachS1Release       = "MME-DetachS1Release"
 )

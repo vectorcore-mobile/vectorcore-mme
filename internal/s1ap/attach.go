@@ -1214,6 +1214,9 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 	sgsState := ue.SGsState
 	sgsVLRName := ue.SGsVLRName
 	ue.SetEMMState(emm.StateDeregisteredInitiated)
+	// Set before any DSR goes out: a fast S-GW answer must not remove the
+	// context while the eNB still owes a UE Context Release Complete.
+	ue.DetachS1ReleasePending = true
 	ue.Unlock()
 
 	log.Info("s1ap: Detach Request from UE",
@@ -1282,7 +1285,7 @@ func (s *Server) processDetach(ue *uecontext.Context, body []byte, log *zap.Logg
 	// until the withheld Detach Accept above actually goes out, since the S1
 	// signalling connection is needed to deliver it.
 	if !waitForIMSIDetachAck {
-		s.sendUEContextReleaseCommand(enbAddr, mmeUEID, enbUEID)
+		s.sendDetachUEContextReleaseCommand(ue, enbAddr, mmeUEID, enbUEID)
 	}
 
 	metrics.NASProceduresTotal.WithLabelValues("Detach", "request").Inc()

@@ -242,7 +242,7 @@ func (s *Server) completeDeferredDetach(mmeUEID uint32, reason string, log *zap.
 	ue.Unlock()
 	log.Info("s1ap: Detach Accept sent (deferred SGsAP-IMSI-DETACH-ACK wait completed)",
 		zap.Uint32("mme_ue_id", mmeUEID), zap.String("reason", reason))
-	s.sendUEContextReleaseCommand(pending.ENBAddr, pending.MMEUEID, pending.ENBUEID)
+	s.sendDetachUEContextReleaseCommand(ue, pending.ENBAddr, pending.MMEUEID, pending.ENBUEID)
 }
 
 // --- vlr.Handler implementation ---

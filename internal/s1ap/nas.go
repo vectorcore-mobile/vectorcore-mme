@@ -1108,6 +1108,7 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 	ue.Lock()
 	emmState := ue.EMMState
 	imsi := ue.IMSI
+	s1ReleasePending := ue.DetachS1ReleasePending
 	ue.ImplicitDetachCleanupGeneration++
 	ue.ImplicitDetachCleanupTimerActive = false
 	ue.ImplicitDetachCleanupDeadline = time.Time{}
@@ -1121,6 +1122,16 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 			zap.String("reason", reason))
 		return
 	}
+	if s1ReleasePending {
+		// The eNB still holds the UE-associated logical S1 connection; its
+		// UE Context Release Complete must find this context (TS 36.413
+		// §8.3.3), so removal is left to that handler or the release guard.
+		s.log.Info("s1ap: detached UE context kept until UE Context Release Complete",
+			zap.Uint32("mme_ue_id", mmeUEID),
+			zap.String("imsi", imsi),
+			zap.String("reason", reason))
+		return
+	}
 
 	s.cleanupUEOwnedSMS(ue)
 	s.ueManager.Remove(ue)
@@ -1130,6 +1141,42 @@ func (s *Server) cleanupDetachedUE(mmeUEID uint32, reason string) {
 		zap.Uint32("mme_ue_id", mmeUEID),
 		zap.String("imsi", imsi),
 		zap.String("reason", reason))
+}
+
+// detachS1ReleaseGuard bounds how long a detached UE context waits for the
+// eNB's UE Context Release Complete before it is removed locally.
+var detachS1ReleaseGuard = 10 * time.Second
+
+// sendDetachUEContextReleaseCommand releases the S1 connection of a detaching
+// UE and arms the guard that finalizes the context if the eNB never answers.
+func (s *Server) sendDetachUEContextReleaseCommand(ue *uecontext.Context, enbAddr string, mmeUEID, enbUEID uint32) {
+	owner := ue
+	ue.Lock()
+	if ue.DetachS1ReleasePending {
+		ue.StartTimer(uecontext.TimerDetachS1Release, detachS1ReleaseGuard, func() { s.onDetachS1ReleaseTimeout(mmeUEID, owner) })
+	}
+	ue.Unlock()
+	s.sendUEContextReleaseCommand(enbAddr, mmeUEID, enbUEID)
+}
+
+func (s *Server) onDetachS1ReleaseTimeout(mmeUEID uint32, owner *uecontext.Context) {
+	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
+	if !ok || ue != owner {
+		return
+	}
+	ue.Lock()
+	if !ue.DetachS1ReleasePending {
+		ue.Unlock()
+		return
+	}
+	ue.DetachS1ReleasePending = false
+	imsi := ue.IMSI
+	ue.Unlock()
+	s.log.Warn("s1ap: no UE Context Release Complete for detached UE; removing context",
+		zap.Uint32("mme_ue_id", mmeUEID),
+		zap.String("imsi", imsi),
+		zap.Duration("guard", detachS1ReleaseGuard))
+	s.cleanupDetachedUE(mmeUEID, "detach-s1-release-timeout")
 }
 
 func (s *Server) detachedUEDeleteSessionsComplete(mmeUEID uint32) bool {

@@ -291,11 +291,11 @@ func (s *Server) handleUEContextReleaseComplete(remoteAddr string, p *pdu.PDU, i
 		return
 
 	case emm.StateDeregisteredInitiated:
+		ue.DetachS1ReleasePending = false
 		ue.Unlock()
 		s.sendDeleteSession(ue)
-		s.ueManager.Remove(ue)
-		metrics.AttachedUEs.Dec()
 		metrics.S1APMessagesTotal.WithLabelValues("UEContextRelease", "inbound", "detach").Inc()
+		s.cleanupDetachedUE(mmeUEID, "ue-context-release-complete")
 
 	default:
 		ue.Unlock()

@@ -31,6 +31,12 @@ func TestRel16Phase1IEConstants(t *testing.T) {
 		{"RRC-Establishment-Cause", IERRCEstablishmentCause, 134},
 		{"DefaultPagingDRX", IEDefaultPagingDRX, 137},
 		{"GUMMEIList", IEGUMMEIList, 154},
+		{"GUMMEI-ID", IEGUMMEI, 75},
+		{"CSG-Id", IECSG_ID, 127},
+		{"CellAccessMode", IECellAccessMode, 145},
+		{"RelayNode-Indicator", IERelayNodeIndicator, 160},
+		{"GUMMEIType", IEGUMMEIType, 170},
+		{"IAB-Node-Indication", IEIABNodeIndication, 302},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -112,7 +112,7 @@ const (
 	IESecurityContext                           uint16 = 119
 	IERRCEstablishmentCause                     uint16 = 134
 	IEDefaultPagingDRX                          uint16 = 137
-	IECSG_ID                                    uint16 = 145
+	IECSG_ID                                    uint16 = 127
 	IECSGMembershipStatus                       uint16 = 146
 	IECGI                                       uint16 = 100
 	IEGUMMEI                                    uint16 = 75
@@ -142,6 +142,25 @@ const (
 	IEHandoverRestrictionList                   uint16 = 41  // Handover Restriction List (TS 36.413 §9.2.1.22; Initial Context Setup Request, optional)
 	IEENBStatusTransferTransparentContainer     uint16 = 90  // eNB Status Transfer Transparent Container (eNB/MME Status Transfer, PDCP SN/HFN relay)
 	IELTEMIndication                            uint16 = 272 // LTE-M Indication (TS 36.413 §9.2.1.135; UE Capability Info Indication, optional)
+
+	// Optional Initial UE Message IEs (TS 36.413 §9.1.7.1)
+	IECellAccessMode                          uint16 = 145
+	IEGWTransportLayerAddress                 uint16 = 155
+	IERelayNodeIndicator                      uint16 = 160
+	IEGUMMEIType                              uint16 = 170
+	IETunnelInformationForBBF                 uint16 = 176
+	IESIPTOLGWTransportLayerAddress           uint16 = 184
+	IELHNID                                   uint16 = 186
+	IEMMEGroupID                              uint16 = 223
+	IEUEUsageType                             uint16 = 230
+	IECEModeBSupportIndicator                 uint16 = 242
+	IEDCNID                                   uint16 = 246
+	IECoverageLevel                           uint16 = 250
+	IEUEApplicationLayerMeasurementCapability uint16 = 263
+	IEEDTSession                              uint16 = 281
+	IEIABNodeIndication                       uint16 = 302
+	IELTENTNTAIInformation                    uint16 = 339
+	IECoarseUELocationRequested               uint16 = 353
 
 	// S1 Handover IEs (TS 36.413 Annex A)
 	IEERABToBeSetupListHOReq             uint16 = 53  // HandoverRequest: E-RAB list outer

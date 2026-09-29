@@ -1,6 +1,7 @@
 package s1ap
 
 import (
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -754,4 +755,60 @@ func encodeVisibleStringForTest(value string) []byte {
 	w.WriteBit(0)
 	_ = aper.EncodeUTF8String(w, value, 1, 150)
 	return w.Bytes()
+}
+
+// Initial UE Message captured from a field eNB (attach with a native GUTI).
+// The eNB includes the optional GUMMEI-ID IE (75, criticality reject), which
+// must be accepted rather than answered with an Error Indication.
+const initialUEMessageWithGUMMEIHex = "000c4080ad000006000800020001001a007a791705df8b5b710741020bf642f699000101c00000f006f070c0401180003702ddd031d127308080211001000010810600000000830600000000000d00000300000a00000500001000001100001a01010023000024005242f69900015c0a00310465a03e009011034f188640080402600400021f025d0103e0c1004300060042f6990001006440080042f699000010000086400130004b00070042f699000101"
+
+func TestInitialUEMessageWithGUMMEIPassesValidation(t *testing.T) {
+	raw, err := hex.DecodeString(initialUEMessageWithGUMMEIHex)
+	if err != nil {
+		t.Fatalf("hex: %v", err)
+	}
+	msg, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	ieList, err := decodeProcedureIEsCompat(msg.Value)
+	if err != nil {
+		t.Fatalf("decodeProcedureIEsCompat: %v", err)
+	}
+	var sawGUMMEI bool
+	for _, ie := range ieList {
+		if ie.ID == pdu.IEGUMMEI {
+			sawGUMMEI = true
+		}
+	}
+	if !sawGUMMEI {
+		t.Fatal("captured message does not carry the GUMMEI-ID IE")
+	}
+	if issues := validateProcedureIEs(msg.ProcedureCode, msg.Type, ieList); len(issues) != 0 {
+		t.Fatalf("validation issues: %+v", issues)
+	}
+}
+
+func TestInitialUEMessageOptionalRejectIEsPassValidation(t *testing.T) {
+	base := []pdu.ProtocolIE{
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityReject},
+		{ID: pdu.IENAS_PDU, Criticality: aper.CriticalityReject},
+		{ID: pdu.IETAI, Criticality: aper.CriticalityReject},
+		{ID: pdu.IECGI, Criticality: aper.CriticalityIgnore},
+		{ID: pdu.IERRCEstablishmentCause, Criticality: aper.CriticalityIgnore},
+		{ID: pdu.IESTMSI, Criticality: aper.CriticalityReject},
+	}
+	ieList := append(base,
+		pdu.ProtocolIE{ID: pdu.IECSG_ID, Criticality: aper.CriticalityReject},
+		pdu.ProtocolIE{ID: pdu.IEGUMMEI, Criticality: aper.CriticalityReject},
+		pdu.ProtocolIE{ID: pdu.IECellAccessMode, Criticality: aper.CriticalityReject},
+		pdu.ProtocolIE{ID: pdu.IERelayNodeIndicator, Criticality: aper.CriticalityReject},
+		pdu.ProtocolIE{ID: pdu.IEGUMMEIType, Criticality: aper.CriticalityIgnore},
+		pdu.ProtocolIE{ID: pdu.IEMMEGroupID, Criticality: aper.CriticalityIgnore},
+		pdu.ProtocolIE{ID: pdu.IEUEUsageType, Criticality: aper.CriticalityIgnore},
+		pdu.ProtocolIE{ID: pdu.IEIABNodeIndication, Criticality: aper.CriticalityReject},
+	)
+	if issues := validateProcedureIEs(pdu.ProcInitialUEMessage, pdu.PDUTypeInitiatingMessage, ieList); len(issues) != 0 {
+		t.Fatalf("validation issues: %+v", issues)
+	}
 }

@@ -86,8 +86,13 @@ func TestInitialUEDetachNonSwitchOffDeletesSession(t *testing.T) {
 	}
 
 	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); !ok {
+		t.Fatal("UE removed after DSR success, want retained until UE Context Release Complete")
+	}
+
+	srv.handleMessage(addr, buildUEContextReleaseComplete(realUE.MMEUES1APID, 3))
 	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
-		t.Fatal("UE still active after DSR success")
+		t.Fatal("UE still active after DSR success and UE Context Release Complete")
 	}
 }
 
@@ -202,8 +207,13 @@ func TestInitialUEDetachDeletesAllActivePDNSessions(t *testing.T) {
 	}
 
 	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); !ok {
+		t.Fatal("UE removed after all DSR results, want retained until UE Context Release Complete")
+	}
+
+	srv.handleMessage(addr, buildUEContextReleaseComplete(realUE.MMEUES1APID, 5))
 	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
-		t.Fatal("UE still active after all DSR results")
+		t.Fatal("UE still active after all DSR results and UE Context Release Complete")
 	}
 }
 
@@ -260,8 +270,13 @@ func TestInitialUEDetachDeletesAllActivePDNSessionsOutOfOrderResponses(t *testin
 	remaining.Unlock()
 
 	srv.HandleDSRResult(realUE.MMEUES1APID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); !ok {
+		t.Fatal("UE removed after both out-of-order DSR results, want retained until UE Context Release Complete")
+	}
+
+	srv.handleMessage(addr, buildUEContextReleaseComplete(realUE.MMEUES1APID, 6))
 	if _, ok := srv.ueManager.GetByMMEID(realUE.MMEUES1APID); ok {
-		t.Fatal("UE still active after both out-of-order DSR results")
+		t.Fatal("UE still active after both out-of-order DSR results and UE Context Release Complete")
 	}
 }
 
@@ -398,4 +413,134 @@ func mustHexS1AP(t *testing.T, s string) []byte {
 		t.Fatalf("hex decode %q: %v", s, err)
 	}
 	return b
+}
+
+func buildUEContextReleaseComplete(mmeUEID, enbUEID uint32) []byte {
+	return pdu.BuildSuccessfulOutcome(pdu.ProcUEContextRelease, aper.CriticalityIgnore, []pdu.ProtocolIE{
+		{ID: pdu.IEMMEUES1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeMMEUEApID(mmeUEID)},
+		{ID: pdu.IEENBS1APID, Criticality: aper.CriticalityIgnore, Value: ies.EncodeENBUEApID(enbUEID)},
+	})
+}
+
+// drainNoErrorIndication consumes every captured S1AP PDU and fails if any of
+// them is an Error Indication.
+func drainNoErrorIndication(t *testing.T, ch <-chan []byte) {
+	t.Helper()
+	for {
+		select {
+		case raw := <-ch:
+			msg, err := pdu.Decode(raw)
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if msg.ProcedureCode == pdu.ProcErrorIndication {
+				t.Fatalf("unexpected Error Indication: %x", raw)
+			}
+		case <-time.After(50 * time.Millisecond):
+			return
+		}
+	}
+}
+
+// Field capture (Nokia eNB, switch-off detach): both Delete Session Responses
+// arrived ~27 ms before the eNB's UE Context Release Complete, which the MME
+// then rejected with Error Indication unknown-mme-ue-s1ap-id.
+func TestSwitchOffDetachDSRBeforeReleaseCompleteSendsNoErrorIndication(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.45:36412"
+	ch := setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	realUE.Lock()
+	realUE.APN = "internet"
+	realUE.SGWAddress = "10.90.250.59:2123"
+	realUE.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {APN: "internet", DefaultEBI: 5, SGWAddress: "10.90.250.59:2123", SGWC_TEID: 0xCCDD3344, State: "active"},
+		"ims":      {APN: "ims", DefaultEBI: 6, SGWAddress: "10.90.250.59:2123", SGWC_TEID: 0x11223344, State: "active"},
+	}
+	mmeUEID := realUE.MMEUES1APID
+	realUE.Unlock()
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeSwitchOff|emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 4, nasPDU))
+	if len(mock.dsrCalls) != 2 {
+		t.Fatalf("DSR calls got %d, want 2", len(mock.dsrCalls))
+	}
+	release := readCapturedPDU(t, ch)
+	if release.ProcedureCode != pdu.ProcUEContextRelease {
+		t.Fatalf("procedureCode: got %d, want UEContextRelease", release.ProcedureCode)
+	}
+
+	srv.HandleDSRResult(mmeUEID, 6, nil)
+	srv.HandleDSRResult(mmeUEID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); !ok {
+		t.Fatal("UE removed on Delete Session Response while S1 release was outstanding")
+	}
+
+	srv.handleMessage(addr, buildUEContextReleaseComplete(mmeUEID, 4))
+	drainNoErrorIndication(t, ch)
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); ok {
+		t.Fatal("UE still active after UE Context Release Complete")
+	}
+}
+
+func TestSwitchOffDetachReleaseCompleteBeforeDSRRemovesUE(t *testing.T) {
+	srv := newTAUTestServer()
+	const addr = "10.0.0.46:36412"
+	ch := setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	mmeUEID := realUE.MMEUES1APID
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeSwitchOff|emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 4, nasPDU))
+	srv.handleMessage(addr, buildUEContextReleaseComplete(mmeUEID, 4))
+	drainNoErrorIndication(t, ch)
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); ok {
+		t.Fatal("UE still active after UE Context Release Complete")
+	}
+
+	// A late DSR result for the removed UE must be a harmless no-op.
+	srv.HandleDSRResult(mmeUEID, 5, nil)
+}
+
+func TestSwitchOffDetachReleaseGuardRemovesUEWithoutReleaseComplete(t *testing.T) {
+	prev := detachS1ReleaseGuard
+	detachS1ReleaseGuard = 20 * time.Millisecond
+	defer func() { detachS1ReleaseGuard = prev }()
+
+	srv := newTAUTestServer()
+	const addr = "10.0.0.47:36412"
+	setupSendCapture(srv, addr)
+	mock := &mockS11{}
+	srv.s11 = mock
+
+	realUE, _, _ := makeRegisteredIdleUE(srv, addr)
+	mmeUEID := realUE.MMEUES1APID
+	guti := &emm.GUTI{PLMN: [3]byte{0x00, 0xF1, 0x10}, MMEGI: 1, MMEC: 1, MTMSI: 2}
+	srv.ueManager.UpdateGUTI(realUE, guti)
+	nasPDU := buildProtectedDetachPDU(t, guti, emm.DetachTypeSwitchOff|emm.DetachTypeNormal, 1)
+
+	srv.handleMessage(addr, buildInitialUEWithDetach(t, 4, nasPDU))
+	srv.HandleDSRResult(mmeUEID, 5, nil)
+	if _, ok := srv.ueManager.GetByMMEID(mmeUEID); !ok {
+		t.Fatal("UE removed before S1 release guard expired")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := srv.ueManager.GetByMMEID(mmeUEID); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("UE still active after S1 release guard expired")
 }
