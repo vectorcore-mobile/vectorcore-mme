@@ -293,6 +293,27 @@ func EncodeCause(cause uint8) IE {
 	return IE{Type: IETypeCause, Instance: 0, Value: []byte{cause, 0}}
 }
 
+// RAN/NAS Cause protocol types (TS 29.274 Table 8.103-0).
+const (
+	RANNASProtocolS1AP uint8 = 1
+	RANNASProtocolEMM  uint8 = 2
+	RANNASProtocolESM  uint8 = 3
+)
+
+// RANNASCause is the RAN/NAS Cause IE (TS 29.274 §8.103): the S1AP cause
+// (Type = S1AP cause group) or the NAS EMM/ESM cause (Type ignored) behind a
+// bearer failure.
+type RANNASCause struct {
+	Protocol uint8
+	Type     uint8
+	Value    uint8
+}
+
+// EncodeRANNASCause encodes a one-octet-value RAN/NAS Cause IE.
+func EncodeRANNASCause(c RANNASCause) IE {
+	return IE{Type: IETypeRANNASCause, Instance: 0, Value: []byte{c.Protocol<<4 | c.Type&0x0f, c.Value}}
+}
+
 // EncodeRecovery encodes the Recovery IE restart counter.
 func EncodeRecovery(restartCounter uint8) IE {
 	return IE{Type: IETypeRecovery, Instance: 0, Value: []byte{restartCounter}}

@@ -595,6 +595,55 @@ func TestPendingCreateBearerRejectReleasesEstablishedERABs(t *testing.T) {
 		if b.Cause != gtpv2.CauseRequestRejected {
 			t.Fatalf("bearer cause got %d, want request rejected", b.Cause)
 		}
+		// TS 29.274 Table 7.2.4-2: the UE's ESM reject cause goes back as
+		// RAN/NAS Cause (protocol type 3 = ESM).
+		want := gtpv2.RANNASCause{Protocol: gtpv2.RANNASProtocolESM, Value: esm.ESMCauseServiceOptionNotSupported}
+		if b.RANNASCause == nil || *b.RANNASCause != want {
+			t.Fatalf("EBI %d RAN/NAS Cause got %+v, want %+v", b.AssignedEBI, b.RANNASCause, want)
+		}
+	}
+}
+
+func TestPendingCreateBearerERABFailureReportsS1APRANNASCause(t *testing.T) {
+	mock := &bearerResponderMock{}
+	srv := newTestServer(mock)
+	enbAddr := "10.0.0.45:36412"
+	ue, ch := makeIdleDedicatedBearerUE(t, srv, enbAddr)
+
+	srv.HandleCreateBearerRequest("10.90.250.59:2123", sonimStormCreateBearer(2754, 0x11111111, 0x22222222))
+	ue.Lock()
+	ue.ECMState = emm.ECMConnected
+	ue.S1BindingState = uecontext.S1BindingActive
+	ue.ENBGlobalID = enbAddr
+	ue.ENBS1APID = 78
+	ue.Unlock()
+	srv.ResumePendingNetworkBearerProcedures(ue)
+	waitForPDU(t, ch, "paging PDU")
+	waitForPDU(t, ch, "E-RAB Setup Request")
+
+	// eNB refuses both E-RABs: Radio Network cause 26 (not-supported-QCI-value).
+	for _, ebi := range []uint8{7, 8} {
+		srv.completeDedicatedERABSetupForBearer(ue, ERABSetupResult{
+			EBI:        ebi,
+			Success:    false,
+			CauseGroup: uint8(ies.CauseGroupRadioNetwork),
+			Cause:      26,
+		}, srv.log)
+	}
+
+	waitForCreateResponseCount(t, mock, 1)
+	resp := mock.createResponseAt(0)
+	if len(resp.Bearers) != 2 {
+		t.Fatalf("response bearers got %d, want 2", len(resp.Bearers))
+	}
+	want := gtpv2.RANNASCause{Protocol: gtpv2.RANNASProtocolS1AP, Type: uint8(ies.CauseGroupRadioNetwork), Value: 26}
+	for _, b := range resp.Bearers {
+		if b.Cause == gtpv2.CauseRequestAccepted {
+			t.Fatalf("EBI %d accepted, want rejected", b.AssignedEBI)
+		}
+		if b.RANNASCause == nil || *b.RANNASCause != want {
+			t.Fatalf("EBI %d RAN/NAS Cause got %+v, want %+v", b.AssignedEBI, b.RANNASCause, want)
+		}
 	}
 }
 

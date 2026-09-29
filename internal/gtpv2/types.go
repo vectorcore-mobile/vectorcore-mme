@@ -65,6 +65,7 @@ const (
 	IETypeARP                uint8 = 155
 	IETypeEPCTimer           uint8 = 156
 	IETypeULITimestamp       uint8 = 170 // TS 29.274 §8.141 (ULI Timestamp)
+	IETypeRANNASCause        uint8 = 172 // TS 29.274 §8.103
 	IETypePagingSvcInfo      uint8 = 186
 	IETypeIntegerNumber      uint8 = 187
 )

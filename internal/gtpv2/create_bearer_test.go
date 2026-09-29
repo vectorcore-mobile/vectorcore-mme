@@ -473,3 +473,45 @@ func TestDecodeSonimDeleteBearerRequest(t *testing.T) {
 		t.Fatalf("EBIs got %v, want [11]", req.EBIs)
 	}
 }
+
+// User field capture (frame 3465): a Create Bearer Response for a bearer the
+// UE rejected with ESM #44 carried no RAN/NAS Cause, which TS 29.274 Table
+// 7.2.4-2 requires on S11 when bearer creation failed.
+func TestCreateBearerResponseRANNASCause(t *testing.T) {
+	sgwIP := net.ParseIP("10.0.2.6").To4()
+	raw := EncodeCreateBearerResponseWithMeta(0x223, 80, CauseUERefuses, []CreateBearerBearer{
+		{AssignedEBI: 7, Cause: CauseRequestRejected, SGWS1UTEID: 0xc585, SGWS1UIP: sgwIP,
+			RANNASCause: &RANNASCause{Protocol: RANNASProtocolESM, Value: 44}},
+		{AssignedEBI: 8, Cause: CauseRequestRejected, SGWS1UTEID: 0xc586, SGWS1UIP: sgwIP,
+			RANNASCause: &RANNASCause{Protocol: RANNASProtocolS1AP, Type: 0, Value: 26}},
+		{AssignedEBI: 9, Cause: CauseRequestAccepted, SGWS1UTEID: 0xc587, SGWS1UIP: sgwIP,
+			RANNASCause: &RANNASCause{Protocol: RANNASProtocolESM, Value: 44}},
+	}, nil)
+	msg, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	want := map[uint8]string{7: "302c", 8: "101a", 9: ""}
+	seen := 0
+	for _, ie := range msg.IEs {
+		if ie.Type != IETypeBearerContext {
+			continue
+		}
+		children, err := FindGroupedIEs(&ie)
+		if err != nil {
+			t.Fatalf("FindGroupedIEs: %v", err)
+		}
+		ebi := FindIE(children, IETypeEBI, 0).Value[0] & 0x0f
+		got := ""
+		if c := FindIE(children, IETypeRANNASCause, 0); c != nil {
+			got = hex.EncodeToString(c.Value)
+		}
+		if got != want[ebi] {
+			t.Fatalf("EBI %d RAN/NAS Cause got %q, want %q", ebi, got, want[ebi])
+		}
+		seen++
+	}
+	if seen != 3 {
+		t.Fatalf("bearer contexts got %d, want 3", seen)
+	}
+}

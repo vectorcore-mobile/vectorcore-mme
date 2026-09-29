@@ -31,6 +31,9 @@ type CreateBearerBearer struct {
 	PGWS5S8UIP         []byte
 	ENBS1UTEID         uint32
 	ENBS1UIP           []byte
+	// RANNASCause is the eNB or UE reason a bearer was not created; sent on
+	// S11 for a failed bearer (TS 29.274 Table 7.2.4-2).
+	RANNASCause *RANNASCause
 }
 
 type CreateBearerResponseMeta struct {
@@ -202,6 +205,9 @@ func EncodeCreateBearerResponseWithMeta(teid uint32, seq uint32, cause uint8, be
 		}
 		if b.SGWS1UTEID != 0 && len(b.SGWS1UIP) == 4 {
 			children = append(children, EncodeFTEID(IFTypeS1USGW, b.SGWS1UTEID, net.IP(b.SGWS1UIP), FTEIDInstanceSGWU))
+		}
+		if b.RANNASCause != nil && !IsAcceptedCause(bearerCause) {
+			children = append(children, EncodeRANNASCause(*b.RANNASCause))
 		}
 		ies = append(ies, EncodeGrouped(IETypeBearerContext, 0, children))
 	}

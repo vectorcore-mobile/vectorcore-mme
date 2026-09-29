@@ -796,6 +796,9 @@ func (s *Server) handleDedicatedBearerNASResponse(ue *uecontext.Context, resp *e
 			stopDedicatedT3485Locked(ue, proc)
 			proc.NASRejected = true
 			proc.FailureCause = resp.Cause
+			proc.RANNASCauseProtocol = gtpv2.RANNASProtocolESM
+			proc.RANNASCauseType = 0
+			proc.RANNASCauseValue = resp.Cause
 			s.maybeCompleteCreateBearerLocked(ue, key, tx)
 		case esm.MsgModifyEPSBearerContextAccept:
 			if tx.Kind == bearerTxUpdate {
@@ -892,6 +895,11 @@ func (s *Server) completeDedicatedERABSetupForBearer(ue *uecontext.Context, resu
 		proc.ENBS1UIP = append(net.IP(nil), result.ENBS1UIPv4...)
 		proc.ERABEstablished = result.Success
 		proc.ERABFailed = !result.Success
+		if !result.Success {
+			proc.RANNASCauseProtocol = gtpv2.RANNASProtocolS1AP
+			proc.RANNASCauseType = result.CauseGroup
+			proc.RANNASCauseValue = uint8(result.Cause)
+		}
 		log.Debug("s1ap: dedicated E-RAB Setup Response item",
 			zap.Uint8("assigned_ebi", result.EBI),
 			zap.Uint8("qci", proc.QCI),
@@ -1640,6 +1648,14 @@ func createBearersFromTx(tx *uecontext.DedicatedBearerTransaction) []gtpv2.Creat
 		if proc.NASAccepted && proc.ERABEstablished {
 			bearerCause = gtpv2.CauseRequestAccepted
 		}
+		var ranNASCause *gtpv2.RANNASCause
+		if bearerCause != gtpv2.CauseRequestAccepted && proc.RANNASCauseProtocol != 0 {
+			ranNASCause = &gtpv2.RANNASCause{
+				Protocol: proc.RANNASCauseProtocol,
+				Type:     proc.RANNASCauseType,
+				Value:    proc.RANNASCauseValue,
+			}
+		}
 		out = append(out, gtpv2.CreateBearerBearer{
 			RequestedEBI: proc.RequestedEBI,
 			AssignedEBI:  proc.AssignedEBI,
@@ -1653,6 +1669,7 @@ func createBearersFromTx(tx *uecontext.DedicatedBearerTransaction) []gtpv2.Creat
 			SGWS1UIP:     append([]byte(nil), proc.SGWS1UIP...),
 			ENBS1UTEID:   proc.ENBS1UTEID,
 			ENBS1UIP:     append([]byte(nil), proc.ENBS1UIP...),
+			RANNASCause:  ranNASCause,
 		})
 	}
 	return out

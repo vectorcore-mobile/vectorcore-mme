@@ -600,6 +600,12 @@ type DedicatedBearerContext struct {
 
 	State        string
 	FailureCause uint8
+
+	// RAN/NAS Cause (TS 29.274 §8.103) behind a failed activation: protocol
+	// type 1 (S1AP, CauseType = S1AP cause group) or 3 (ESM); 0 when unknown.
+	RANNASCauseProtocol uint8
+	RANNASCauseType     uint8
+	RANNASCauseValue    uint8
 }
 
 type DedicatedBearerTransaction struct {
