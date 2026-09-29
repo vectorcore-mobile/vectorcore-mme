@@ -37,6 +37,9 @@ func TestRel16Phase1IEConstants(t *testing.T) {
 		{"RelayNode-Indicator", IERelayNodeIndicator, 160},
 		{"GUMMEIType", IEGUMMEIType, 170},
 		{"IAB-Node-Indication", IEIABNodeIndication, 302},
+		{"S-TMSI", IESTMSI, 96},
+		{"Source-ToTarget-TransparentContainer", IESourceToTargetTransparentContainer, 104},
+		{"Target-ToSource-TransparentContainer", IETargetToSourceTransparentContainer, 123},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

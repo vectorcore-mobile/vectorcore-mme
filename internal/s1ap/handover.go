@@ -53,6 +53,17 @@ func (s *Server) handleHandoverRequired(remoteAddr string, p *pdu.PDU, ieList []
 
 	metrics.HandoverTotal.WithLabelValues("preparation", "attempt").Inc()
 
+	// Source-ToTarget-TransparentContainer is mandatory with criticality
+	// reject (TS 36.413 §9.1.5.1); a missing one rejects the procedure
+	// (§10.3.5) rather than forwarding an empty container to the target.
+	if len(srcToTgtBytes) == 0 {
+		log.Warn("s1ap: HandoverRequired: missing Source-ToTarget-TransparentContainer")
+		metrics.HandoverTotal.WithLabelValues("preparation", "failure").Inc()
+		s.sendHandoverPrepFailure(remoteAddr, mmeUEID, enbUEID,
+			ies.EncodeCause(ies.CauseGroupProtocol, ies.CauseProtocolSemanticError))
+		return
+	}
+
 	ue, ok := s.ueManager.GetByMMEID(mmeUEID)
 	if !ok {
 		log.Warn("s1ap: HandoverRequired: UE not found")
@@ -243,9 +254,7 @@ func (s *Server) handleHandoverRequestAck(remoteAddr string, p *pdu.PDU, ieList 
 		return
 	}
 
-	ebi, teid, ip, err := decodeERABAdmittedList(admittedListBytes)
-	if err != nil {
-		log.Warn("s1ap: HandoverRequestAck: E-RABAdmittedList decode failed", zap.Error(err))
+	failPreparation := func() {
 		metrics.HandoverTotal.WithLabelValues("preparation", "failure").Inc()
 		ue.Lock()
 		ue.StopTimer("T_HO_PREP")
@@ -257,6 +266,21 @@ func (s *Server) handleHandoverRequestAck(remoteAddr string, p *pdu.PDU, ieList 
 		ue.Unlock()
 		s.sendHandoverPrepFailure(srcAddr, mmeUEID, srcENBUEID,
 			ies.EncodeCause(ies.CauseGroupRadioNetwork, ies.CauseRadioNetworkUnspecified))
+	}
+
+	// Target-ToSource-TransparentContainer is mandatory with criticality
+	// reject; a response missing it ends the procedure unsuccessfully
+	// (TS 36.413 §10.3.5) instead of sending the source an empty container.
+	if len(tgtToSrcBytes) == 0 {
+		log.Warn("s1ap: HandoverRequestAck: missing Target-ToSource-TransparentContainer")
+		failPreparation()
+		return
+	}
+
+	ebi, teid, ip, err := decodeERABAdmittedList(admittedListBytes)
+	if err != nil {
+		log.Warn("s1ap: HandoverRequestAck: E-RABAdmittedList decode failed", zap.Error(err))
+		failPreparation()
 		return
 	}
 

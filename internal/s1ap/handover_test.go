@@ -1131,3 +1131,118 @@ func TestHandoverRequestOmitsHandoverRestrictionListWhenNotRestricted(t *testing
 
 // errMBR is the sentinel error returned by the mock when MBR failure is requested.
 var errMBR = errors.New("mock MBR failed")
+
+// withoutIE returns ieList minus every IE with the given ID.
+func withoutIE(ieList []pdu.ProtocolIE, id uint16) []pdu.ProtocolIE {
+	out := make([]pdu.ProtocolIE, 0, len(ieList))
+	for _, ie := range ieList {
+		if ie.ID != id {
+			out = append(out, ie)
+		}
+	}
+	return out
+}
+
+// ieValueByID decodes a raw S1AP PDU and returns the value of IE id.
+func ieValueByID(t *testing.T, raw []byte, id uint16) ([]byte, bool) {
+	t.Helper()
+	p, err := pdu.Decode(raw)
+	if err != nil {
+		t.Fatalf("PDU decode error: %v", err)
+	}
+	ieList, err := pdu.DecodeIEContainer(p.Value)
+	if err != nil {
+		t.Fatalf("IE container decode error: %v", err)
+	}
+	for _, ie := range ieList {
+		if ie.ID == id {
+			return ie.Value, true
+		}
+	}
+	return nil, false
+}
+
+// The transparent containers must travel under the TS 36.413 IE IDs
+// (id-Source-ToTarget-TransparentContainer 104, id-Target-ToSource-
+// TransparentContainer 123); literals are used so the test cannot agree
+// with a wrong constant.
+func TestHandover_ForwardsTransparentContainersUnderSpecIEIDs(t *testing.T) {
+	srv, srcCh, tgtCh := setupTwoENBServer(newMBRMock(nil))
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	reqIEs := buildHORequiredIEs(mmeID, srcENBID, buildTargetIDBytes(tgtGlobalID))
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+	raw, ok := waitMsg(tgtCh, 300*time.Millisecond)
+	if !ok {
+		t.Fatal("expected HO Request to target")
+	}
+	if got, ok := ieValueByID(t, raw, 104); !ok || !bytes.Equal(got, []byte{0xAA, 0xBB}) {
+		t.Fatalf("HO Request Source-ToTarget container (IE 104): got %x present=%v, want aabb", got, ok)
+	}
+	if _, ok := ieValueByID(t, raw, 96); ok {
+		t.Fatal("HO Request carries IE 96 (S-TMSI), which does not belong in Handover Request")
+	}
+
+	ackIEs := buildHORequestAckIEs(mmeID, tgtENBID, 5, 0xBEEF0001, net.ParseIP("10.20.30.50").To4())
+	srv.handleHandoverRequestAck(tgtAddr, &pdu.PDU{}, ackIEs)
+	raw, ok = waitMsg(srcCh, 300*time.Millisecond)
+	if !ok {
+		t.Fatal("expected HO Command to source")
+	}
+	if got, ok := ieValueByID(t, raw, 123); !ok || !bytes.Equal(got, []byte{0xCC, 0xDD}) {
+		t.Fatalf("HO Command Target-ToSource container (IE 123): got %x present=%v, want ccdd", got, ok)
+	}
+}
+
+func TestHandover_MissingSourceToTargetContainerRejected(t *testing.T) {
+	srv, srcCh, tgtCh := setupTwoENBServer(newMBRMock(nil))
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	reqIEs := withoutIE(buildHORequiredIEs(mmeID, srcENBID, buildTargetIDBytes(tgtGlobalID)), pdu.IESourceToTargetTransparentContainer)
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, reqIEs)
+
+	raw, ok := waitMsg(srcCh, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected Handover Preparation Failure to source")
+	}
+	if decodePDUType(raw) != pdu.PDUTypeUnsuccessfulOutcome || decodeProcCode(raw) != pdu.ProcHandoverPreparation {
+		t.Fatalf("expected Handover Preparation Failure, got type=%d proc=%d", decodePDUType(raw), decodeProcCode(raw))
+	}
+	if raw, ok := waitMsg(tgtCh, 50*time.Millisecond); ok {
+		t.Fatalf("unexpected message to target: %x", raw)
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.HOState != uecontext.HOStateNone {
+		t.Fatalf("HOState got %d, want None", ue.HOState)
+	}
+}
+
+func TestHandover_RequestAckMissingTargetToSourceContainerFailsPreparation(t *testing.T) {
+	srv, srcCh, tgtCh := setupTwoENBServer(newMBRMock(nil))
+	ue := makeHOUE(srv)
+	mmeID := ue.MMEUES1APID
+
+	srv.handleHandoverRequired(srcAddr, &pdu.PDU{}, buildHORequiredIEs(mmeID, srcENBID, buildTargetIDBytes(tgtGlobalID)))
+	if _, ok := waitMsg(tgtCh, 300*time.Millisecond); !ok {
+		t.Fatal("expected HO Request to target")
+	}
+
+	ackIEs := withoutIE(buildHORequestAckIEs(mmeID, tgtENBID, 5, 0xBEEF0001, net.ParseIP("10.20.30.50").To4()), pdu.IETargetToSourceTransparentContainer)
+	srv.handleHandoverRequestAck(tgtAddr, &pdu.PDU{}, ackIEs)
+
+	raw, ok := waitMsg(srcCh, 300*time.Millisecond)
+	if !ok {
+		t.Fatal("expected Handover Preparation Failure to source")
+	}
+	if decodePDUType(raw) != pdu.PDUTypeUnsuccessfulOutcome || decodeProcCode(raw) != pdu.ProcHandoverPreparation {
+		t.Fatalf("expected Handover Preparation Failure, got type=%d proc=%d", decodePDUType(raw), decodeProcCode(raw))
+	}
+	ue.Lock()
+	defer ue.Unlock()
+	if ue.HOState != uecontext.HOStateNone {
+		t.Fatalf("HOState got %d, want None", ue.HOState)
+	}
+}

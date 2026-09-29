@@ -167,8 +167,8 @@ const (
 	IEERABToBeSetupItemHOReq             uint16 = 27  // HandoverRequest: E-RAB item
 	IEERABAdmittedList                   uint16 = 18  // HandoverRequestAck: admitted list
 	IEERABAdmittedItem                   uint16 = 20  // HandoverRequestAck: admitted item
-	IETargetToSourceTransparentContainer uint16 = 127 // HandoverRequestAck/Command: RRC container
-	IESourceToTargetTransparentContainer uint16 = 96  // HandoverRequired/Request: RRC container (same value as IESTMSI)
+	IETargetToSourceTransparentContainer uint16 = 123 // HandoverRequestAck/Command: RRC container
+	IESourceToTargetTransparentContainer uint16 = 104 // HandoverRequired/Request: RRC container
 )
 
 // PDUType represents the S1AP PDU choice.
