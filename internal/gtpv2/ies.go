@@ -180,15 +180,19 @@ func DecodeEBI(ie *IE) (uint8, error) {
 // EncodeBearerQoS encodes the Bearer QoS IE (TS 29.274 §8.15).
 // pci=0 (may be pre-empted), pl=8 (priority), pvi=1 (pre-emptable), qci=9.
 // MBR and GBR are all zero (non-GBR bearer).
+//
+// pci and pvi are true when pre-emption capability/vulnerability is enabled.
+// On the wire a set PCI/PVI bit means "disabled" (TS 29.274 §8.15, values of
+// the TS 29.212 Pre-emption-Capability/-Vulnerability AVPs: 0 = enabled).
 func EncodeBearerQoS(qci, pl uint8, pci, pvi bool) IE {
 	val := make([]byte, 22)
 	// byte 0: PCI[6], PL[5:2], PVI[0]
 	var b0 uint8
-	if pci {
+	if !pci {
 		b0 |= 0x40
 	}
 	b0 |= (pl & 0x0F) << 2
-	if pvi {
+	if !pvi {
 		b0 |= 0x01
 	}
 	val[0] = b0

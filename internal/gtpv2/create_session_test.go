@@ -213,11 +213,13 @@ func TestCreateSessionRequestUsesSubscribedBearerQoSAndAMBR(t *testing.T) {
 	if got, want := (qos.Value[0]>>2)&0x0f, uint8(2); got != want {
 		t.Fatalf("Bearer QoS priority level got %d, want %d", got, want)
 	}
-	if got := qos.Value[0]&0x40 != 0; got != true {
-		t.Fatalf("Bearer QoS PCI bit got %t, want true", got)
+	// A set PCI/PVI bit means "disabled" (TS 29.274 §8.15): capability
+	// enabled clears PCI, vulnerability disabled sets PVI.
+	if got := qos.Value[0]&0x40 != 0; got != false {
+		t.Fatalf("Bearer QoS PCI bit got %t, want false (capability enabled)", got)
 	}
-	if got := qos.Value[0]&0x01 != 0; got != false {
-		t.Fatalf("Bearer QoS PVI bit got %t, want false", got)
+	if got := qos.Value[0]&0x01 != 0; got != true {
+		t.Fatalf("Bearer QoS PVI bit got %t, want true (vulnerability disabled)", got)
 	}
 }
 

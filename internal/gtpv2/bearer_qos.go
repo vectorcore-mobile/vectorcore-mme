@@ -21,10 +21,11 @@ func ParseBearerQoS(raw []byte) (*BearerQoS, error) {
 		return nil, fmt.Errorf("gtpv2: bearer qos too short: %d", len(raw))
 	}
 	flags := raw[0]
+	// A set PCI/PVI bit means "disabled" (TS 29.274 §8.15).
 	out := &BearerQoS{
 		PriorityLevel:           (flags >> 2) & 0x0f,
-		PreemptionCapability:    flags&0x40 != 0,
-		PreemptionVulnerability: flags&0x01 != 0,
+		PreemptionCapability:    flags&0x40 == 0,
+		PreemptionVulnerability: flags&0x01 == 0,
 		QCI:                     raw[1],
 		UplinkMBR:               decodeBearerQoSBitrate(raw[2:7]),
 		DownlinkMBR:             decodeBearerQoSBitrate(raw[7:12]),
