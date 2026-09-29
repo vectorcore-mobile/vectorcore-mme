@@ -33,6 +33,13 @@ type ResultHandler interface {
 	HandleDeleteBearerRequest(peer string, req *gtpv2.DeleteBearerRequest)
 }
 
+// PeerTEIDResolver is optionally implemented by the ResultHandler. It maps
+// the MME's local S11 TEID to the S-GW's TEID for the header of a response
+// the client sends on its own (TS 29.274 §5.5.1), returning 0 when unknown.
+type PeerTEIDResolver interface {
+	S11PeerTEID(localTEID uint32) uint32
+}
+
 // pending is stored in the correlation maps.
 type pending struct {
 	mmeUEID       uint32
@@ -73,6 +80,17 @@ func NewClient(cfg config.S11Config, log *zap.Logger) (*Client, error) {
 
 // SetHandler wires the result callback. Must be called before Start.
 func (c *Client) SetHandler(h ResultHandler) { c.handler = h }
+
+// rejectHeaderTEID is the header TEID for a response the client builds itself
+// (decode error, no handler). The request's own TEID is the MME's, so the
+// S-GW's TEID is looked up; TS 29.274 §5.5.2 permits 0 when it is not known
+// and the cause is not Context Not Found.
+func (c *Client) rejectHeaderTEID(localTEID uint32) uint32 {
+	if r, ok := c.handler.(PeerTEIDResolver); ok {
+		return r.S11PeerTEID(localTEID)
+	}
+	return 0
+}
 
 // Start binds the UDP socket and starts the receive loop. Blocks until the
 // socket is closed; call in a goroutine.
@@ -405,7 +423,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 				zap.String("raw_hex", hex.EncodeToString(pkt)),
 				zap.Error(decErr))
 			cause := gtpv2.DecodeErrorCause(decErr)
-			resp := gtpv2.EncodeCreateBearerResponse(msg.TEID, msg.SeqNum, cause, nil)
+			resp := gtpv2.EncodeCreateBearerResponse(c.rejectHeaderTEID(msg.TEID), msg.SeqNum, cause, nil)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			return
 		}
@@ -425,7 +443,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 		}
 		c.log.Debug("s11: Create Bearer Request received", fields...)
 		if c.handler == nil {
-			resp := gtpv2.EncodeCreateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
+			resp := gtpv2.EncodeCreateBearerResponse(c.rejectHeaderTEID(req.TEID), req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			metrics.S11MessagesTotal.WithLabelValues("create_bearer", "rejected").Inc()
 			return
@@ -489,7 +507,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 				zap.Uint32("teid", msg.TEID),
 				zap.String("raw_hex", hex.EncodeToString(pkt)),
 				zap.Error(decErr))
-			resp := gtpv2.EncodeUpdateBearerResponse(msg.TEID, msg.SeqNum, gtpv2.DecodeErrorCause(decErr), nil)
+			resp := gtpv2.EncodeUpdateBearerResponse(c.rejectHeaderTEID(msg.TEID), msg.SeqNum, gtpv2.DecodeErrorCause(decErr), nil)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			return
 		}
@@ -507,7 +525,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 		}
 		c.log.Debug("s11: Update Bearer Request received", fields...)
 		if c.handler == nil {
-			resp := gtpv2.EncodeUpdateBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
+			resp := gtpv2.EncodeUpdateBearerResponse(c.rejectHeaderTEID(req.TEID), req.SeqNum, gtpv2.CauseServiceNotSupported, req.Bearers)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			metrics.S11MessagesTotal.WithLabelValues("update_bearer", "rejected").Inc()
 			return
@@ -523,7 +541,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 				zap.Uint32("teid", msg.TEID),
 				zap.String("raw_hex", hex.EncodeToString(pkt)),
 				zap.Error(decErr))
-			resp := gtpv2.EncodeDeleteBearerResponse(msg.TEID, msg.SeqNum, gtpv2.DecodeErrorCause(decErr), nil)
+			resp := gtpv2.EncodeDeleteBearerResponse(c.rejectHeaderTEID(msg.TEID), msg.SeqNum, gtpv2.DecodeErrorCause(decErr), nil)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			return
 		}
@@ -533,7 +551,7 @@ func (c *Client) dispatchMessage(msg *gtpv2.Message, pkt []byte, remote *net.UDP
 			zap.Uint32("teid", req.TEID),
 			zap.Uint8s("ebis", req.EBIs))
 		if c.handler == nil {
-			resp := gtpv2.EncodeDeleteBearerResponse(req.TEID, req.SeqNum, gtpv2.CauseServiceNotSupported, req.EBIs)
+			resp := gtpv2.EncodeDeleteBearerResponse(c.rejectHeaderTEID(req.TEID), req.SeqNum, gtpv2.CauseServiceNotSupported, req.EBIs)
 			_, _ = c.conn.WriteToUDP(resp, remote)
 			metrics.S11MessagesTotal.WithLabelValues("delete_bearer", "rejected").Inc()
 			return

@@ -2,6 +2,7 @@ package s1ap
 
 import (
 	"fmt"
+	s11teid "github.com/vectorcore/mme/internal/gtpv2/s11"
 	"net"
 	"sync"
 	"testing"
@@ -1417,3 +1418,7 @@ func TestBearerRequestForUnknownTEIDRespondsWithTEIDZero(t *testing.T) {
 		t.Fatalf("Delete Bearer Response got TEID %#x cause %d, want 0 / Context Not Found", got.TEID, got.Cause)
 	}
 }
+
+// The S11 client asks the S1AP server for the S-GW TEID when it rejects a
+// request on its own.
+var _ s11teid.PeerTEIDResolver = (*Server)(nil)

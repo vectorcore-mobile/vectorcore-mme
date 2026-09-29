@@ -1772,6 +1772,10 @@ func (s *Server) sendCreateBearerResponse(peer string, localTEID uint32, seq uin
 	s.sendCreateBearerResponseWithMeta(peer, s.s11PeerTEID(localTEID), seq, cause, bearers, nil)
 }
 
+// S11PeerTEID implements s11.PeerTEIDResolver for responses the S11 client
+// builds itself.
+func (s *Server) S11PeerTEID(localTEID uint32) uint32 { return s.s11PeerTEID(localTEID) }
+
 // s11PeerTEID maps the MME's local S11 TEID to the S-GW's S11 TEID, which a
 // response must carry in its header (TS 29.274 §5.5.1). It returns 0 when the
 // local TEID is unknown, as required with cause Context Not Found (§5.5.2).
