@@ -1268,14 +1268,16 @@ func (s *Server) findUEByLocalS11TEID(teid uint32, linkedEBI uint8) (*uecontext.
 	s.ueManager.Range(func(ue *uecontext.Context) bool {
 		ue.Lock()
 		defer ue.Unlock()
-		if pdn := ue.PendingPDN; pdn != nil {
+		// All PDNs of a UE share one S11 TEID (TS 29.274 §4.1), so without a
+		// linked EBI an established PDN is preferred over one still pending.
+		for _, pdn := range ue.PDNs {
 			if pdn.LocalS11TEID == teid && (linkedEBI == 0 || pdn.DefaultEBI == linkedEBI) {
 				foundUE = ue
 				foundPDN = pdn
 				return false
 			}
 		}
-		for _, pdn := range ue.PDNs {
+		if pdn := ue.PendingPDN; pdn != nil {
 			if pdn.LocalS11TEID == teid && (linkedEBI == 0 || pdn.DefaultEBI == linkedEBI) {
 				foundUE = ue
 				foundPDN = pdn

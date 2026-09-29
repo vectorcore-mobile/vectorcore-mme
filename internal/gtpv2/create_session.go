@@ -30,6 +30,12 @@ type CreateSessionRequest struct {
 	PreemptionVulnerability bool
 	UplinkAMBRKbps          uint32
 	DownlinkAMBRKbps        uint32
+
+	// SGWC_TEID is the S-GW's S11 TEID for this UE, sent in the header. It
+	// stays 0 only until the MME has obtained it (TS 29.274 §5.5.2); an
+	// additional PDN connection must carry it so the S-GW adds the PDN to
+	// the existing UE context instead of treating the request as a new UE.
+	SGWC_TEID uint32
 }
 
 // Encode returns the wire bytes for this CSR with the given sequence number.
@@ -65,7 +71,7 @@ func (r *CreateSessionRequest) Encode(seqNum uint32) []byte {
 
 	msg := &Message{
 		Type:   MsgCreateSessionRequest,
-		TEID:   0, // initial request: peer TEID unknown
+		TEID:   r.SGWC_TEID,
 		SeqNum: seqNum,
 		IEs:    ies,
 	}

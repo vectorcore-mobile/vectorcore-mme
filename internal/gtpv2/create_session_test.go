@@ -304,3 +304,24 @@ func TestDecodeCreateSessionResponseRejectsAcceptedResponseWithoutBearerEBI(t *t
 		t.Fatal("DecodeCreateSessionResponse succeeded without bearer EBI")
 	}
 }
+
+func TestCreateSessionRequestHeaderTEID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		teid uint32
+	}{
+		{name: "initial", teid: 0},
+		{name: "additional PDN", teid: 0x3e9},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &CreateSessionRequest{IMSI: "246990200000010", APN: "ims", LocalS11TEID: 0x13, SGWC_TEID: tc.teid, DefaultEBI: 6}
+			msg, err := Decode(req.Encode(7))
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if msg.TEID != tc.teid {
+				t.Fatalf("header TEID got %#x, want %#x", msg.TEID, tc.teid)
+			}
+		})
+	}
+}

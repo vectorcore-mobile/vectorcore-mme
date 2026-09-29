@@ -368,7 +368,6 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 
 	effectiveAPNOIReplacement := effectiveAPNOIReplacement(apnCfg.APNOIReplacement, subscriberAPNOIReplacement)
 
-	localTEID := s11teid.AllocateTEID()
 	plmn := s.buildPLMN()
 	if roamingState.IsRoaming {
 		encoded, err := security.EncodePLMN(roamingState.ServingPLMN.MCC, roamingState.ServingPLMN.MNC)
@@ -415,6 +414,15 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		_ = iface
 	}
 
+	// TS 29.274 §4.1: one pair of S11 TEID-Cs per UE. An additional PDN on
+	// the S-GW that already serves the UE reuses that tunnel.
+	ue.Lock()
+	localTEID, sgwcHeaderTEID, reuseS11 := existingS11TunnelLocked(ue, sgwAddr)
+	ue.Unlock()
+	if !reuseS11 {
+		localTEID = s11teid.AllocateTEID()
+	}
+
 	pdn := &uecontext.PDNContext{
 		APN:                     requestedAPN,
 		SelectedPGW:             append(net.IP(nil), pgwIP...),
@@ -454,6 +462,7 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		ServingNetwork:          plmn,
 		LocalS11TEID:            localTEID,
 		LocalS11IP:              localIP,
+		SGWC_TEID:               sgwcHeaderTEID,
 		PGWIP:                   pgwIP,
 		ULIPLMN:                 plmn,
 		ULITAC:                  ulitac,
@@ -482,8 +491,42 @@ func (s *Server) handlePDNConnectivityRequest(ue *uecontext.Context, req *esm.PD
 		zap.String("apn", requestedAPN),
 		zap.Uint8("default_ebi", ebi),
 		zap.Uint32("local_teid", localTEID),
+		zap.Uint32("sgwc_header_teid", sgwcHeaderTEID),
+		zap.Bool("s11_tunnel_reused", reuseS11),
 		zap.String("selected_pgw", pgwIP.String()))
 	return nil
+}
+
+// existingS11TunnelLocked returns the UE's established S11 tunnel towards
+// sgwAddr: the MME's local TEID and the S-GW's TEID. The default PDN is
+// preferred; ok is false when the UE has no established tunnel to that S-GW.
+func existingS11TunnelLocked(ue *uecontext.Context, sgwAddr string) (localTEID, sgwcTEID uint32, ok bool) {
+	samePeer := func(addr string) bool {
+		return addr == sgwAddr || sameGTPCPeer(addr, sgwAddr)
+	}
+	candidates := make([]*uecontext.PDNContext, 0, len(ue.PDNs))
+	if pdn := ue.PDNs[ue.APN]; pdn != nil {
+		candidates = append(candidates, pdn)
+	}
+	apns := make([]string, 0, len(ue.PDNs))
+	for apn := range ue.PDNs {
+		if apn != ue.APN {
+			apns = append(apns, apn)
+		}
+	}
+	sort.Strings(apns)
+	for _, apn := range apns {
+		candidates = append(candidates, ue.PDNs[apn])
+	}
+	for _, pdn := range candidates {
+		if pdn != nil && pdn.LocalS11TEID != 0 && pdn.SGWC_TEID != 0 && samePeer(pdn.SGWAddress) {
+			return pdn.LocalS11TEID, pdn.SGWC_TEID, true
+		}
+	}
+	if ue.LocalS11TEID != 0 && ue.SGWC_TEID != 0 && samePeer(ue.SGWAddress) {
+		return ue.LocalS11TEID, ue.SGWC_TEID, true
+	}
+	return 0, 0, false
 }
 
 func (s *Server) handleESMInformationResponse(ue *uecontext.Context, resp *esm.ESMInformationResponse, log *zap.Logger) error {

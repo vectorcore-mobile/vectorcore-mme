@@ -1170,3 +1170,135 @@ func TestNegotiatedPDNTypeCauseUsesSubscribedPolicy(t *testing.T) {
 		t.Fatalf("matching IPv4 cause got %d, want none", got)
 	}
 }
+
+func newAdditionalPDNTestUE(srv *Server, internet *uecontext.PDNContext) *uecontext.Context {
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.IMSI = "246990200000010"
+	ue.APN = "internet"
+	ue.DefaultEBI = 5
+	ue.SubscriberAPNs = []string{"internet", "ims"}
+	ue.SubscriberAPNConfigs = map[string]uecontext.SubscriberAPNConfig{
+		"ims": {
+			ServiceSelection: "ims",
+			PDNType:          gtpv2.PDNTypeIPv4,
+			QCI:              5,
+			ARPPriority:      5,
+			APNAMBRUp:        1000,
+			APNAMBRDown:      1000,
+		},
+	}
+	ue.PDNs = map[string]*uecontext.PDNContext{"internet": internet}
+	ue.Unlock()
+	return ue
+}
+
+var imsPDNConnectivityRequest = &nas.DecodeResult{
+	Plain: []byte{
+		0x02, 0x0b, esm.MsgPDNConnectivityRequest, 0x31,
+		0x28, 0x04, 0x03, 'i', 'm', 's',
+	},
+}
+
+// User field log: the IMS Create Session Request went out with header TEID 0
+// and a new MME S11 TEID although the UE already had an S11 tunnel; the S-GW
+// answered with a second S11 TEID for the same UE and the internet PDN died.
+func TestProcessESM_AdditionalPDNReusesUES11Tunnel(t *testing.T) {
+	mock := &capturingCSRS11{}
+	srv := newTestServer(mock)
+	ue := newAdditionalPDNTestUE(srv, &uecontext.PDNContext{
+		APN:          "internet",
+		DefaultEBI:   5,
+		LocalS11TEID: 0x13,
+		SGWC_TEID:    0x3e9,
+		State:        "active",
+	})
+
+	if err := srv.processESM(ue, imsPDNConnectivityRequest, zap.NewNop()); err != nil {
+		t.Fatalf("processESM: %v", err)
+	}
+	if len(mock.csrCalls) != 1 {
+		t.Fatalf("CSR calls got %d, want 1", len(mock.csrCalls))
+	}
+	csr := mock.csrCalls[0]
+	if csr.APN != "ims" {
+		t.Fatalf("CSR APN got %q, want ims", csr.APN)
+	}
+	if csr.SGWC_TEID != 0x3e9 {
+		t.Fatalf("CSR header TEID got %#x, want S-GW S11 TEID 0x3e9 (TS 29.274 §5.5.2)", csr.SGWC_TEID)
+	}
+	if csr.LocalS11TEID != 0x13 {
+		t.Fatalf("CSR MME S11 F-TEID got %#x, want existing 0x13 (TS 29.274 §4.1)", csr.LocalS11TEID)
+	}
+	encoded, err := gtpv2.Decode(csr.Encode(1))
+	if err != nil {
+		t.Fatalf("Decode CSR: %v", err)
+	}
+	if encoded.TEID != 0x3e9 {
+		t.Fatalf("encoded CSR header TEID got %#x, want 0x3e9", encoded.TEID)
+	}
+}
+
+func TestProcessESM_AdditionalPDNWithoutS11TunnelUsesTEIDZero(t *testing.T) {
+	mock := &capturingCSRS11{}
+	srv := newTestServer(mock)
+	ue := newAdditionalPDNTestUE(srv, &uecontext.PDNContext{
+		APN:        "internet",
+		DefaultEBI: 5,
+		State:      "active",
+	})
+
+	if err := srv.processESM(ue, imsPDNConnectivityRequest, zap.NewNop()); err != nil {
+		t.Fatalf("processESM: %v", err)
+	}
+	if len(mock.csrCalls) != 1 {
+		t.Fatalf("CSR calls got %d, want 1", len(mock.csrCalls))
+	}
+	if got := mock.csrCalls[0].SGWC_TEID; got != 0 {
+		t.Fatalf("CSR header TEID got %#x, want 0 when no S-GW TEID is known", got)
+	}
+	if mock.csrCalls[0].LocalS11TEID == 0 {
+		t.Fatal("CSR MME S11 F-TEID not allocated")
+	}
+}
+
+func TestProcessESM_AdditionalPDNOnDifferentSGWAllocatesNewTunnel(t *testing.T) {
+	ue := &uecontext.Context{
+		APN: "internet",
+		PDNs: map[string]*uecontext.PDNContext{
+			"internet": {APN: "internet", DefaultEBI: 5, LocalS11TEID: 0x13, SGWC_TEID: 0x3e9, SGWAddress: "10.0.2.3:2123"},
+		},
+	}
+	if _, _, ok := existingS11TunnelLocked(ue, "10.0.2.9:2123"); ok {
+		t.Fatal("reused S11 tunnel towards a different S-GW")
+	}
+	local, sgwc, ok := existingS11TunnelLocked(ue, "10.0.2.3:2123")
+	if !ok || local != 0x13 || sgwc != 0x3e9 {
+		t.Fatalf("existing tunnel got local=%#x sgwc=%#x ok=%v, want 0x13/0x3e9/true", local, sgwc, ok)
+	}
+}
+
+func TestFindUEByLocalS11TEIDSharedTunnelPrefersEstablishedPDN(t *testing.T) {
+	srv := newTestServer(&capturingCSRS11{})
+	ue := srv.ueManager.Allocate()
+	ue.Lock()
+	ue.APN = "internet"
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {APN: "internet", DefaultEBI: 5, LocalS11TEID: 0x13, SGWC_TEID: 0x3e9, State: "active"},
+		"ims":      {APN: "ims", DefaultEBI: 6, LocalS11TEID: 0x13, SGWC_TEID: 0x3e9, State: "active"},
+	}
+	ue.PendingPDN = &uecontext.PDNContext{APN: "mms", DefaultEBI: 7, LocalS11TEID: 0x13, State: "csr-sent"}
+	ue.Unlock()
+
+	if got, pdn := srv.findUEByLocalS11TEID(0x13, 6); got != ue || pdn == nil || pdn.APN != "ims" {
+		t.Fatalf("linked EBI 6 lookup got pdn %+v, want ims", pdn)
+	}
+	if got, pdn := srv.findUEByLocalS11TEID(0x13, 7); got != ue || pdn == nil || pdn.APN != "mms" {
+		t.Fatalf("linked EBI 7 lookup got pdn %+v, want pending mms", pdn)
+	}
+	for i := 0; i < 20; i++ {
+		if _, pdn := srv.findUEByLocalS11TEID(0x13, 0); pdn == nil || pdn.State != "active" {
+			t.Fatalf("lookup without EBI got pdn %+v, want an established PDN", pdn)
+		}
+	}
+}
