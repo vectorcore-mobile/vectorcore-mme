@@ -3,6 +3,7 @@ package s1ap
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -547,4 +548,95 @@ func TestShutdown_RespectsContextCancellation(t *testing.T) {
 	// (The exact count depends on whether the select picks ctx.Done() or default first,
 	// but pre-cancellation makes ctx.Done() immediately ready.)
 	t.Logf("DSR calls with cancelled ctx: %d (expected 0 or very few)", len(mock.dsrCalls))
+}
+
+// ── Bug #13: whole-UE teardown deletes every PDN ─────────────────────────────
+
+// addTwoPDNs gives ue an internet PDN (EBI 5) and an IMS PDN (EBI 6) sharing
+// the UE's single S11 TEID pair, as a VoLTE UE has after attach.
+func addTwoPDNs(ue *uecontext.Context, sgwcTEID uint32) {
+	ue.SGWC_TEID = sgwcTEID
+	ue.SGWAddress = "10.90.250.59:2123"
+	ue.LocalS11TEID = 0x1000a
+	ue.DefaultEBI = 5
+	ue.APN = "internet"
+	ue.PDNs = map[string]*uecontext.PDNContext{
+		"internet": {APN: "internet", DefaultEBI: 5, SGWC_TEID: sgwcTEID, SGWAddress: ue.SGWAddress, LocalS11TEID: 0x1000a},
+		"ims":      {APN: "ims", DefaultEBI: 6, SGWC_TEID: sgwcTEID, SGWAddress: ue.SGWAddress, LocalS11TEID: 0x1000a},
+	}
+}
+
+func dsrLBIs(calls []gtpv2.DeleteSessionRequest) []int {
+	var ebis []int
+	for _, c := range calls {
+		ebis = append(ebis, int(c.EBI))
+	}
+	sort.Ints(ebis)
+	return ebis
+}
+
+func TestWholeUETeardownDeletesEveryPDN(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		teardown func(srv *Server, ue *uecontext.Context)
+	}{
+		{"graceful shutdown", func(srv *Server, _ *uecontext.Context) { srv.Shutdown(context.Background()) }},
+		{"network-initiated detach", func(srv *Server, ue *uecontext.Context) { srv.HandleNetworkDetach(ue) }},
+		{"sendDeleteSession", func(srv *Server, ue *uecontext.Context) { srv.sendDeleteSession(ue) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockS11{}
+			srv := newTestServer(mock)
+			ue := allocateTestUE(srv, "10.0.0.1:36412", 0, true)
+			addTwoPDNs(ue, 0x77c7011f)
+
+			tc.teardown(srv, ue)
+
+			if got := dsrLBIs(mock.dsrCalls); len(got) != 2 || got[0] != 5 || got[1] != 6 {
+				t.Fatalf("DSR LBIs = %v, want [5 6] (internet and IMS)", got)
+			}
+			for _, c := range mock.dsrCalls {
+				if c.SGWC_TEID != 0x77c7011f {
+					t.Fatalf("DSR header TEID %#x, want the S-GW's 0x77c7011f", c.SGWC_TEID)
+				}
+			}
+			// A second teardown must not repeat the requests.
+			srv.sendDeleteSession(ue)
+			if len(mock.dsrCalls) != 2 {
+				t.Fatalf("repeated teardown sent %d DSRs in total, want 2", len(mock.dsrCalls))
+			}
+		})
+	}
+}
+
+// A detaching UE is only cleaned up once both PDNs' Delete Session
+// Responses have arrived.
+func TestDetachCleanupWaitsForEveryPDNResponse(t *testing.T) {
+	mock := &mockS11{}
+	srv := newTestServer(mock)
+	ue := allocateTestUE(srv, "10.0.0.1:36412", 0, true)
+	addTwoPDNs(ue, 0x77c7011f)
+	ue.EMMState = emm.StateDeregisteredInitiated
+	ue.ECMState = emm.ECMIdle
+	mmeID := ue.MMEUES1APID
+
+	srv.sendDeleteSession(ue)
+	srv.HandleDSRResult(mmeID, 5, nil)
+	ue.Lock()
+	_, imsLeft := ue.PDNs["ims"]
+	_, internetLeft := ue.PDNs["internet"]
+	ue.Unlock()
+	if !imsLeft || internetLeft {
+		t.Fatalf("after the internet DSRsp: ims present %v, internet present %v; want only ims left", imsLeft, internetLeft)
+	}
+	if srv.detachedUEDeleteSessionsComplete(mmeID) {
+		t.Fatal("detach reported complete with the IMS DSR still outstanding")
+	}
+	srv.HandleDSRResult(mmeID, 6, nil)
+	ue.Lock()
+	remaining := len(ue.PDNs)
+	ue.Unlock()
+	if remaining != 0 {
+		t.Fatalf("%d PDN(s) left after both DSRsps, want 0", remaining)
+	}
 }

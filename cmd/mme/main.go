@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -68,22 +69,19 @@ func main() {
 	log.Info("nas feature configuration",
 		zap.Bool("ims_voice_over_ps", cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS))
 
+	warnDeprecatedDatabaseMode(cfg.Database, log)
 	restartEpoch := fmt.Sprintf("%d", time.Now().UTC().UnixNano())
 	store, err := buildRepository(cfg.Database, log, restartEpoch)
 	if err != nil {
 		log.Fatal("database init failed", zap.Error(err))
 	}
 
-	if databaseMode(cfg.Database) == "memory" {
-		log.Info("database disabled; using in-memory repository mode")
+	if n, err := store.MarkRecoveryRecordsStaleAfterRestart(context.Background(), restartEpoch); err != nil {
+		log.Warn("database recovery stale marking failed", zap.Error(err))
 	} else {
-		if n, err := store.MarkRecoveryRecordsStaleAfterRestart(context.Background(), restartEpoch); err != nil {
-			log.Warn("database recovery stale marking failed", zap.Error(err))
-		} else {
-			log.Info("database recovery records marked stale",
-				zap.String("restart_epoch", restartEpoch),
-				zap.Int64("records_marked", n))
-		}
+		log.Info("database recovery records marked stale",
+			zap.String("restart_epoch", restartEpoch),
+			zap.Int64("records_marked", n))
 	}
 	ueManager := uecontext.NewManager()
 	enbTracker := peertracker.New()
@@ -152,7 +150,7 @@ func main() {
 	gatewaySelector := gateway.NewSelector(*cfg, log)
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.EMMTimers, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
-	s1apSrv.SetPersistentRecovery(databaseMode(cfg.Database) != "memory")
+	s1apSrv.SetPersistentRecovery(true)
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	s1apSrv.SetSGdConfig(cfg.SGd)
 	s1apSrv.SetSGsConfig(cfg.SGs)
@@ -368,6 +366,13 @@ func buildLogger(cfg config.LoggingConfig, debugConsole bool) *zap.Logger {
 }
 
 func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
+	// SQLite creates the file but not its directory; an install that never
+	// used a database (formerly memory mode) may not have it yet.
+	if dir := filepath.Dir(databasePath(cfg)); dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create database directory %s: %w", dir, err)
+		}
+	}
 	db, err := gorm.Open(databaseDialector(cfg), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Warn),
 	})
@@ -398,33 +403,32 @@ func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 // S-GW nor recovered UE contexts see a TEID reused (TS 29.274 §4.1,
 // TS 23.007 §18).
 func initS11Restart(cfg *config.Config, store repository.Repository, log *zap.Logger) {
-	memoryMode := databaseMode(cfg.Database) == "memory"
-
-	// Memory mode uses the configured counter as is. Persistent mode keeps
-	// it in the database so it stays the same across restarts.
+	// The counter is kept in the database so it stays the same across
+	// restarts; the configured value is used on the first start only.
 	counter := cfg.S11.RecoveryRestartCounter
-	if st, ok := store.(mmeStateStore); ok && !memoryMode {
+	counterFromDB := false
+	if st, ok := store.(mmeStateStore); ok {
 		c, err := s11client.LoadRestartCounter(dbCounterStore{db: st}, counter)
 		if err != nil {
 			log.Warn("s11: restart counter not read from or saved to the database; using the configured value",
 				zap.Error(err))
+		} else {
+			counterFromDB = true
 		}
 		counter = c
 	}
 	cfg.S11.RecoveryRestartCounter = counter
 
 	var maxTEID uint32
-	if !memoryMode {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		sessions, err := store.ListSessionRecoveryRecords(ctx, "")
-		cancel()
-		if err != nil {
-			log.Warn("s11: could not read recovered S11 TEIDs; seeding TEIDs randomly", zap.Error(err))
-		}
-		for _, sess := range sessions {
-			if sess.MMES11TEID > maxTEID {
-				maxTEID = sess.MMES11TEID
-			}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	sessions, err := store.ListSessionRecoveryRecords(ctx, "")
+	cancel()
+	if err != nil {
+		log.Warn("s11: could not read recovered S11 TEIDs; seeding TEIDs randomly", zap.Error(err))
+	}
+	for _, sess := range sessions {
+		if sess.MMES11TEID > maxTEID {
+			maxTEID = sess.MMES11TEID
 		}
 	}
 	firstTEID := s11client.InitialTEID(maxTEID)
@@ -432,7 +436,7 @@ func initS11Restart(cfg *config.Config, store repository.Repository, log *zap.Lo
 
 	log.Info("s11: restart state",
 		zap.Uint8("restart_counter", counter),
-		zap.Bool("counter_from_database", !memoryMode),
+		zap.Bool("counter_from_database", counterFromDB),
 		zap.Uint32("max_recovered_teid", maxTEID),
 		zap.Uint32("first_teid", firstTEID))
 }
@@ -466,9 +470,6 @@ func (d dbCounterStore) SaveCounter(v uint8) error {
 }
 
 func buildRepository(cfg config.DatabaseConfig, log *zap.Logger, restartEpoch string) (repository.Repository, error) {
-	if databaseMode(cfg) == "memory" {
-		return noopRepository{}, nil
-	}
 	db, err := openDB(cfg)
 	if err != nil {
 		return nil, err
@@ -476,62 +477,34 @@ func buildRepository(cfg config.DatabaseConfig, log *zap.Logger, restartEpoch st
 	if err := db.AutoMigrate(models.AllModels()...); err != nil {
 		return nil, fmt.Errorf("database migrate failed: %w", err)
 	}
-	log.Info("database persistent mode enabled",
-		zap.String("mode", databaseMode(cfg)),
+	log.Info("database opened",
+		zap.String("database", databasePath(cfg)),
 		zap.String("restart_epoch", restartEpoch))
 	return dbstore.New(db), nil
 }
 
-func databaseMode(cfg config.DatabaseConfig) string {
+// warnDeprecatedDatabaseMode logs once if the config still sets
+// database.mode. The MME always uses its SQLite database; the key is
+// accepted so existing configs keep loading.
+func warnDeprecatedDatabaseMode(cfg config.DatabaseConfig, log *zap.Logger) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
-		return "persistent"
+		return
 	}
-	return mode
+	msg := "database.mode is deprecated and ignored; remove it from the config. The MME always uses its SQLite database"
+	if mode == "memory" {
+		msg = "database.mode \"memory\" is no longer supported and is ignored; remove it from the config. The MME always uses its SQLite database"
+	}
+	log.Warn(msg, zap.String("mode", cfg.Mode), zap.String("database", databasePath(cfg)))
+}
+
+func databasePath(cfg config.DatabaseConfig) string {
+	if cfg.Database == "" {
+		return "mme.db"
+	}
+	return cfg.Database
 }
 
 func databaseDialector(cfg config.DatabaseConfig) gorm.Dialector {
-	dsn := cfg.Database
-	if dsn == "" {
-		dsn = "mme.db"
-	}
-	return sqlite.Open(dsn)
-}
-
-type noopRepository struct{}
-
-func (noopRepository) UpsertUERecoveryRecord(_ context.Context, _ *models.UERecoveryRecord) error {
-	return nil
-}
-func (noopRepository) GetUERecoveryByIMSI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
-	return nil, repository.ErrNotFound
-}
-func (noopRepository) GetUERecoveryByGUTI(_ context.Context, _ string) (*models.UERecoveryRecord, error) {
-	return nil, repository.ErrNotFound
-}
-func (noopRepository) ListUERecoveryRecords(_ context.Context, _ repository.UERecoveryFilter) ([]models.UERecoveryRecord, error) {
-	return nil, nil
-}
-func (noopRepository) DeleteUERecoveryRecordsByIMSI(_ context.Context, _ []string) error { return nil }
-func (noopRepository) MarkRecoveryRecordsStaleAfterRestart(_ context.Context, _ string) (int64, error) {
-	return 0, nil
-}
-func (noopRepository) UpsertSessionRecoveryRecord(_ context.Context, _ *models.SessionRecoveryRecord) error {
-	return nil
-}
-func (noopRepository) ListSessionRecoveryRecords(_ context.Context, _ string) ([]models.SessionRecoveryRecord, error) {
-	return nil, nil
-}
-func (noopRepository) AppendRecoveryEvent(_ context.Context, _ *models.RecoveryEvent) error {
-	return nil
-}
-func (noopRepository) ListRecoveryEvents(_ context.Context, _ string, _ int) ([]models.RecoveryEvent, error) {
-	return nil, nil
-}
-func (noopRepository) UpsertENBRegistration(_ context.Context, _ *models.ENBRegistration) error {
-	return nil
-}
-func (noopRepository) DeleteENBRegistration(_ context.Context, _ string) error { return nil }
-func (noopRepository) ListENBRegistrations(_ context.Context) ([]models.ENBRegistration, error) {
-	return nil, nil
+	return sqlite.Open(databasePath(cfg))
 }
