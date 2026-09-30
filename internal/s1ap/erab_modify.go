@@ -135,7 +135,7 @@ func encodeERABModifyItemBody(item ERABModifyItem) []byte {
 	if arp == 0 {
 		arp = 8
 	}
-	gbrInfo, gbrPresent := deriveGBRQosInformation(item.BearerQoS)
+	gbrInfo, gbrPresent := deriveGBRQosInformation(qci, item.BearerQoS)
 
 	w := aper.NewBitWriter()
 	w.WriteBit(0) // extension marker

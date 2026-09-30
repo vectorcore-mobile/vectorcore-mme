@@ -43,3 +43,15 @@ func decodeBearerQoSBitrate(raw []byte) uint64 {
 	// TS 29.274 Bearer QoS uses a 5-octet binary value in kilobits per second.
 	return out * 1000
 }
+
+// IsNonGBRQCI reports whether qci is a standardized non-GBR QCI (TS 23.203
+// Table 6.1.7-A). A non-GBR bearer has no bearer-level MBR/GBR (TS 23.401
+// §4.7.3), so neither the NAS EPS QoS nor the S1AP E-RAB may carry rates for
+// it. Operator-specific QCIs (128-254) are not classified here.
+func IsNonGBRQCI(qci uint8) bool {
+	switch qci {
+	case 5, 6, 7, 8, 9, 69, 70, 79, 80:
+		return true
+	}
+	return false
+}

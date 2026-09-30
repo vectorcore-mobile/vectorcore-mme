@@ -182,7 +182,7 @@ func TestERABGBRBitrateConvertsS11KilobitsToS1APBits(t *testing.T) {
 			for _, off := range []int{2, 7, 12, 17} {
 				copy(raw[off:off+5], encodeBearerQoSKilobitsForTest(tt.s11Kbps))
 			}
-			info, present := deriveGBRQosInformation(raw)
+			info, present := deriveGBRQosInformation(2, raw)
 			if !present {
 				t.Fatal("GBR QoS not present")
 			}
@@ -937,4 +937,29 @@ func encodeBearerQoSKilobitsForTest(v uint64) []byte {
 		v >>= 8
 	}
 	return out
+}
+
+// TS 36.413 §9.2.1.15: GBR-QosInformation applies to GBR bearers only. The
+// field QCI 5 bearer carried MBR 64 kbit/s and still got the IE.
+func TestDeriveGBRQosInformationOnlyForGBRQCIs(t *testing.T) {
+	raw, err := hex.DecodeString("44050000000040000000004000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := deriveGBRQosInformation(5, raw); present {
+		t.Fatal("GBR-QosInformation present for non-GBR QCI 5")
+	}
+	for _, qci := range []uint8{6, 7, 8, 9, 69, 70, 79, 80} {
+		if _, present := deriveGBRQosInformation(qci, raw); present {
+			t.Fatalf("GBR-QosInformation present for non-GBR QCI %d", qci)
+		}
+	}
+	voice, err := hex.DecodeString("78010000000080000000008000000000800000000080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, present := deriveGBRQosInformation(1, voice)
+	if !present || info.GuaranteedBitrateDL != 128_000 || info.MaxBitrateUL != 128_000 {
+		t.Fatalf("QCI 1 GBR-QosInformation got %+v present=%t, want 128 kbit/s", info, present)
+	}
 }

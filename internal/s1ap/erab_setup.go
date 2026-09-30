@@ -354,7 +354,7 @@ func (s *Server) SendERABSetupRequestTracked(mmeUEID uint32, items []ERABSetupIt
 			zap.Bool("nas_pdu_present", len(item.NASPDU) > 0),
 			zap.Int("nas_pdu_len", len(item.NASPDU)),
 		}
-		if gbr, present := deriveGBRQosInformation(item.BearerQoS); present {
+		if gbr, present := deriveGBRQosInformation(item.QCI, item.BearerQoS); present {
 			encoded, decoded, roundTripOK := encodeAndDecodeERABGBRQoSForDebug(gbr)
 			fields = append(fields,
 				zap.Uint64("max_dl_bps", gbr.MaxBitrateDL),
@@ -462,7 +462,7 @@ func encodeERABSetupItemBody(item ERABSetupItem) []byte {
 	if arp == 0 {
 		arp = 8
 	}
-	gbrInfo, gbrPresent := deriveGBRQosInformation(item.BearerQoS)
+	gbrInfo, gbrPresent := deriveGBRQosInformation(qci, item.BearerQoS)
 
 	w := aper.NewBitWriter()
 
@@ -533,8 +533,10 @@ type erabGBRQosInformation struct {
 	GuaranteedBitrateUL uint64
 }
 
-func deriveGBRQosInformation(bearerQoS []byte) (erabGBRQosInformation, bool) {
-	if len(bearerQoS) < 22 {
+// deriveGBRQosInformation returns the E-RAB GBR-QosInformation, which TS
+// 36.413 §9.2.1.15 applies to GBR bearers only: none for a non-GBR QCI.
+func deriveGBRQosInformation(qci uint8, bearerQoS []byte) (erabGBRQosInformation, bool) {
+	if gtpv2.IsNonGBRQCI(qci) || len(bearerQoS) < 22 {
 		return erabGBRQosInformation{}, false
 	}
 	info := erabGBRQosInformation{

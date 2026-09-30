@@ -7,8 +7,6 @@ import (
 	"github.com/vectorcore/mme/internal/gtpv2"
 )
 
-const normalizedDedicatedBearerMaxBitrateBps uint64 = 10_240_000_000
-
 type BearerProcedureResponse struct {
 	EPSBearerID            uint8
 	ProcedureTransactionID uint8
@@ -255,6 +253,14 @@ func InspectDedicatedBearerQoSForDebug(raw []byte, fallbackQCI uint8) DedicatedB
 		qci = fallbackQCI
 	}
 	debug.EffectiveQCI = qci
+	if gtpv2.IsNonGBRQCI(qci) {
+		// Non-GBR: EPS QoS is the QCI alone (TS 24.301 §9.9.4.3); any rates
+		// the P-GW put in the Bearer QoS do not apply to this bearer.
+		debug.FallbackToQCIOnly = true
+		debug.EncodedLength = 1
+		debug.EncodedHex = fmt.Sprintf("%02x%02x", 0x01, qci)
+		return debug
+	}
 	ulMBR, dlMBR, ulGBR, dlGBR := normalizeDedicatedBearerRates(parsed)
 	debug.NormalizedUplinkMBR = ulMBR
 	debug.NormalizedDownlinkMBR = dlMBR
@@ -304,20 +310,14 @@ func normalizeDedicatedBearerRates(parsed *gtpv2.BearerQoS) (ulMBR, dlMBR, ulGBR
 	dlMBR = parsed.DownlinkMBR
 	ulGBR = parsed.UplinkGBR
 	dlGBR = parsed.DownlinkGBR
-	if ulMBR == 0 && dlMBR == 0 && ulGBR == 0 && dlGBR == 0 {
-		return 0, 0, 0, 0
-	}
+	// Rates pass through as the P-GW sent them. Only a missing MBR is filled,
+	// from the GBR; a missing GBR stays zero. A guaranteed rate is never
+	// invented: filling it with the maximum made UEs display a 10000 Mbps GBR.
 	if ulMBR == 0 {
-		ulMBR = normalizedDedicatedBearerMaxBitrateBps
+		ulMBR = ulGBR
 	}
 	if dlMBR == 0 {
-		dlMBR = normalizedDedicatedBearerMaxBitrateBps
-	}
-	if ulGBR == 0 {
-		ulGBR = normalizedDedicatedBearerMaxBitrateBps
-	}
-	if dlGBR == 0 {
-		dlGBR = normalizedDedicatedBearerMaxBitrateBps
+		dlMBR = dlGBR
 	}
 	return ulMBR, dlMBR, ulGBR, dlGBR
 }

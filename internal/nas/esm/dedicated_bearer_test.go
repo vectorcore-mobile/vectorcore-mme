@@ -2,6 +2,7 @@ package esm
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"testing"
 )
@@ -154,5 +155,35 @@ func TestEncodeModifyEPSBearerContextRequestWithAPNAMBR(t *testing.T) {
 	want := []byte{0x5e, 0x02, 0x8f, 0xb4}
 	if !bytes.Contains(got, want) {
 		t.Fatalf("APN-AMBR IE got %x, want containing %x", got, want)
+	}
+}
+
+// Field log/capture: the QCI 5 IMS-signalling bearer arrived with MBR 64 kbit/s
+// and GBR 0, and the MME sent the UE a GBR of 10000 Mbps. QCI 5 is non-GBR,
+// so its EPS QoS is the QCI alone; the QCI 1 voice bearer keeps its rates.
+func TestDedicatedBearerEPSQoSFieldValues(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rawHex  string
+		qci     uint8
+		wantHex string
+	}{
+		{name: "QCI 5 signalling with MBR, GBR 0", rawHex: "44050000000040000000004000000000000000000000", qci: 5, wantHex: "0105"},
+		{name: "QCI 1 voice 128 kbit/s", rawHex: "78010000000080000000008000000000800000000080", qci: 1, wantHex: "050148484848"},
+		// GBR QCI with an MBR but no GBR: the GBR stays 0 kbit/s (0xff).
+		{name: "QCI 1 MBR only", rawHex: "78010000000080000000008000000000000000000000", qci: 1, wantHex: "05014848ffff"},
+		// GBR QCI with no MBR: the MBR is taken from the GBR.
+		{name: "QCI 1 GBR only", rawHex: "78010000000000000000000000000000800000000080", qci: 1, wantHex: "050148484848"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := hex.DecodeString(tc.rawHex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := InspectDedicatedBearerQoSForDebug(raw, tc.qci).EncodedHex
+			if got != tc.wantHex {
+				t.Fatalf("EPS QoS got %s, want %s", got, tc.wantHex)
+			}
+		})
 	}
 }

@@ -1095,7 +1095,7 @@ func encodeERABList(bearers []BearerInfo, nasPDU []byte) []byte {
 
 func encodeERABItemBody(b BearerInfo, nasPDU []byte) []byte {
 	nasPDUPresent := len(nasPDU) > 0
-	gbrInfo, gbrPresent := deriveGBRQosInformation(b.BearerQoS)
+	gbrInfo, gbrPresent := deriveGBRQosInformation(effectiveBearerQCI(b), b.BearerQoS)
 
 	w := aper.NewBitWriter()
 
