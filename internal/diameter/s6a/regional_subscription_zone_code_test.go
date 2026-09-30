@@ -31,7 +31,6 @@ func TestHandleULADecodesRegionalSubscriptionZoneCodes(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		result,
 		zap.NewNop(),
@@ -82,7 +81,6 @@ func TestHandleIDRStoresRegionalSubscriptionZoneCodes(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		ueManager,
 		nil,
 		zap.NewNop(),

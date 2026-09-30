@@ -198,8 +198,11 @@ type GatewaySelectionPGWConfig struct {
 }
 
 type NFConfig struct {
-	OriginHost          string    `yaml:"origin_host"`
-	OriginRealm         string    `yaml:"origin_realm"`
+	// Deprecated: Origin-Host and Origin-Realm are set under diameter only.
+	// These capture a leftover nf.origin_host/nf.origin_realm so startup can
+	// warn about it; nothing else reads them.
+	LegacyOriginHost    string    `yaml:"origin_host"`
+	LegacyOriginRealm   string    `yaml:"origin_realm"`
 	MMEName             string    `yaml:"mme_name"` // optional S1AP MMEname VisibleString
 	MCC                 string    `yaml:"mcc"`
 	MNC                 string    `yaml:"mnc"`
@@ -567,9 +570,6 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse: %w", err)
 	}
 
-	if cfg.NF.OriginHost == "" {
-		return nil, fmt.Errorf("config: nf.origin_host is required")
-	}
 	if cfg.NF.MCC == "" || cfg.NF.MNC == "" {
 		return nil, fmt.Errorf("config: nf.mcc and nf.mnc are required")
 	}

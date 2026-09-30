@@ -113,8 +113,8 @@ func (s *Server) getVersion(_ context.Context, _ *struct{}) (*versionOutput, err
 	out := &versionOutput{}
 	out.Body.AppName = "VectorCore MME"
 	out.Body.AppVersion = appVersion
-	out.Body.OriginHost = s.nfCfg.OriginHost
-	out.Body.OriginRealm = s.nfCfg.OriginRealm
+	out.Body.OriginHost = s.diameterOriginHost
+	out.Body.OriginRealm = s.diameterOriginRealm
 	out.Body.MCC = s.nfCfg.MCC
 	out.Body.MNC = s.nfCfg.MNC
 	out.Body.MMEGI = s.nfCfg.MMEGI

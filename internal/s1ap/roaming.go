@@ -67,7 +67,7 @@ func (s *Server) classifyRoaming(ue *uecontext.Context, imsi string) error {
 		}
 		state.LogicalPGWInterface = uecontext.LogicalPGWInterfaceS8
 	} else {
-		state.SelectedHSSRealm, state.HSSRealmSource = s.nfCfg.OriginRealm, "local"
+		state.SelectedHSSRealm, state.HSSRealmSource = s.diameterOriginRealm, "local"
 	}
 	ue.Lock()
 	ue.Roaming = state

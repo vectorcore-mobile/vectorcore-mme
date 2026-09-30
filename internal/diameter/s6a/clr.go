@@ -37,8 +37,8 @@ func (h *Handlers) handleCLR(c diam.Conn, m *diam.Message) {
 	// Send Cancel-Location-Answer
 	a := m.Answer(diam.Success)
 	a.InsertAVP(diam.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(clr.SessionID)))
-	a.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	a.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	a.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	a.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
 	a.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(clr.AuthSessionState))
 	if _, err := a.WriteTo(c); err != nil {
 		h.log.Warn("s6a: CLA write error", zap.Error(err))
@@ -97,8 +97,8 @@ func (h *Handlers) handleIDR(c diam.Conn, m *diam.Message) {
 	// Send Insert-Subscriber-Data-Answer
 	a := m.Answer(diam.Success)
 	a.InsertAVP(diam.NewAVP(avp.SessionID, avp.Mbit, 0, datatype.UTF8String(idr.SessionID)))
-	a.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	a.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	a.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	a.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
 	a.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(idr.AuthSessionState))
 	if _, err := a.WriteTo(c); err != nil {
 		h.log.Warn("s6a: IDA write error", zap.Error(err))

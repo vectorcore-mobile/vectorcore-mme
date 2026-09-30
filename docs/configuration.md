@@ -13,6 +13,7 @@ Key fields:
 | `nf.mcc` / `nf.mnc` | Your PLMN |
 | `s1ap.bind_address` | IP the MME listens on for eNB SCTP connections (port 36412) |
 | `sbcap.*` | Optional CBC-initiated LTE public-warning SCTP listener (port 29168, PPID 24) |
+| `diameter.origin_host` / `diameter.origin_realm` | The MME's Diameter identity, used for every Diameter message, the S6a Session-Id, and as the HSS realm for non-roaming subscribers. `nf.origin_host` / `nf.origin_realm` are deprecated and ignored (startup logs a warning if they are set) |
 | `diameter.peers` | Shared Diameter peer endpoints; capabilities are discovered with CER/CEA |
 | `sgd.*` | SMS-in-MME/SGd enablement, S6a registration behavior, SMSC address encoding, and transaction timeout |
 | `slg.*` | Optional SLg Diameter application enablement and bounded in-memory transaction lifetime |

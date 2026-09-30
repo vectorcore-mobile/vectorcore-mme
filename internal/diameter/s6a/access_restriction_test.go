@@ -69,7 +69,6 @@ func TestHandleULADecodesAccessRestrictionData(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		result,
 		zap.NewNop(),
@@ -106,7 +105,6 @@ func TestHandleULADecodesZeroAccessRestrictionDataAsUnrestricted(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		result,
 		zap.NewNop(),
@@ -152,7 +150,6 @@ func TestHandleIDRTriggersDetachWhenWBEUTRANNewlyRestricted(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		ueManager,
 		nil,
 		zap.NewNop(),
@@ -185,7 +182,6 @@ func TestHandleIDRDoesNotDetachWhenNotRestricted(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		ueManager,
 		nil,
 		zap.NewNop(),

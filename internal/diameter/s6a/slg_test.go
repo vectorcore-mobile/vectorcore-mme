@@ -29,7 +29,7 @@ func (f *fakeLCSNotifier) SendLocationNotification(_ uint32, notificationType lc
 }
 
 func newTestHandlers() *Handlers {
-	h := NewHandlers(config.S6aConfig{}, config.DiameterConfig{}, config.NFConfig{}, uecontext.NewManager(), nil, zap.NewNop())
+	h := NewHandlers(config.S6aConfig{}, config.DiameterConfig{}, uecontext.NewManager(), nil, zap.NewNop())
 	h.SetSLgConfig(config.SLgConfig{TransactionTimeout: time.Second, ReportTimeout: time.Second, TransactionCapacity: 8, NotificationTimeout: time.Second})
 	return h
 }
@@ -122,7 +122,7 @@ func TestSLgTBCDAndIdentityResolution(t *testing.T) {
 	ue.MSISDN = "15551234567"
 	ue.EMMState = emm.StateRegistered
 	ue.Unlock()
-	h := NewHandlers(config.S6aConfig{}, config.DiameterConfig{}, config.NFConfig{}, manager, nil, zap.NewNop())
+	h := NewHandlers(config.S6aConfig{}, config.DiameterConfig{}, manager, nil, zap.NewNop())
 	for _, tc := range []struct {
 		name string
 		req  slg.ProvideLocationRequest

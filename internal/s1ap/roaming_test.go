@@ -22,7 +22,7 @@ func roamingTAI(t *testing.T, mcc, mnc string) *emm.TAI {
 }
 
 func TestClassifyRoamingAtomicAndRoutesHSS(t *testing.T) {
-	s := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435", OriginRealm: "epc.mnc435.mcc311.3gppnetwork.org"}, roamingConfigured: true, roamingCfg: config.RoamingConfig{Enabled: true, Policy: config.RoamingPolicyConfig{DefaultAction: config.RoamingActionDeny, PLMNACL: []config.RoamingPLMNACLRule{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}, Action: config.RoamingActionAllow}}}, HSSRoutes: []config.HSSRouteConfig{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}, Host: "hss01.example"}}}, log: zap.NewNop()}
+	s := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435"}, diameterOriginRealm: "epc.mnc435.mcc311.3gppnetwork.org", roamingConfigured: true, roamingCfg: config.RoamingConfig{Enabled: true, Policy: config.RoamingPolicyConfig{DefaultAction: config.RoamingActionDeny, PLMNACL: []config.RoamingPLMNACLRule{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}, Action: config.RoamingActionAllow}}}, HSSRoutes: []config.HSSRouteConfig{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}, Host: "hss01.example"}}}, log: zap.NewNop()}
 	ue := uecontext.NewContext(1)
 	ue.TAI = roamingTAI(t, "311", "435")
 	ue.Roaming.ServingPLMN = plmn.PLMN{MCC: "311", MNC: "435"}
@@ -48,7 +48,7 @@ func TestClassifyRoamingAtomicAndRoutesHSS(t *testing.T) {
 }
 
 func TestClassifyRoamingRejectsDisabledForeignAndAllowsHome(t *testing.T) {
-	s := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435", OriginRealm: "local.realm"}, roamingConfigured: true, roamingCfg: config.RoamingConfig{Policy: config.RoamingPolicyConfig{DefaultAction: config.RoamingActionDeny}, HSSRoutes: []config.HSSRouteConfig{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}}}}}
+	s := &Server{nfCfg: config.NFConfig{MCC: "311", MNC: "435"}, diameterOriginRealm: "local.realm", roamingConfigured: true, roamingCfg: config.RoamingConfig{Policy: config.RoamingPolicyConfig{DefaultAction: config.RoamingActionDeny}, HSSRoutes: []config.HSSRouteConfig{{PLMN: plmn.PLMN{MCC: "310", MNC: "260"}}}}}
 	foreign := uecontext.NewContext(1)
 	foreign.TAI = roamingTAI(t, "311", "435")
 	foreign.Roaming.ServingPLMN = plmn.PLMN{MCC: "311", MNC: "435"}

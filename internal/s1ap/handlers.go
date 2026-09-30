@@ -200,40 +200,42 @@ func (NoopVLRManager) SendMOCSFBIndication(string, sgsap.MOCSFBIndication) error
 
 // Server is the S1AP layer: manages eNB connections and dispatches messages.
 type Server struct {
-	cfg                config.S1APConfig
-	nfCfg              config.NFConfig
-	secCfg             config.SecurityConfig
-	s10Cfg             config.S10Config
-	nasCfg             config.NASConfig
-	emmTimersCfg       config.EMMTimersConfig
-	pagingCfg          config.PagingConfig
-	operCfg            config.OperatorConfig
-	sgdCfg             config.SGdConfig
-	sgsCfg             config.SGsConfig
-	smsCfg             config.SMSConfig
-	vlr                VLRManager
-	roamingCfg         config.RoamingConfig
-	roamingConfigured  bool
-	store              repository.Repository
-	ueManager          *uecontext.Manager
-	enbTracker         *peertracker.Tracker
-	gutiAlloc          *uecontext.GUTIAllocator
-	s6a                S6aClient
-	s10                S10Client
-	s11                S11Client
-	s11LocalIP         []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
-	pgwIP              []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
-	gatewaySel         *gateway.Selector
-	restartEpoch       string
-	recoveryPersistent bool
-	log                *zap.Logger
-	sms                *smsservice.Service
-	smsTimeout         time.Duration
-	pendingMTSMS       sync.Map // IMSI -> *pendingMTSMS
-	pendingSGsMT       sync.Map // IMSI -> *pendingSGsMTSMS
-	pendingMOSMS       sync.Map // imsi:cp-ti -> *pendingMOSMS
-	smsMu              sync.Mutex
-	nextMTSMSTI        map[string]uint8
+	cfg                 config.S1APConfig
+	nfCfg               config.NFConfig
+	secCfg              config.SecurityConfig
+	s10Cfg              config.S10Config
+	nasCfg              config.NASConfig
+	emmTimersCfg        config.EMMTimersConfig
+	pagingCfg           config.PagingConfig
+	operCfg             config.OperatorConfig
+	sgdCfg              config.SGdConfig
+	sgsCfg              config.SGsConfig
+	smsCfg              config.SMSConfig
+	vlr                 VLRManager
+	roamingCfg          config.RoamingConfig
+	roamingConfigured   bool
+	store               repository.Repository
+	ueManager           *uecontext.Manager
+	enbTracker          *peertracker.Tracker
+	gutiAlloc           *uecontext.GUTIAllocator
+	s6a                 S6aClient
+	s10                 S10Client
+	s11                 S11Client
+	s11LocalIP          []byte // 4-byte IPv4 used as the MME S11 source IP in F-TEID IEs
+	pgwIP               []byte // 4-byte IPv4 of the PGW/SMF-C S5/S8 GTP-C endpoint
+	gatewaySel          *gateway.Selector
+	diameterOriginHost  string // diameter.origin_host: recovery-record owner key
+	diameterOriginRealm string // diameter.origin_realm: HSS realm for non-roaming UEs
+	restartEpoch        string
+	recoveryPersistent  bool
+	log                 *zap.Logger
+	sms                 *smsservice.Service
+	smsTimeout          time.Duration
+	pendingMTSMS        sync.Map // IMSI -> *pendingMTSMS
+	pendingSGsMT        sync.Map // IMSI -> *pendingSGsMTSMS
+	pendingMOSMS        sync.Map // imsi:cp-ti -> *pendingMOSMS
+	smsMu               sync.Mutex
+	nextMTSMSTI         map[string]uint8
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
@@ -324,6 +326,11 @@ func (s *Server) SetRecoveryEpoch(epoch string) {
 // SetPersistentRecovery gates durable UE deadline snapshots. In-memory mode
 // deliberately keeps the historical restart semantics: all UE state is lost.
 func (s *Server) SetPersistentRecovery(enabled bool) { s.recoveryPersistent = enabled }
+
+// SetDiameterIdentity sets the MME Diameter Origin-Host and Origin-Realm.
+func (s *Server) SetDiameterIdentity(originHost, originRealm string) {
+	s.diameterOriginHost, s.diameterOriginRealm = originHost, originRealm
+}
 
 func (s *Server) SetGatewaySelector(selector *gateway.Selector) {
 	s.gatewaySel = selector

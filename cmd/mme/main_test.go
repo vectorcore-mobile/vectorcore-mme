@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/vectorcore/mme/internal/config"
 	s11client "github.com/vectorcore/mme/internal/gtpv2/s11"
@@ -100,5 +102,35 @@ func TestInitS11RestartSeedsAboveRecoveredTEIDs(t *testing.T) {
 		if c.S11.RecoveryRestartCounter != 3 {
 			t.Fatalf("memory-mode restart counter %d, want configured 3", c.S11.RecoveryRestartCounter)
 		}
+	}
+}
+
+func TestWarnDeprecatedNFOrigin(t *testing.T) {
+	diameter := config.DiameterConfig{OriginHost: "mme.example", OriginRealm: "example"}
+	for _, tc := range []struct {
+		name    string
+		nf      config.NFConfig
+		want    int
+		differs bool
+	}{
+		{name: "absent", nf: config.NFConfig{}, want: 0},
+		{name: "same", nf: config.NFConfig{LegacyOriginHost: "mme.example", LegacyOriginRealm: "example"}, want: 1},
+		{name: "host only same", nf: config.NFConfig{LegacyOriginHost: "mme.example"}, want: 1},
+		{name: "different", nf: config.NFConfig{LegacyOriginHost: "old.example", LegacyOriginRealm: "example"}, want: 1, differs: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			core, logs := observer.New(zap.WarnLevel)
+			warnDeprecatedNFOrigin(config.Config{NF: tc.nf, Diameter: diameter}, zap.New(core))
+			if got := logs.Len(); got != tc.want {
+				t.Fatalf("warnings = %d, want %d", got, tc.want)
+			}
+			if tc.want == 0 {
+				return
+			}
+			msg := logs.All()[0].Message
+			if got := strings.Contains(msg, "differ"); got != tc.differs {
+				t.Fatalf("message %q: mentions differ = %v, want %v", msg, got, tc.differs)
+			}
+		})
 	}
 }

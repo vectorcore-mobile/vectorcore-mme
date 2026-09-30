@@ -61,23 +61,30 @@ type SLsStatusProvider interface {
 
 // Server is the OAM API server.
 type Server struct {
-	cfg         config.APIConfig
-	nfCfg       config.NFConfig
-	operCfg     config.OperatorConfig
-	store       repository.Repository
-	enbTracker  *peertracker.Tracker
-	ueManager   *uecontext.Manager
-	s6a         DiamStatus
-	pager       Pager
-	vlrStatus   VLRStatusProvider
-	sbcapStatus SBcAPStatusProvider
-	slsStatus   SLsStatusProvider
-	slsCfg      config.SLsConfig
-	gatewaySel  *gateway.Selector
-	log         *zap.Logger
+	cfg                 config.APIConfig
+	nfCfg               config.NFConfig
+	diameterOriginHost  string
+	diameterOriginRealm string
+	operCfg             config.OperatorConfig
+	store               repository.Repository
+	enbTracker          *peertracker.Tracker
+	ueManager           *uecontext.Manager
+	s6a                 DiamStatus
+	pager               Pager
+	vlrStatus           VLRStatusProvider
+	sbcapStatus         SBcAPStatusProvider
+	slsStatus           SLsStatusProvider
+	slsCfg              config.SLsConfig
+	gatewaySel          *gateway.Selector
+	log                 *zap.Logger
 
 	mu      sync.Mutex
 	httpSrv *http.Server
+}
+
+// SetDiameterIdentity supplies the Origin-Host and Origin-Realm reported by the version endpoint.
+func (s *Server) SetDiameterIdentity(originHost, originRealm string) {
+	s.diameterOriginHost, s.diameterOriginRealm = originHost, originRealm
 }
 
 // SetPager wires the S1AP paging implementation into the API server.

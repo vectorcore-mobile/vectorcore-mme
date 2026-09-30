@@ -16,7 +16,6 @@ func TestSendPURDisabledSkipsConnectionLookup(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{SendPUROnDetach: false},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
@@ -31,7 +30,6 @@ func TestBuildPURUsesPeerRealm(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{SendPUROnDetach: true},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
@@ -68,7 +66,6 @@ func TestBuildPUROmitsDestinationHostForRelay(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{SendPUROnDetach: true},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),

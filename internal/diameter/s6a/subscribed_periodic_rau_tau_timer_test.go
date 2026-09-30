@@ -30,7 +30,6 @@ func TestHandleULADecodesSubscribedPeriodicRAUTAUTimer(t *testing.T) {
 	h := NewHandlers(
 		config.S6aConfig{},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		result,
 		zap.NewNop(),

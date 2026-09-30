@@ -47,7 +47,6 @@ type ResultHandler interface {
 type Handlers struct {
 	cfg         config.S6aConfig
 	diameterCfg config.DiameterConfig
-	nfCfg       config.NFConfig
 	ueManager   *uecontext.Manager
 	nas         ResultHandler
 	detachFn    func(ue *uecontext.Context) // optional; wired from S1AP for CLR cleanup
@@ -103,7 +102,6 @@ type pendingS13 struct {
 func NewHandlers(
 	cfg config.S6aConfig,
 	diameterCfg config.DiameterConfig,
-	nfCfg config.NFConfig,
 	ueManager *uecontext.Manager,
 	nas ResultHandler,
 	log *zap.Logger,
@@ -118,7 +116,6 @@ func NewHandlers(
 	h := &Handlers{
 		cfg:         cfg,
 		diameterCfg: diameterCfg,
-		nfCfg:       nfCfg,
 		ueManager:   ueManager,
 		nas:         nas,
 		log:         log,
@@ -596,8 +593,8 @@ func (h *Handlers) handleDPR(c diam.Conn, m *diam.Message) {
 		zap.String("remote_addr", c.RemoteAddr().String()))
 
 	ans := m.Answer(diam.Success)
-	ans.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginHost))
-	ans.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.nfCfg.OriginRealm))
+	ans.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginHost))
+	ans.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(h.diameterCfg.OriginRealm))
 	if _, err := ans.WriteTo(c); err != nil {
 		h.log.Warn("s6a: DPA write failed", zap.Error(err))
 	}
@@ -607,5 +604,5 @@ func (h *Handlers) handleDPR(c diam.Conn, m *diam.Message) {
 // newSessionID generates a unique Session-ID.
 func (h *Handlers) newSessionID(imsi string) string {
 	seq := h.sessionSeq.Add(1)
-	return fmt.Sprintf("%s;%s;%d", h.nfCfg.OriginHost, imsi, seq)
+	return fmt.Sprintf("%s;%s;%d", h.diameterCfg.OriginHost, imsi, seq)
 }

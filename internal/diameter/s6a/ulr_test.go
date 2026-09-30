@@ -17,7 +17,6 @@ func TestBuildULRUsesConfiguredFlags(t *testing.T) {
 			ULR: config.S6aULRConfig{Flags: 18},
 		},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
@@ -40,7 +39,6 @@ func TestBuildULROmitsDestinationHostForRelay(t *testing.T) {
 			ULR: config.S6aULRConfig{Flags: 2},
 		},
 		testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"},
 		uecontext.NewManager(),
 		nil,
 		zap.NewNop(),
@@ -62,7 +60,7 @@ func TestBuildULROmitsDestinationHostForRelay(t *testing.T) {
 
 func TestBuildULRRequestsSMSRegistrationWhenSGdEnabled(t *testing.T) {
 	h := NewHandlers(config.S6aConfig{ULR: config.S6aULRConfig{Flags: 2}}, testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"}, uecontext.NewManager(), nil, zap.NewNop())
+		uecontext.NewManager(), nil, zap.NewNop())
 	h.SetSGdConfig(config.SGdConfig{Enabled: true, SubscribeEPSOnlyAttach: true, MMENumberForMTSMS: "+15551230001"})
 	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
 	flags := findAVP(msg, avp.ULRFlags)
@@ -82,7 +80,7 @@ func TestBuildULRRequestsSMSRegistrationWhenSGdEnabled(t *testing.T) {
 
 func TestBuildULROmitsSMSRegistrationWhenDisabled(t *testing.T) {
 	h := NewHandlers(config.S6aConfig{ULR: config.S6aULRConfig{Flags: 2}}, testDiameterConfig(),
-		config.NFConfig{OriginHost: "mme.example.net", OriginRealm: "example.net"}, uecontext.NewManager(), nil, zap.NewNop())
+		uecontext.NewManager(), nil, zap.NewNop())
 	msg := h.buildULR("sid", "001010123456789", [3]byte{0x00, 0xf1, 0x10}, "", "remote.net")
 	for _, code := range []uint32{1645, 1648, avp.SupportedFeatures} {
 		if findAVP(msg, code) != nil {

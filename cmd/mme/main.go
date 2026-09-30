@@ -63,8 +63,9 @@ func main() {
 	fmt.Println("Starting VectorCore-MME")
 	log.Info("VectorCore MME starting",
 		zap.String("version", buildinfo.Version),
-		zap.String("origin_host", cfg.NF.OriginHost),
-		zap.String("origin_realm", cfg.NF.OriginRealm))
+		zap.String("origin_host", cfg.Diameter.OriginHost),
+		zap.String("origin_realm", cfg.Diameter.OriginRealm))
+	warnDeprecatedNFOrigin(*cfg, log)
 	log.Info("nas feature configuration",
 		zap.Bool("ims_voice_over_ps", cfg.NAS.EPSNetworkFeatureSupport.IMSVoiceOverPS))
 
@@ -91,7 +92,7 @@ func main() {
 	errCh := make(chan error, 4)
 
 	// S6a Diameter client (connects to HSS)
-	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.Diameter, cfg.NF, ueManager, nil, log)
+	s6aHandlers := s6a.NewHandlers(cfg.S6a, cfg.Diameter, ueManager, nil, log)
 	s6aHandlers.SetS13Enabled(cfg.S13.Enabled)
 	s6aHandlers.SetS13Config(cfg.S13)
 	s6aHandlers.SetSGdEnabled(cfg.SGd.Enabled)
@@ -152,6 +153,7 @@ func main() {
 	gatewaySelector := gateway.NewSelector(*cfg, log)
 	s1apSrv := s1ap.NewServer(cfg.S1AP, cfg.NF, cfg.Security, cfg.S10, cfg.NAS, cfg.EMMTimers, cfg.Paging, cfg.Operator, store, ueManager, enbTracker, s6aClient, s10c, s11c, s11LocalIP, pgwIP, log)
 	s1apSrv.SetRecoveryEpoch(restartEpoch)
+	s1apSrv.SetDiameterIdentity(cfg.Diameter.OriginHost, cfg.Diameter.OriginRealm)
 	s1apSrv.SetPersistentRecovery(databaseMode(cfg.Database) != "memory")
 	s1apSrv.SetGatewaySelector(gatewaySelector)
 	s1apSrv.SetSGdConfig(cfg.SGd)
@@ -272,6 +274,7 @@ func main() {
 	var apiSrv *api.Server
 	if cfg.API.Enabled {
 		apiSrv = api.New(cfg.API, cfg.NF, cfg.Operator, store, enbTracker, ueManager, s6aHandlers, log)
+		apiSrv.SetDiameterIdentity(cfg.Diameter.OriginHost, cfg.Diameter.OriginRealm)
 		apiSrv.SetPager(s1apSrv)
 		apiSrv.SetGatewaySelector(gatewaySelector)
 		if vlrMgr != nil {
@@ -337,6 +340,28 @@ func main() {
 		}
 		log.Info("mme: shutdown complete")
 	}
+}
+
+// warnDeprecatedNFOrigin reports a leftover nf.origin_host/nf.origin_realm.
+// Origin-Host and Origin-Realm are Diameter identities and are taken only
+// from the diameter section; the nf values are ignored.
+func warnDeprecatedNFOrigin(cfg config.Config, log *zap.Logger) {
+	nf, d := cfg.NF, cfg.Diameter
+	if nf.LegacyOriginHost == "" && nf.LegacyOriginRealm == "" {
+		return
+	}
+	fields := []zap.Field{
+		zap.String("nf_origin_host", nf.LegacyOriginHost),
+		zap.String("nf_origin_realm", nf.LegacyOriginRealm),
+		zap.String("diameter_origin_host", d.OriginHost),
+		zap.String("diameter_origin_realm", d.OriginRealm),
+	}
+	if (nf.LegacyOriginHost != "" && nf.LegacyOriginHost != d.OriginHost) ||
+		(nf.LegacyOriginRealm != "" && nf.LegacyOriginRealm != d.OriginRealm) {
+		log.Warn("config: nf.origin_host/nf.origin_realm are deprecated and ignored, and differ from diameter.origin_host/diameter.origin_realm; the diameter values are used. Remove them from nf", fields...)
+		return
+	}
+	log.Warn("config: nf.origin_host/nf.origin_realm are deprecated and ignored; the diameter values are used. Remove them from nf", fields...)
 }
 
 func buildLogger(cfg config.LoggingConfig, debugConsole bool) *zap.Logger {
