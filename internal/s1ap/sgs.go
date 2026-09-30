@@ -60,8 +60,17 @@ func (s *Server) MMEFQDNForSGs() string {
 // tauAcceptResultForRequest, which report a genuine combined result with a
 // real LAI only once this succeeds).
 func (s *Server) maybeSendSGsLocationUpdateRequest(ue *uecontext.Context, combinedRequested, smsOnlyRequested bool, updateType sgsap.EPSLocationUpdateType) {
+	s.startSGsLocationUpdate(ue, combinedRequested, smsOnlyRequested, updateType, nil)
+}
+
+// startSGsLocationUpdate starts the SGs Location Update for non-EPS services
+// (TS 29.118 §5.2.2.2). It returns true when an LU is now in flight; onDone
+// (if non-nil) then runs exactly once when the LU is accepted, rejected or
+// times out. It returns false, without running onDone, when no LU is
+// needed or possible; the caller continues immediately.
+func (s *Server) startSGsLocationUpdate(ue *uecontext.Context, combinedRequested, smsOnlyRequested bool, updateType sgsap.EPSLocationUpdateType, onDone func()) bool {
 	if !s.sgsCfg.Enabled || (!combinedRequested && !smsOnlyRequested) {
-		return
+		return false
 	}
 	ue.Lock()
 	imsi := ue.IMSI
@@ -72,35 +81,38 @@ func (s *Server) maybeSendSGsLocationUpdateRequest(ue *uecontext.Context, combin
 	psOnly := ue.PSOnlySubscription()
 	ue.Unlock()
 	if imsi == "" || tai == nil || notIdle {
-		return
+		return false
 	}
 	if psOnly {
 		// TS 23.272 Annex C.8.1: for a PS-only subscription (Network-Access-Mode
 		// = ONLY_PACKET) the MME shall not establish any SGs association.
-		return
+		return false
 	}
 
 	mcc, mnc, err := decodeNASPLMN(tai.PLMN)
 	if err != nil {
 		s.log.Warn("sgs: cannot derive PLMN for Location Update", zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
-		return
+		return false
 	}
 	mapping, ok := s.vlr.LookupVLR(mcc, mnc, tai.TAC)
 	if !ok {
 		s.log.Debug("sgs: no VLR mapped for TAI, skipping Location Update",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.String("mcc", mcc), zap.String("mnc", mnc), zap.Uint16("tac", tai.TAC))
-		return
+		return false
 	}
 	if !s.vlr.Available(mapping.VLR) {
 		s.log.Debug("sgs: VLR association not yet up, skipping Location Update",
 			zap.Uint32("mme_ue_id", mmeUEID), zap.String("vlr_name", mapping.VLR))
-		return
+		ue.Lock()
+		ue.SGsLUFailCause = emm.CauseMSCNotReachable
+		ue.Unlock()
+		return false
 	}
 
 	laiPLMN, err := sgsap.EncodePLMN(mapping.LAI.MCC, mapping.LAI.MNC)
 	if err != nil {
 		s.log.Warn("sgs: invalid configured LAI PLMN", zap.String("vlr_name", mapping.VLR), zap.Error(err))
-		return
+		return false
 	}
 	req := sgsap.LocationUpdateRequest{
 		IMSI:       imsi,
@@ -116,14 +128,18 @@ func (s *Server) maybeSendSGsLocationUpdateRequest(ue *uecontext.Context, combin
 	ue.Lock()
 	ue.SGsState = uecontext.SGsUELAUpdateRequested
 	ue.SGsVLRName = mapping.VLR
+	ue.SGsLUFailCause = 0
+	ue.SGsLUWaiter = onDone
 	ue.Unlock()
 
 	if err := s.vlr.SendLocationUpdateRequest(mapping.VLR, req); err != nil {
 		s.log.Warn("sgs: Location Update Request failed to send", zap.Uint32("mme_ue_id", mmeUEID), zap.String("vlr_name", mapping.VLR), zap.Error(err))
 		ue.Lock()
 		ue.SGsState = uecontext.SGsUENull
+		ue.SGsLUFailCause = emm.CauseMSCNotReachable
+		ue.SGsLUWaiter = nil
 		ue.Unlock()
-		return
+		return false
 	}
 	metrics.SGsLocationUpdateRequestsTotal.WithLabelValues("sent").Inc()
 	s.log.Info("sgs: Location Update Request sent", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi), zap.String("vlr_name", mapping.VLR))
@@ -133,6 +149,33 @@ func (s *Server) maybeSendSGsLocationUpdateRequest(ue *uecontext.Context, combin
 		timeout = 10 * time.Second
 	}
 	time.AfterFunc(timeout, func() { s.expireSGsLocationUpdate(mmeUEID, mapping.VLR) })
+	return true
+}
+
+// finishSGsLocationUpdate runs the continuation parked on the UE's
+// Location Update, if any, outside the UE lock.
+func (s *Server) finishSGsLocationUpdate(ue *uecontext.Context) {
+	ue.Lock()
+	waiter := ue.SGsLUWaiter
+	ue.SGsLUWaiter = nil
+	ue.Unlock()
+	if waiter != nil {
+		waiter()
+	}
+}
+
+// emmCauseForSGsLUReject maps a VLR's SGsAP-LOCATION-UPDATE-REJECT cause (a
+// TS 24.008 MM cause) to the EMM cause of an "EPS services only" combined
+// result (TS 29.118 §5.2.2.4, TS 24.301 §5.5.1.3.4.3). Causes without an
+// EPS-only meaning become #17 Network failure, which makes the UE retry the
+// combined procedure after T3411 rather than giving up on the CS domain.
+func emmCauseForSGsLUReject(cause uint8) uint8 {
+	switch cause {
+	case emm.CauseIMSIUnknownInHSS, emm.CauseMSCNotReachable, emm.CauseNetworkFailure,
+		emm.CauseCSDomainNotAvailable, emm.CauseCongestion:
+		return cause
+	}
+	return emm.CauseNetworkFailure
 }
 
 // expireSGsLocationUpdate reverts a UE to SGs-NULL if no Location Update
@@ -151,10 +194,14 @@ func (s *Server) expireSGsLocationUpdate(mmeUEID uint32, vlrName string) {
 	ue.SGsState = uecontext.SGsUENull
 	ue.SGsRejectCause = 0
 	ue.SGsRejectAt = time.Now().UTC()
+	// TS 29.118 §5.2.2.5: Ts6-1 expiry is reported as "MSC temporarily not
+	// reachable".
+	ue.SGsLUFailCause = emm.CauseMSCNotReachable
 	imsi := ue.IMSI
 	ue.Unlock()
 	metrics.SGsLocationUpdateRequestsTotal.WithLabelValues("timeout").Inc()
 	s.log.Warn("sgs: Location Update timed out", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi), zap.String("vlr_name", vlrName))
+	s.finishSGsLocationUpdate(ue)
 }
 
 // sendSGsDetachIndicationForUE sends the SGsAP EPS or IMSI Detach
@@ -277,10 +324,12 @@ func (s *Server) HandleLocationUpdateAccept(vlrName string, a *sgsap.LocationUpd
 		tmsi := a.NewIdentity.TMSI
 		ue.SGsPendingNewTMSI = &tmsi
 	}
+	ue.SGsLUFailCause = 0
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
 	metrics.SGsLocationUpdateRequestsTotal.WithLabelValues("accepted").Inc()
 	s.log.Info("sgs: Location Update accepted", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", a.IMSI), zap.String("vlr_name", vlrName))
+	s.finishSGsLocationUpdate(ue)
 }
 
 // completeSGsTMSIReallocation sends SGsAP-TMSI-REALLOCATION-COMPLETE for a
@@ -320,10 +369,12 @@ func (s *Server) HandleLocationUpdateReject(vlrName string, r *sgsap.LocationUpd
 	ue.SGsState = uecontext.SGsUENull
 	ue.SGsRejectCause = r.Cause
 	ue.SGsRejectAt = time.Now().UTC()
+	ue.SGsLUFailCause = emmCauseForSGsLUReject(r.Cause)
 	mmeUEID := ue.MMEUES1APID
 	ue.Unlock()
 	metrics.SGsLocationUpdateRequestsTotal.WithLabelValues("rejected").Inc()
 	s.log.Warn("sgs: Location Update rejected", zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", r.IMSI), zap.String("vlr_name", vlrName), zap.Uint8("cause", r.Cause))
+	s.finishSGsLocationUpdate(ue)
 }
 
 // HandlePagingRequest implements the MME side of TS 29.118 §5.1.3: if a NAS

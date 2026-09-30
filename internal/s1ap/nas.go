@@ -474,7 +474,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 		if tai != nil {
 			taiList = []emm.TAI{*tai}
 		}
-		attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
+		attachResult, additionalResult, sgsLAI, sgsNewTMSI, attachEMMCause := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 		featureSupport := s.epsNetworkFeatureSupport(ue)
 		t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 		if timerErr != nil {
@@ -494,6 +494,7 @@ func (s *Server) HandleULAResultWithSubscriberProfile(mmeUEID uint32, msisdn str
 			AdditionalUpdateResult:   additionalResult,
 			LAI:                      sgsLAI,
 			NewTMSI:                  sgsNewTMSI,
+			EMMCause:                 attachEMMCause,
 		})
 
 		// TS 24.301 §4.4.5 and TS 33.401 §8.2 regard EEA0 as ciphering.
@@ -715,6 +716,13 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		return
 	}
 
+	// Combined attach: the Attach Accept waits for the SGs Location Update
+	// outcome (TS 29.118 §5.2.2.3) so it can carry the LAI and TMSI, or the
+	// right EMM cause for an EPS-only result.
+	if s.deferAttachAcceptForSGsLocationUpdate(ue, mmeUEID, resp, log) {
+		return
+	}
+
 	ue.Lock()
 	imsi := ue.IMSI
 	ue.SGWC_TEID = resp.SGWC_TEID
@@ -743,7 +751,6 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	tai := ue.TAI
 	guti := ue.GUTI
 	attachType := ue.AttachType
-	requestedSMSOnly := ue.RequestedSMSOnly
 	smsRegistrationState := ue.SMSRegistrationState
 	intAlg := ue.IntAlg
 	encAlg := ue.EncAlg
@@ -817,7 +824,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	if tai != nil {
 		taiList = []emm.TAI{*tai}
 	}
-	attachResult, additionalResult, sgsLAI, sgsNewTMSI := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
+	attachResult, additionalResult, sgsLAI, sgsNewTMSI, attachEMMCause := s.attachAcceptRegistration(ue, attachType, smsRegistrationState)
 	featureSupport := s.epsNetworkFeatureSupport(ue)
 	t3412, t3402, t3423, timerErr := s.nasEMMTimers(ue)
 	if timerErr != nil {
@@ -837,6 +844,7 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 		AdditionalUpdateResult:   additionalResult,
 		LAI:                      sgsLAI,
 		NewTMSI:                  sgsNewTMSI,
+		EMMCause:                 attachEMMCause,
 	})
 
 	// EEA0 is a null cipher, not an integrity-only procedure. It uses header type 2.
@@ -904,8 +912,8 @@ func (s *Server) HandleCSRResult(mmeUEID uint32, resp *gtpv2.CreateSessionRespon
 	}
 	metrics.NASProceduresTotal.WithLabelValues("Attach", "accept").Inc()
 	log.Info("s1ap: ICS sent with E-RAB", zap.Uint8("ebi", ebi),
-		zap.String("ue_ipv4", ueIPv4.String()))
-	s.maybeSendSGsLocationUpdateRequest(ue, attachType == emm.AttachTypeCombinedEPSAndIMSI, requestedSMSOnly, sgsap.EPSLocationUpdateTypeIMSIAttach)
+		zap.String("ue_ipv4", ueIPv4.String()),
+		zap.Uint8("attach_result", attachResult))
 }
 
 // HandleMBRResult is called when a Modify Bearer Response arrives.
@@ -1471,23 +1479,55 @@ func logAssignedGUTI(log *zap.Logger, msg string, mmeUEID uint32, imsi string, g
 // Update itself only run after Attach Accept is sent (see
 // maybeSendSGsLocationUpdateRequest) - so real combined-with-LAI attach
 // results, in practice, first appear on the UE's next TAU.
-func (s *Server) attachAcceptRegistration(ue *uecontext.Context, attachType uint8, smsState uecontext.SMSRegistrationState) (uint8, *uint8, *emm.LAI, *uint32) {
+// attachAcceptRegistration returns the Attach result, Additional update
+// result, LAI, VLR TMSI and, for an "EPS only" answer to a combined attach
+// whose SGs Location Update failed, the EMM cause (TS 24.301 §5.5.1.3.4.3).
+func (s *Server) attachAcceptRegistration(ue *uecontext.Context, attachType uint8, smsState uecontext.SMSRegistrationState) (uint8, *uint8, *emm.LAI, *uint32, *uint8) {
 	if attachType != emm.AttachTypeCombinedEPSAndIMSI {
-		return emm.AttachTypeEPSOnly, nil, nil, nil
+		return emm.AttachTypeEPSOnly, nil, nil, nil, nil
 	}
 	ue.Lock()
 	sgsAssociated := ue.SGsState == uecontext.SGsUEAssociated
 	sgsLAI := ue.SGsLAI
 	pendingTMSI := ue.SGsPendingNewTMSI
+	failCause := ue.SGsLUFailCause
 	ue.Unlock()
 	if s.sgsCfg.Enabled && sgsAssociated && sgsLAI != nil {
-		return emm.AttachTypeCombinedEPSAndIMSI, nil, sgsLAI, pendingTMSI
+		return emm.AttachTypeCombinedEPSAndIMSI, nil, sgsLAI, pendingTMSI, nil
 	}
 	if s.sgdCfg.Enabled && smsState == uecontext.SMSRegistrationRegistered {
 		noAdditionalInfo := uint8(0)
-		return emm.AttachTypeCombinedEPSAndIMSI, &noAdditionalInfo, nil, nil
+		return emm.AttachTypeCombinedEPSAndIMSI, &noAdditionalInfo, nil, nil, nil
 	}
-	return emm.AttachTypeEPSOnly, nil, nil, nil
+	if s.sgsCfg.Enabled && failCause != 0 {
+		return emm.AttachTypeEPSOnly, nil, nil, nil, &failCause
+	}
+	return emm.AttachTypeEPSOnly, nil, nil, nil, nil
+}
+
+// deferAttachAcceptForSGsLocationUpdate starts the SGs Location Update of a
+// combined attach and parks the Attach Accept until its outcome is known:
+// TS 29.118 §5.2.2.3 requires the MME to wait for the VLR before answering
+// the UE. It returns true when the caller must stop; the Accept is then
+// built by re-running HandleCSRResult once the LU is accepted, rejected or
+// times out.
+func (s *Server) deferAttachAcceptForSGsLocationUpdate(ue *uecontext.Context, mmeUEID uint32, resp *gtpv2.CreateSessionResponse, log *zap.Logger) bool {
+	ue.Lock()
+	if ue.AttachSGsLUDone {
+		ue.Unlock()
+		return false
+	}
+	ue.AttachSGsLUDone = true
+	combined := ue.AttachType == emm.AttachTypeCombinedEPSAndIMSI
+	smsOnly := ue.RequestedSMSOnly
+	ue.Unlock()
+	started := s.startSGsLocationUpdate(ue, combined, smsOnly, sgsap.EPSLocationUpdateTypeIMSIAttach, func() {
+		s.HandleCSRResult(mmeUEID, resp, nil)
+	})
+	if started {
+		log.Info("s1ap: Attach Accept deferred until SGs Location Update outcome", zap.Uint32("mme_ue_id", mmeUEID))
+	}
+	return started
 }
 
 // epsNetworkFeatureSupport builds the EPS Network Feature Support IE for

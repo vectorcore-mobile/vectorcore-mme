@@ -71,6 +71,9 @@ type AttachAcceptParams struct {
 	// meaningful alongside LAI - a CS-domain identity means nothing to a UE
 	// without an SGs association.
 	NewTMSI *uint32
+	// EMMCause explains an "EPS only" result to a combined attach (TS 24.301
+	// §5.5.1.3.4.3), e.g. #16 when the SGs Location Update timed out.
+	EMMCause *uint8
 }
 
 // DecodeAttachRequest decodes a NAS Attach Request message body (after the 2-byte header).
@@ -287,6 +290,10 @@ func EncodeAttachAcceptWithParams(params AttachAcceptParams) []byte {
 		msIdentity := EncodeMSIdentityTMSI(*params.NewTMSI)
 		b = append(b, 0x23, byte(len(msIdentity)))
 		b = append(b, msIdentity...)
+	}
+	// EMM cause (optional, IEI 0x53, TV, TS 24.301 Table 8.2.1.1).
+	if params.EMMCause != nil {
+		b = append(b, 0x53, *params.EMMCause)
 	}
 
 	if params.T3402 != nil {

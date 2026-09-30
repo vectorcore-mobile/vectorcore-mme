@@ -413,16 +413,9 @@ func (s *Server) sendIdleActiveTAUAcceptAndResume(ue *uecontext.Context, log *za
 	if opts.NewTMSI != nil {
 		ue.SGsPendingNewTMSI = nil
 		ue.SGsSentNewTMSI = opts.NewTMSI
+		s.awaitTAUCompleteForTMSILocked(ue, nasPDU, log)
 	}
 	ue.Unlock()
-	if opts.NewTMSI != nil {
-		// This resume path never includes a GUTI (buildTAUAcceptNAS hardcodes
-		// IncludeGUTI: false), so no TAU Complete will follow to trigger the
-		// completion the way processTAUComplete does for GUTI reallocation -
-		// the TAU Accept carrying the TMSI has already gone out, so complete
-		// it now instead of waiting for an event that will never arrive.
-		s.completeSGsTMSIReallocation(ue)
-	}
 	metrics.NASProceduresTotal.WithLabelValues("TAU", "accept").Inc()
 	log.Info("nas: TAU Accept sent",
 		zap.Uint32("mme_ue_id", ue.MMEUES1APID),
@@ -513,6 +506,10 @@ func (s *Server) processTAUComplete(ue *uecontext.Context, log *zap.Logger) erro
 	ue.SetEMMState(emm.StateRegistered)
 	ue.AttachStep = uecontext.AttachStepNone
 	ue.StopTimer(uecontext.TimerT3450)
+	if !reallocPending {
+		ue.PendingTAUAcceptNAS = nil
+		ue.TMSIReallocRetry = 0
+	}
 
 	mmeUEID := ue.MMEUES1APID
 	imsi := ue.IMSI
@@ -984,18 +981,13 @@ func (s *Server) sendTAUAcceptWithOptions(ue *uecontext.Context, log *zap.Logger
 		oldAlias = cloneGUTI(ue.PendingOldGUTI)
 		pendingAlias = cloneGUTI(ue.PendingGUTI)
 		retry = ue.GUTIReallocRetry
+	} else if opts.NewTMSI != nil {
+		s.awaitTAUCompleteForTMSILocked(ue, toSend, log)
 	} else {
 		ue.SetEMMState(emm.StateRegistered)
 		ue.AttachStep = uecontext.AttachStepNone
 	}
 	ue.Unlock()
-
-	if newGUTI == nil && opts.NewTMSI != nil {
-		// No GUTI reallocation this cycle means no TAU Complete is expected
-		// to trigger the completion via processTAUComplete - the TAU Accept
-		// carrying the TMSI has already gone out, so complete it now.
-		s.completeSGsTMSIReallocation(ue)
-	}
 
 	if newGUTI != nil {
 		s.ueManager.AddGUTIAlias(ue, oldAlias)
@@ -1030,6 +1022,7 @@ func (s *Server) tauAcceptResultForRequest(ue *uecontext.Context, updateType uin
 		sgsLAI := ue.SGsLAI
 		pendingTMSI := ue.SGsPendingNewTMSI
 		smsRegistered := ue.SMSRegistrationState == uecontext.SMSRegistrationRegistered
+		luFailCause := ue.SGsLUFailCause
 		ue.Unlock()
 		if s.sgsCfg.Enabled && sgsAssociated && sgsLAI != nil {
 			// A genuine SGs Location Update already succeeded for this UE
@@ -1044,8 +1037,13 @@ func (s *Server) tauAcceptResultForRequest(ue *uecontext.Context, updateType uin
 			return emm.EPSUpdateResultCombinedTALAUpdated, nil, nil, nil, nil
 		}
 		// No operational SMS-in-MME outcome exists for this UE.  This remains
-		// EPS-only rather than falsely reporting an SGs/VLR registration.
+		// EPS-only rather than falsely reporting an SGs/VLR registration. A
+		// failed SGs Location Update reports its own cause (e.g. #16 on
+		// Ts6-1 expiry, TS 29.118 §5.2.2.5), which lets the UE retry.
 		cause := uint8(emm.CauseCSDomainNotAvailable)
+		if s.sgsCfg.Enabled && luFailCause != 0 {
+			cause = luFailCause
+		}
 		return emm.EPSUpdateResultTAUpdated, &cause, nil, nil, nil
 	}
 	return emm.EPSUpdateResultTAUpdated, nil, nil, nil, nil
@@ -1166,6 +1164,57 @@ func tauBearerDetailString(parts []string) string {
 		return "none"
 	}
 	return strings.Join(parts, "; ")
+}
+
+// awaitTAUCompleteForTMSILocked handles a TAU Accept that carries a VLR TMSI
+// without a new GUTI: the UE confirms the TMSI with TAU Complete, so the MME
+// enters EMM-COMMON-PROCEDURE-INITIATED and runs T3450 (TS 24.301
+// §5.5.3.3.4.2). SGsAP-TMSI-REALLOCATION-COMPLETE is sent only when that TAU
+// Complete arrives (TS 29.118 §5.2.2.3, processTAUComplete). Caller holds
+// ue's lock.
+func (s *Server) awaitTAUCompleteForTMSILocked(ue *uecontext.Context, tauAccept []byte, log *zap.Logger) {
+	ue.AttachStep = uecontext.AttachStepWaitingTAUComplete
+	ue.PendingTAUAcceptNAS = append(ue.PendingTAUAcceptNAS[:0], tauAccept...)
+	ue.TMSIReallocRetry = 0
+	ue.StartTimer(uecontext.TimerT3450, 6*time.Second, func() {
+		s.retransmitPendingTMSITAUAccept(ue, log)
+	})
+}
+
+// retransmitPendingTMSITAUAccept is T3450 for a TMSI-only TAU Accept: resend
+// it up to four times, then abort without confirming the TMSI to the VLR
+// (TS 24.301 §5.5.3.2.6 c).
+func (s *Server) retransmitPendingTMSITAUAccept(ue *uecontext.Context, log *zap.Logger) {
+	ue.Lock()
+	if ue.GUTIReallocPending || ue.AttachStep != uecontext.AttachStepWaitingTAUComplete || len(ue.PendingTAUAcceptNAS) == 0 {
+		ue.Unlock()
+		return
+	}
+	mmeUEID := ue.MMEUES1APID
+	imsi := ue.IMSI
+	ue.TMSIReallocRetry++
+	retry := ue.TMSIReallocRetry
+	if retry >= 5 || ue.ENBGlobalID == "" {
+		ue.SetEMMState(emm.StateRegistered)
+		ue.AttachStep = uecontext.AttachStepNone
+		ue.PendingTAUAcceptNAS = nil
+		ue.TMSIReallocRetry = 0
+		ue.SGsSentNewTMSI = nil
+		ue.Unlock()
+		log.Warn("nas: T3450 expired; TAU TMSI reallocation aborted, TMSI not confirmed to VLR",
+			zap.Uint32("mme_ue_id", mmeUEID), zap.String("imsi", imsi), zap.Int("retry", retry))
+		return
+	}
+	pdu := append([]byte(nil), ue.PendingTAUAcceptNAS...)
+	ue.StartTimer(uecontext.TimerT3450, 6*time.Second, func() {
+		s.retransmitPendingTMSITAUAccept(ue, log)
+	})
+	ue.Unlock()
+	if err := s.SendDownlinkNAS(mmeUEID, pdu); err != nil {
+		log.Warn("nas: T3450 TAU Accept (TMSI) retransmission failed", zap.Uint32("mme_ue_id", mmeUEID), zap.Error(err))
+		return
+	}
+	log.Info("nas: T3450 expired; TAU Accept (TMSI) retransmitted", zap.Uint32("mme_ue_id", mmeUEID), zap.Int("retry", retry))
 }
 
 func (s *Server) retransmitPendingTAUAccept(ue *uecontext.Context, log *zap.Logger) {

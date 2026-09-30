@@ -309,6 +309,8 @@ func (s *Server) handleInitialUEMessage(remoteAddr string, p *pdu.PDU, ieList []
 	ue.UENetworkCapability = ar.UENetworkCapability
 	ue.MSNetworkCapability = ar.MSNetworkCapability
 	ue.AttachType = ar.AttachType
+	ue.AttachSGsLUDone = false
+	ue.SGsLUFailCause = 0
 	ue.RequestedSMSOnly = ar.AdditionalUpdateType != nil && *ar.AdditionalUpdateType&emm.AdditionalUpdateTypeSMSOnlyBit != 0
 	ue.InitialAttachRequestNAS = hashMMEInput
 	ue.Unlock()

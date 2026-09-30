@@ -422,6 +422,22 @@ type Context struct {
 	// SGsAP-IMSI-DETACH-ACK; see the type's doc comment.
 	SGsPendingDetachAccept *SGsPendingDetachAccept
 
+	// SGsLUWaiter runs once when the pending SGs Location Update ends
+	// (accept, reject or Ts6-1 expiry). The Attach Accept waits on it: the
+	// MME must know the LU outcome before answering the UE (TS 29.118
+	// §5.2.2.3).
+	SGsLUWaiter func()
+	// SGsLUFailCause is the EMM cause for an "EPS services only" result
+	// after the last Location Update failed (TS 29.118 §5.2.2.4/§5.2.2.5,
+	// TS 24.301 §5.5.1.3.4.3); 0 when there is none.
+	SGsLUFailCause uint8
+	// AttachSGsLUDone marks that this attach's Location Update has been
+	// started or ruled out, so the deferred Attach Accept does not restart it.
+	AttachSGsLUDone bool
+	// TMSIReallocRetry counts T3450 retransmissions of a TAU Accept that
+	// carries a VLR TMSI without a new GUTI (TS 24.301 §5.5.3.3.4.2).
+	TMSIReallocRetry int
+
 	// DetachS1ReleasePending is set when a UE-initiated detach still owes the
 	// eNB a UE Context Release (TS 36.413 §8.3.3). While set, a Delete Session
 	// Response must not remove the context: the eNB's Release Complete (or

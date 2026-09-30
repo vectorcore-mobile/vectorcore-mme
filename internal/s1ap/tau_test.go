@@ -187,7 +187,7 @@ func TestAttachAcceptRegistrationUsesPerUECompletedSGdOutcome(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv.sgdCfg = config.SGdConfig{Enabled: tc.sgdEnabled}
 			ue := uecontext.NewContext(1)
-			got, additional, lai, _ := srv.attachAcceptRegistration(ue, tc.attachType, tc.smsState)
+			got, additional, lai, _, _ := srv.attachAcceptRegistration(ue, tc.attachType, tc.smsState)
 			if got != tc.result {
 				t.Fatalf("result got %#x, want %#x", got, tc.result)
 			}
@@ -213,7 +213,7 @@ func TestAttachAcceptRegistrationPrefersGenuineSGsAssociation(t *testing.T) {
 	pendingTMSI := uint32(0xAABBCCDD)
 	ue.SGsPendingNewTMSI = &pendingTMSI
 
-	got, additional, gotLAI, gotTMSI := srv.attachAcceptRegistration(ue, emm.AttachTypeCombinedEPSAndIMSI, ue.SMSRegistrationState)
+	got, additional, gotLAI, gotTMSI, _ := srv.attachAcceptRegistration(ue, emm.AttachTypeCombinedEPSAndIMSI, ue.SMSRegistrationState)
 	if got != emm.AttachTypeCombinedEPSAndIMSI {
 		t.Fatalf("result got %#x, want combined", got)
 	}
