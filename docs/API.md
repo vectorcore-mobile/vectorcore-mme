@@ -49,9 +49,9 @@ the existing stale-session recovery mechanism. UE API responses expose the
 reachability state, timer deadlines/remaining values, refresh reason, and
 terminal-cleanup flag.
 
-Reachability snapshots are always written to the MME's SQLite database and
-restored after a restart. (`database.mode` is deprecated and ignored; the
-former in-memory mode no longer exists.)
+Reachability snapshots are written and restored only when `database.mode` is
+not `memory`. In-memory mode writes no reachability recovery records and an
+MME restart discards UE state after normal shutdown stops all UE timers.
 
 ## NAS Feature Advertisement
 

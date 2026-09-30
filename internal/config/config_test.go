@@ -744,37 +744,3 @@ operator:
 		t.Fatal("Load() expected invalid operator.nitz.timezone error")
 	}
 }
-
-// database.mode is deprecated: an existing config that still sets it must
-// keep loading, and a config without it must not get a default value (the
-// MME warns whenever the key is set).
-func TestLoadDeprecatedDatabaseMode(t *testing.T) {
-	for _, tc := range []struct {
-		name, yaml, wantMode string
-	}{
-		{"memory", "  mode: \"memory\"\n", "memory"},
-		{"persistent", "  mode: \"persistent\"\n", "persistent"},
-		{"absent", "", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "mme.yaml")
-			if err := os.WriteFile(path, []byte(`
-nf:
-  origin_host: mme.example
-  mcc: "001"
-  mnc: "01"
-database:
-`+tc.yaml+`  database: "/opt/vectorcore/var/mme.db"
-`), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := load(t, path)
-			if err != nil {
-				t.Fatalf("config with database.mode %q did not load: %v", tc.wantMode, err)
-			}
-			if cfg.Database.Mode != tc.wantMode || cfg.Database.Database != "/opt/vectorcore/var/mme.db" {
-				t.Fatalf("database config = %+v, want mode %q", cfg.Database, tc.wantMode)
-			}
-		})
-	}
-}

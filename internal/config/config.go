@@ -417,7 +417,7 @@ type S6aULRConfig struct {
 // instance owns its own database file; there is no shared/networked mode
 // (inter-MME context transfer is handled by S10, not a shared store).
 type DatabaseConfig struct {
-	Mode            string `yaml:"mode"`     // deprecated and ignored; a warning is logged at startup if set
+	Mode            string `yaml:"mode"` // memory | persistent
 	Database        string `yaml:"database"` // SQLite file path
 	MaxOpenConns    int    `yaml:"pool_size"`
 	MaxIdleConns    int    `yaml:"pool_idle"`
@@ -530,6 +530,7 @@ func Load(path string) (*Config, error) {
 			},
 		},
 		Database: DatabaseConfig{
+			Mode:            "persistent",
 			MaxOpenConns:    30,
 			MaxIdleConns:    10,
 			ConnMaxLifetime: 300,

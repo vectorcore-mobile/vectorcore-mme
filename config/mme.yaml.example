@@ -243,11 +243,7 @@ s10:
 s11:
   bind_address: "127.0.0.1"      # MME S11 local bind IP
   bind_port: 2123
-  # GTPv2-C Restart Counter (Recovery IE, TS 23.007 §18), sent in Echo Response
-  # and in the first Create Session Request to each S-GW. This value is saved
-  # in the database (table mme_state) on the first start and kept across
-  # restarts, because UE contexts and their S-GW sessions are recovered.
-  recovery_restart_counter: 0
+  recovery_restart_counter: 0    # GTPv2 Recovery IE value used in Echo Response
   # qos:
   #   dscp: 24 # CS3
 
@@ -281,7 +277,9 @@ gateway_selection:
     prefer_s6a_static: true
 
 database:
-  # SQLite file path for the MME database.
+  mode: "persistent"   # memory | persistent
+  # SQLite file path for the UE/session recovery store. Each MME instance
+  # owns its own file; inter-MME context transfer uses S10, not a shared DB.
   database: "/opt/vectorcore/var/mme.db"
   pool_size: 30
   pool_idle: 10

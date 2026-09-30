@@ -1217,22 +1217,11 @@ func (s *Server) detachedUEDeleteSessionsComplete(mmeUEID uint32) bool {
 	return true
 }
 
-// sendDeleteSession deletes all of the UE's sessions on the S-GW: one Delete
-// Session Request per PDN connection, each with that PDN's default bearer as
-// the LBI (TS 29.274 §7.2.9.1). Every path that tears down a whole UE
-// (detach, eviction, shutdown, attach failure) uses it, so no PDN - such as
-// the IMS PDN of a VoLTE UE - is left behind on the S-GW/P-GW. Repeated calls
-// are no-ops: each PDN's S-GW TEID is cleared as its request is sent.
+// sendDeleteSession sends a GTPv2-C Delete Session Request to the S-GW for the given UE.
+// It resolves the linked default bearer from the authoritative PDN context when
+// present and clears the selected control-plane TEID under lock so repeated calls
+// stay idempotent across detach and UE context release cleanup.
 func (s *Server) sendDeleteSession(ue *uecontext.Context) {
-	s.sendDeleteSessionsForDetach(ue)
-}
-
-// sendDeleteSessionDefaultPDN sends a single Delete Session Request for the
-// UE's default PDN. It is the fallback for a UE whose session is not yet
-// recorded as a PDN context (early attach). It resolves the linked default
-// bearer from the authoritative PDN context when present and clears the
-// selected control-plane TEID under lock so repeated calls stay idempotent.
-func (s *Server) sendDeleteSessionDefaultPDN(ue *uecontext.Context) {
 	ue.Lock()
 	sgwcTEID, sgwAddr, ebi, imsi, mmeID, apn := resolveDeleteSessionTargetLocked(ue)
 	localS11TEID := ue.LocalS11TEID
@@ -1280,7 +1269,7 @@ func (s *Server) sendDeleteSessionsForDetach(ue *uecontext.Context) {
 
 	if len(linkedEBIs) == 0 {
 		if legacyPending {
-			s.sendDeleteSessionDefaultPDN(ue)
+			s.sendDeleteSession(ue)
 		}
 		return
 	}
