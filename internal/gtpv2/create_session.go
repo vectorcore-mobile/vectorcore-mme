@@ -36,6 +36,10 @@ type CreateSessionRequest struct {
 	// additional PDN connection must carry it so the S-GW adds the PDN to
 	// the existing UE context instead of treating the request as a new UE.
 	SGWC_TEID uint32
+
+	// Recovery is the MME's Restart Counter. TS 29.274 Table 7.2.1-1: it is
+	// included when contacting the S-GW for the first time; nil omits it.
+	Recovery *uint8
 }
 
 // Encode returns the wire bytes for this CSR with the given sequence number.
@@ -67,6 +71,9 @@ func (r *CreateSessionRequest) Encode(seqNum uint32) []byte {
 	}
 	if len(r.PCO) > 0 {
 		ies = append(ies, EncodePCO(r.PCO))
+	}
+	if r.Recovery != nil {
+		ies = append(ies, EncodeRecovery(*r.Recovery))
 	}
 
 	msg := &Message{

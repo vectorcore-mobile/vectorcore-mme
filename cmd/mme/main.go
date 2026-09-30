@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -115,6 +117,7 @@ func main() {
 	var s6aClient s1ap.S6aClient = s6aHandlers
 
 	// S11 GTPv2-C client (connects to S-GW)
+	initS11Restart(cfg, store, log)
 	c, err := s11client.NewClient(cfg.S11, log)
 	if err != nil {
 		log.Fatal("s11: init failed", zap.Error(err))
@@ -388,6 +391,78 @@ func openDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	}
 
 	return db, nil
+}
+
+// initS11Restart sets this run's GTPv2-C Restart Counter in cfg.S11 and
+// seeds the S11 TEID allocator, so that after an MME restart neither the
+// S-GW nor recovered UE contexts see a TEID reused (TS 29.274 §4.1,
+// TS 23.007 §18).
+func initS11Restart(cfg *config.Config, store repository.Repository, log *zap.Logger) {
+	memoryMode := databaseMode(cfg.Database) == "memory"
+
+	// Memory mode uses the configured counter as is. Persistent mode keeps
+	// it in the database so it stays the same across restarts.
+	counter := cfg.S11.RecoveryRestartCounter
+	if st, ok := store.(mmeStateStore); ok && !memoryMode {
+		c, err := s11client.LoadRestartCounter(dbCounterStore{db: st}, counter)
+		if err != nil {
+			log.Warn("s11: restart counter not read from or saved to the database; using the configured value",
+				zap.Error(err))
+		}
+		counter = c
+	}
+	cfg.S11.RecoveryRestartCounter = counter
+
+	var maxTEID uint32
+	if !memoryMode {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		sessions, err := store.ListSessionRecoveryRecords(ctx, "")
+		cancel()
+		if err != nil {
+			log.Warn("s11: could not read recovered S11 TEIDs; seeding TEIDs randomly", zap.Error(err))
+		}
+		for _, sess := range sessions {
+			if sess.MMES11TEID > maxTEID {
+				maxTEID = sess.MMES11TEID
+			}
+		}
+	}
+	firstTEID := s11client.InitialTEID(maxTEID)
+	s11client.SeedTEID(firstTEID)
+
+	log.Info("s11: restart state",
+		zap.Uint8("restart_counter", counter),
+		zap.Bool("counter_from_database", !memoryMode),
+		zap.Uint32("max_recovered_teid", maxTEID),
+		zap.Uint32("first_teid", firstTEID))
+}
+
+// mmeStateStore is the part of the SQLite store that keeps MME state.
+type mmeStateStore interface {
+	GetMMEState(ctx context.Context, key string) (string, error)
+	SetMMEState(ctx context.Context, key, value string) error
+}
+
+// dbCounterStore keeps the Restart Counter in the mme_state table.
+type dbCounterStore struct{ db mmeStateStore }
+
+func (d dbCounterStore) LoadCounter() (uint8, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	v, err := d.db.GetMMEState(ctx, models.MMEStateGTPCRestartCounter)
+	if errors.Is(err, repository.ErrNotFound) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return s11client.ParseCounter(v)
+}
+
+func (d dbCounterStore) SaveCounter(v uint8) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return d.db.SetMMEState(ctx, models.MMEStateGTPCRestartCounter, strconv.Itoa(int(v)))
 }
 
 func buildRepository(cfg config.DatabaseConfig, log *zap.Logger, restartEpoch string) (repository.Repository, error) {

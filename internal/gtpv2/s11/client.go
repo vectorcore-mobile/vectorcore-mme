@@ -68,6 +68,10 @@ type Client struct {
 	pendingMBR sync.Map // seqNum uint32 → pending
 	pendingDSR sync.Map // seqNum uint32 → pending
 	pendingRAB sync.Map // seqNum uint32 → pending
+
+	// contactedSGW records S-GW addresses sent a Create Session Request by
+	// this run, so only the first one carries the Recovery IE.
+	contactedSGW sync.Map // SGW address string → struct{}
 }
 
 // NewClient creates a Client. Call SetHandler before Start to wire up the result callbacks.
@@ -136,6 +140,16 @@ func (c *Client) Close() error {
 // SendCSR sends a Create Session Request and records the pending correlation.
 func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error {
 	seq := c.nextSeq()
+	firstContact := false
+	if _, seen := c.contactedSGW.LoadOrStore(req.SGWAddress, struct{}{}); !seen {
+		// First contact with this S-GW since start: the Recovery IE lets it
+		// detect an MME restart (TS 29.274 §7.2.1, TS 23.007 §18).
+		firstContact = true
+		counter := c.cfg.RecoveryRestartCounter
+		withRecovery := *req
+		withRecovery.Recovery = &counter
+		req = &withRecovery
+	}
 	buf := req.Encode(seq)
 	if msg, err := gtpv2.Decode(buf); err == nil {
 		c.log.Debug("s11: CSR encoded",
@@ -148,6 +162,9 @@ func (c *Client) SendCSR(mmeUEID uint32, req *gtpv2.CreateSessionRequest) error 
 	c.pendingCSR.Store(seq, pending{mmeUEID: mmeUEID})
 	if err := c.send(buf, req.SGWAddress); err != nil {
 		c.pendingCSR.Delete(seq)
+		if firstContact {
+			c.contactedSGW.Delete(req.SGWAddress)
+		}
 		metrics.S11MessagesTotal.WithLabelValues("csr", "send_error").Inc()
 		return err
 	}

@@ -146,5 +146,20 @@ func AllModels() []interface{} {
 		&SessionRecoveryRecord{},
 		&RecoveryEvent{},
 		&ENBRegistration{},
+		&MMEState{},
 	}
 }
+
+// MMEState holds small per-instance values that must survive a restart,
+// keyed by name (e.g. the GTPv2-C Restart Counter).
+type MMEState struct {
+	Key       string    `gorm:"column:state_key;primaryKey;size:64" json:"key"`
+	Value     string    `gorm:"column:value;size:255" json:"value"`
+	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+}
+
+func (MMEState) TableName() string { return "mme_state" }
+
+// MMEStateGTPCRestartCounter is the MMEState key of the GTPv2-C Restart
+// Counter (TS 23.007 §18).
+const MMEStateGTPCRestartCounter = "gtpc_restart_counter"

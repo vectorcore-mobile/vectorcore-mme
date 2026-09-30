@@ -148,7 +148,7 @@ type PeerMMEConfig struct {
 type S11Config struct {
 	BindAddress            string    `yaml:"bind_address"`             // local IP for MME S11 socket
 	BindPort               int       `yaml:"bind_port"`                // default 2123
-	RecoveryRestartCounter uint8     `yaml:"recovery_restart_counter"` // GTPv2 Recovery IE value used in Echo Response
+	RecoveryRestartCounter uint8     `yaml:"recovery_restart_counter"` // GTPv2 Restart Counter; persistent mode: first start only
 	QoS                    QoSConfig `yaml:"qos"`
 }
 

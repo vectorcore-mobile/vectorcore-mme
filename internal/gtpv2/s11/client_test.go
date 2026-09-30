@@ -106,3 +106,69 @@ func TestMalformedBearerRequestRejectHeaderTEID(t *testing.T) {
 		}
 	}
 }
+
+// TS 29.274 Table 7.2.1-1: the Recovery IE is in the Create Session Request
+// when the MME contacts an S-GW for the first time, so the S-GW can detect
+// an MME restart without waiting for an Echo exchange.
+func TestSendCSRRecoveryOnFirstContactPerSGW(t *testing.T) {
+	mme, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP mme: %v", err)
+	}
+	defer mme.Close()
+	sgwA, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP sgw: %v", err)
+	}
+	defer sgwA.Close()
+	sgwB, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP sgw: %v", err)
+	}
+	defer sgwB.Close()
+
+	c := &Client{cfg: config.S11Config{RecoveryRestartCounter: 0x2a}, log: zap.NewNop(), conn: mme}
+	recovery := func(sgw *net.UDPConn) (uint8, bool) {
+		t.Helper()
+		req := &gtpv2.CreateSessionRequest{
+			SGWAddress:   sgw.LocalAddr().String(),
+			IMSI:         "001010000000001",
+			APN:          "internet",
+			LocalS11TEID: 0x10001,
+			LocalS11IP:   net.IPv4(127, 0, 0, 1),
+			DefaultEBI:   5,
+			BearerQCI:    9,
+		}
+		if err := c.SendCSR(1, req); err != nil {
+			t.Fatalf("SendCSR: %v", err)
+		}
+		if req.Recovery != nil {
+			t.Fatal("SendCSR modified the caller's request")
+		}
+		buf := make([]byte, 1500)
+		_ = sgw.SetReadDeadline(time.Now().Add(time.Second))
+		n, _, err := sgw.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("no CSR received: %v", err)
+		}
+		msg, err := gtpv2.Decode(buf[:n])
+		if err != nil {
+			t.Fatalf("Decode CSR: %v", err)
+		}
+		ie := gtpv2.FindIE(msg.IEs, gtpv2.IETypeRecovery, 0)
+		if ie == nil {
+			return 0, false
+		}
+		return ie.Value[0], true
+	}
+
+	if v, ok := recovery(sgwA); !ok || v != 0x2a {
+		t.Fatalf("first CSR to S-GW A: recovery %#x present %v, want 0x2a", v, ok)
+	}
+	if _, ok := recovery(sgwA); ok {
+		t.Fatal("second CSR to S-GW A carries Recovery IE")
+	}
+	if v, ok := recovery(sgwB); !ok || v != 0x2a {
+		t.Fatalf("first CSR to S-GW B: recovery %#x present %v, want 0x2a", v, ok)
+	}
+}

@@ -183,3 +183,28 @@ func disconnectedRecoveryStates() []string {
 		models.RecoveryStateStaleAfterRestart,
 	}
 }
+
+// ── MME state ───────────────────────────────────────────────────────────────
+
+// GetMMEState returns the value stored under key, or repository.ErrNotFound.
+func (s *Store) GetMMEState(ctx context.Context, key string) (string, error) {
+	// Find, not First: a missing key is normal on the first start and First
+	// makes GORM log it as a "record not found" error.
+	var st models.MMEState
+	res := s.db.WithContext(ctx).Where("state_key = ?", key).Limit(1).Find(&st)
+	if res.Error != nil {
+		return "", res.Error
+	}
+	if res.RowsAffected == 0 {
+		return "", repository.ErrNotFound
+	}
+	return st.Value, nil
+}
+
+// SetMMEState stores value under key, replacing any previous value.
+func (s *Store) SetMMEState(ctx context.Context, key, value string) error {
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "state_key"}},
+		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+	}).Create(&models.MMEState{Key: key, Value: value, UpdatedAt: time.Now().UTC()}).Error
+}
