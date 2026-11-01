@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/vectorcore/mme/internal/diameter/sgd"
 	"github.com/vectorcore/mme/internal/metrics"
 	"github.com/vectorcore/mme/internal/models"
 	"github.com/vectorcore/mme/internal/nas/emm"
@@ -130,6 +131,7 @@ func (s *Server) refreshReachability(ue *uecontext.Context, reason string) {
 		metrics.ImplicitDetachRecoveriesTotal.Inc()
 	}
 	s.log.Info("emm: UE reachability refreshed", zap.Uint32("mme_ue_id", mmeID), zap.String("imsi", imsi), zap.String("reason", reason), zap.Bool("implicit_detach_cancelled", wasPending))
+	s.notifyUEPresentIfNotReachable(ue)
 }
 
 // armReachabilityForIdle is called only after a valid registered UE loses S1.
@@ -273,7 +275,7 @@ func (s *Server) cleanupUEOwnedSMS(ue *uecontext.Context) {
 	if v, ok := s.pendingMTSMS.LoadAndDelete(imsi); ok {
 		pending := v.(*pendingMTSMS)
 		select {
-		case pending.result <- mtSMSResult{}:
+		case pending.result <- sgd.MTAbsentUser(sgd.AbsentDiagIMSIDetached):
 		default:
 		}
 	}

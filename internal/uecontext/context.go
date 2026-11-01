@@ -232,6 +232,10 @@ type Context struct {
 	SMSRegistrationState SMSRegistrationState
 	SMSRegistrationCause string
 	SMSRegistrationAt    time.Time
+	// SMSNotReachableFlag is MNRF for SMS in MME (TS 23.272 Annex C): set
+	// when an MT SMS was answered absent-user, cleared when the MME tells the
+	// HSS the UE is present again (S6a NOR, Alert-Reason UE_PRESENT).
+	SMSNotReachableFlag bool
 
 	// Runtime-only SGs association state (TS 29.118 §4.3.3). Never restored
 	// after restart: an SGs-ASSOCIATED UE re-establishes the association via

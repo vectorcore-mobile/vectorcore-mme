@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fiorix/go-diameter/v4/diam"
 	"go.uber.org/zap"
 
 	"github.com/vectorcore/mme/internal/config"
+	"github.com/vectorcore/mme/internal/diameter/sgd"
 	"github.com/vectorcore/mme/internal/gateway"
 	"github.com/vectorcore/mme/internal/gtpv2"
 	"github.com/vectorcore/mme/internal/gtpv2/s10"
@@ -236,6 +236,7 @@ type Server struct {
 	pendingMOSMS        sync.Map // imsi:cp-ti -> *pendingMOSMS
 	smsMu               sync.Mutex
 	nextMTSMSTI         map[string]uint8
+	mtQueues            map[string]*mtQueue // guarded by smsMu; see acquireMTTurn
 
 	enbs  sync.Map // string (remoteAddr) → *ENBContext
 	sends sync.Map // string (remoteAddr) → chan<- []byte
@@ -365,7 +366,7 @@ func (s *Server) HandleNetworkDetach(ue *uecontext.Context) {
 		if value, ok := s.pendingMTSMS.LoadAndDelete(imsi); ok {
 			pending := value.(*pendingMTSMS)
 			select {
-			case pending.result <- mtSMSResult{resultCode: diam.UnableToDeliver}:
+			case pending.result <- sgd.MTAbsentUser(sgd.AbsentDiagIMSIDetached):
 			default:
 			}
 		}

@@ -18,6 +18,7 @@ const (
 	RPAckNetwork   = 0x03 // network -> MS
 	RPErrorMO      = 0x04 // MS -> network
 	RPErrorNetwork = 0x05 // network -> MS
+	RPSMMA         = 0x06 // MS -> network, memory available
 	RPUserDataIEI  = 0x41
 	MaxRPDU        = 248
 	MaxSMRPUI      = 200
@@ -112,11 +113,35 @@ func DecodeRPAckMO(b []byte) (uint8, []byte, error) {
 	}
 	return b[1], append([]byte(nil), b[4:]...), nil
 }
-func DecodeRPErrorMO(b []byte) (uint8, uint8, error) {
-	if len(b) < 4 || b[0]&7 != RPErrorMO || b[2] != 1 {
-		return 0, 0, fmt.Errorf("sms: malformed RP-ERROR")
+
+// DecodeRPSMMA decodes an RP-SMMA (TS 24.011 §7.3.2): the MS tells the
+// network it has memory available for SMS again. It carries only the RP
+// message reference.
+func DecodeRPSMMA(b []byte) (uint8, error) {
+	if len(b) != 2 || b[0]&7 != RPSMMA {
+		return 0, fmt.Errorf("sms: not RP-SMMA")
 	}
-	return b[1], b[3], nil
+	return b[1], nil
+}
+
+// DecodeRPErrorMO decodes an MS-to-network RP-ERROR (TS 24.011 §7.3.4):
+// message reference, RP-Cause (LV, cause value plus an optional diagnostic
+// octet, §8.2.5.4) and optional RP-User-Data (TLV, IEI 0x41). The returned
+// cause has the extension bit cleared. RP-User-Data, when present, is the
+// SMS-DELIVER-REPORT TPDU for an MT transfer.
+func DecodeRPErrorMO(b []byte) (ref, cause uint8, userData []byte, err error) {
+	if len(b) < 4 || b[0]&7 != RPErrorMO || b[2] < 1 || b[2] > 2 || len(b) < 3+int(b[2]) {
+		return 0, 0, nil, fmt.Errorf("sms: malformed RP-ERROR")
+	}
+	ref, cause = b[1], b[3]&0x7f
+	rest := b[3+int(b[2]):]
+	if len(rest) == 0 {
+		return ref, cause, nil, nil
+	}
+	if len(rest) < 2 || rest[0] != RPUserDataIEI || int(rest[1]) != len(rest)-2 {
+		return 0, 0, nil, fmt.Errorf("sms: malformed RP-ERROR RP-User-Data")
+	}
+	return ref, cause, append([]byte(nil), rest[2:]...), nil
 }
 
 func DecodeCP(b []byte) (*CPMessage, error) {

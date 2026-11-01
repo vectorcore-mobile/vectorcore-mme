@@ -121,9 +121,29 @@ func TestDecodeRPAckAndErrorMO(t *testing.T) {
 	if err != nil || ref != 9 || !bytes.Equal(payload, []byte{0xaa, 0xbb}) {
 		t.Fatalf("RP-ACK: ref=%d payload=%x err=%v", ref, payload, err)
 	}
-	ref, cause, err := DecodeRPErrorMO([]byte{RPErrorMO, 9, 1, 95})
-	if err != nil || ref != 9 || cause != 95 {
-		t.Fatalf("RP-ERROR: ref=%d cause=%d err=%v", ref, cause, err)
+	ref, cause, userData, err := DecodeRPErrorMO([]byte{RPErrorMO, 9, 1, 95})
+	if err != nil || ref != 9 || cause != 95 || userData != nil {
+		t.Fatalf("RP-ERROR: ref=%d cause=%d user=%x err=%v", ref, cause, userData, err)
+	}
+}
+
+func TestDecodeRPErrorMODiagnosticAndUserData(t *testing.T) {
+	// Cause 22 (memory capacity exceeded) with the extension bit set, a
+	// diagnostic octet, and an SMS-DELIVER-REPORT (TP-FCS 0xD2) as user data.
+	ref, cause, userData, err := DecodeRPErrorMO([]byte{RPErrorMO, 3, 2, 0x80 | 22, 0x01, RPUserDataIEI, 3, 0x00, 0xd2, 0x00})
+	if err != nil || ref != 3 || cause != 22 || !bytes.Equal(userData, []byte{0x00, 0xd2, 0x00}) {
+		t.Fatalf("RP-ERROR: ref=%d cause=%d user=%x err=%v", ref, cause, userData, err)
+	}
+	for name, b := range map[string][]byte{
+		"cause length 0":     {RPErrorMO, 3, 0, 22},
+		"cause length 3":     {RPErrorMO, 3, 3, 22, 1, 2},
+		"truncated cause":    {RPErrorMO, 3, 2, 22},
+		"bad user-data IEI":  {RPErrorMO, 3, 1, 22, 0x42, 1, 0},
+		"user-data too long": {RPErrorMO, 3, 1, 22, RPUserDataIEI, 5, 0},
+	} {
+		if _, _, _, err := DecodeRPErrorMO(b); err == nil {
+			t.Errorf("%s: DecodeRPErrorMO accepted %x", name, b)
+		}
 	}
 }
 
@@ -134,7 +154,7 @@ func TestEncodeNetworkRPAckMatchesCiscoMOSMS(t *testing.T) {
 	}
 	// Captured VectorCore UE rejection: 07 63 07 19 01 04 17 01 61.
 	// The inner RP-ERROR is MS-to-network, reference 0x17, cause 0x61.
-	ref, cause, err := DecodeRPErrorMO([]byte{0x04, 0x17, 0x01, 0x61})
+	ref, cause, _, err := DecodeRPErrorMO([]byte{0x04, 0x17, 0x01, 0x61})
 	if err != nil || ref != 0x17 || cause != 0x61 {
 		t.Fatalf("captured RP-ERROR: ref=%#x cause=%#x err=%v", ref, cause, err)
 	}
@@ -167,5 +187,22 @@ func TestEncodeRPDataMTFromTBCDAndCiscoASCIIAddress(t *testing.T) {
 	}
 	if _, err := EncodeRPDataMT(1, []byte{0xff}, []byte{1}); err == nil {
 		t.Fatal("accepted malformed SC address")
+	}
+}
+
+func TestDecodeRPSMMA(t *testing.T) {
+	ref, err := DecodeRPSMMA([]byte{RPSMMA, 0x2a})
+	if err != nil || ref != 0x2a {
+		t.Fatalf("RP-SMMA: ref=%#x err=%v", ref, err)
+	}
+	for name, b := range map[string][]byte{
+		"empty":          {},
+		"no reference":   {RPSMMA},
+		"trailing octet": {RPSMMA, 1, 0},
+		"RP-DATA":        {RPDataMO, 1},
+	} {
+		if _, err := DecodeRPSMMA(b); err == nil {
+			t.Errorf("%s: DecodeRPSMMA accepted %x", name, b)
+		}
 	}
 }

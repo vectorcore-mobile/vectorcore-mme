@@ -27,6 +27,11 @@ const (
 	avpSMRPUI             uint32 = 3301
 	avpSMSMICorrelationID uint32 = 3324
 	avpMMENumberForMTSMS  uint32 = 1645
+
+	avpSMDeliveryFailureCause           uint32 = 3303
+	avpSMEnumeratedDeliveryFailureCause uint32 = 3304
+	avpSMDiagnosticInfo                 uint32 = 3305
+	avpAbsentUserDiagnosticSM           uint32 = 3322
 )
 
 const maxSMRPUI = 200
@@ -160,22 +165,13 @@ func BuildALR(req AlertRequest) (*diam.Message, error) {
 	return m, nil
 }
 
-// encodeMSISDN follows the deployed SMSC representation from TS 23.003:
-// length, TON/NPI, then semi-octet BCD digits. It is intentionally local so
-// the MME remains independently buildable.
+// encodeMSISDN encodes an E.164 number for the SGd MSISDN AVP (code 701).
+// TS 29.338 takes MSISDN from TS 29.329 §6.3.2: plain TBCD digits (first
+// digit in the low nibble, F filler for an odd count) with no length octet
+// and no TON/NPI octet. A paired SMSC must decode it the same way
+// (vectorcore-smsc: smsc.sgd_msisdn_encoding: tbcd, its default).
 func encodeMSISDN(value string) ([]byte, error) {
-	digits, err := config.NormalizeE164(value)
-	if err != nil {
-		return nil, err
-	}
-	bcd, err := config.EncodeTBCD(digits)
-	if err != nil {
-		return nil, err
-	}
-	if len(bcd)+1 > 255 {
-		return nil, fmt.Errorf("too long")
-	}
-	return append([]byte{byte(len(bcd) + 1), 0x91}, bcd...), nil
+	return config.EncodeTBCD(value)
 }
 
 func DecodeALA(m *diam.Message) (uint32, error) {
@@ -261,22 +257,42 @@ func findAVP(m *diam.Message, code, vendor uint32) *diam.AVP {
 	return nil
 }
 
-// BuildTFA returns a success or Diameter failure answer after the shared SMS
-// service has completed delivery. It intentionally cannot claim delivery
-// before that service calls it.
-func BuildTFA(req *diam.Message, originHost, originRealm string, resultCode uint32, smRPUI []byte) (*diam.Message, error) {
+// BuildTFA encodes the MT-Forward-Short-Message-Answer after the shared SMS
+// service has finished delivery. It cannot claim delivery before then.
+// Failures use Experimental-Result (TS 29.338 §6.3.2.4) with their
+// diagnostic AVPs; base Result-Code is kept for success and MME-side faults.
+func BuildTFA(req *diam.Message, originHost, originRealm string, outcome MTOutcome) (*diam.Message, error) {
 	if req == nil || originHost == "" || originRealm == "" {
 		return nil, fmt.Errorf("sgd: missing TFA arguments")
 	}
-	if len(smRPUI) > maxSMRPUI {
+	if (outcome.ResultCode == 0) == (outcome.ExperimentalResultCode == 0) {
+		return nil, fmt.Errorf("sgd: TFA needs exactly one of Result-Code or Experimental-Result-Code")
+	}
+	if len(outcome.SMRPUI) > maxSMRPUI {
 		return nil, fmt.Errorf("sgd: SM-RP-UI too long")
 	}
-	ans := req.Answer(resultCode)
+	ans := req.Answer(outcome.ResultCode) // 0 adds no Result-Code AVP
 	ans.NewAVP(avp.AuthSessionState, avp.Mbit, 0, datatype.Enumerated(1))
 	ans.NewAVP(avp.OriginHost, avp.Mbit, 0, datatype.DiameterIdentity(originHost))
 	ans.NewAVP(avp.OriginRealm, avp.Mbit, 0, datatype.DiameterIdentity(originRealm))
-	if len(smRPUI) > 0 {
-		ans.NewAVP(avpSMRPUI, avp.Vbit, VendorID, datatype.OctetString(smRPUI))
+	if outcome.ExperimentalResultCode != 0 {
+		ans.NewAVP(avp.ExperimentalResult, avp.Mbit, 0, &diam.GroupedAVP{AVP: []*diam.AVP{
+			diam.NewAVP(avp.VendorID, avp.Mbit, 0, datatype.Unsigned32(VendorID)),
+			diam.NewAVP(avp.ExperimentalResultCode, avp.Mbit, 0, datatype.Unsigned32(outcome.ExperimentalResultCode)),
+		}})
+	}
+	if outcome.AbsentUserDiagnostic != nil {
+		ans.NewAVP(avpAbsentUserDiagnosticSM, avp.Vbit|avp.Mbit, VendorID, datatype.Unsigned32(*outcome.AbsentUserDiagnostic))
+	}
+	if outcome.DeliveryFailureCause != nil {
+		children := []*diam.AVP{diam.NewAVP(avpSMEnumeratedDeliveryFailureCause, avp.Vbit|avp.Mbit, VendorID, datatype.Enumerated(int32(*outcome.DeliveryFailureCause)))}
+		if len(outcome.DiagnosticInfo) > 0 {
+			children = append(children, diam.NewAVP(avpSMDiagnosticInfo, avp.Vbit|avp.Mbit, VendorID, datatype.OctetString(outcome.DiagnosticInfo)))
+		}
+		ans.NewAVP(avpSMDeliveryFailureCause, avp.Vbit|avp.Mbit, VendorID, &diam.GroupedAVP{AVP: children})
+	}
+	if len(outcome.SMRPUI) > 0 {
+		ans.NewAVP(avpSMRPUI, avp.Vbit, VendorID, datatype.OctetString(outcome.SMRPUI))
 	}
 	return ans, nil
 }

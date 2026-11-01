@@ -164,7 +164,7 @@ func TestMTRPAckPreservesReferenceAndSendsFinalCPAck(t *testing.T) {
 	s := &Server{ueManager: manager, log: zap.NewNop()}
 	downlink := make(chan []byte, 1)
 	s.sends.Store("test-enb", (chan<- []byte)(downlink))
-	pending := &pendingMTSMS{ti: 0, rpReference: 0xff, result: make(chan mtSMSResult, 1)}
+	pending := &pendingMTSMS{ti: 0, rpReference: 0xff, result: make(chan sgd.MTOutcome, 1)}
 	s.pendingMTSMS.Store("001010123456789", pending)
 	defer s.pendingMTSMS.Delete("001010123456789")
 
@@ -175,8 +175,8 @@ func TestMTRPAckPreservesReferenceAndSendsFinalCPAck(t *testing.T) {
 	}
 	select {
 	case result := <-pending.result:
-		if result.resultCode != 2001 {
-			t.Fatalf("MT result code = %d", result.resultCode)
+		if result.ResultCode != 2001 || result.ExperimentalResultCode != 0 {
+			t.Fatalf("MT result = %+v", result)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("MT RP-ACK did not complete pending delivery")
@@ -202,7 +202,7 @@ func TestPendingMTDeliversOnlyAfterServiceRequestResume(t *testing.T) {
 	downlink := make(chan []byte, 1)
 	s.sends.Store("test-enb", (chan<- []byte)(downlink))
 	pending := &pendingMTSMS{
-		ti: 0, rpReference: 0xff, result: make(chan mtSMSResult, 1), state: "paging",
+		ti: 0, rpReference: 0xff, result: make(chan sgd.MTOutcome, 1), state: "paging",
 		request: &sgd.MTRequest{SessionID: "tfr-1", IMSI: "001010123456789", SCAddress: []byte("15550000000"), SMRPUI: []byte{4, 0xaa}},
 	}
 	s.pendingMTSMS.Store("001010123456789", pending)

@@ -61,7 +61,9 @@ type Handlers struct {
 	pendingS13  sync.Map // sessionID string → pendingS13
 	pendingOFR  sync.Map // sessionID string → chan sgd.MOAnswer
 	pendingALR  sync.Map // sessionID string → chan uint32
+	pendingNOR  sync.Map // sessionID string → chan uint32 (NOA result code)
 	mtResults   sync.Map // exact inbound TFR identity -> cachedMTResult
+	mtInFlight  sync.Map // exact inbound TFR identity -> *mtInFlightCall
 	s13Cfg      config.S13Config
 	sgdCfg      config.SGdConfig
 	slgCfg      config.SLgConfig
@@ -86,9 +88,16 @@ type Handlers struct {
 const mtResultCacheTTL = 2 * time.Minute
 
 type cachedMTResult struct {
-	result    uint32
-	rpui      []byte
+	outcome   sgd.MTOutcome
 	expiresAt time.Time
+}
+
+// mtInFlightCall lets a retransmitted TFR (RFC 6733 §5.5.4, e.g. after a
+// peer failover) wait for the original delivery instead of starting a second
+// one. outcome is written before done is closed.
+type mtInFlightCall struct {
+	done    chan struct{}
+	outcome sgd.MTOutcome
 }
 
 type pendingS13 struct {
@@ -236,6 +245,9 @@ func (h *Handlers) buildMux(onCER diam.HandlerFunc) *sm.StateMachine {
 	mux.HandleIdx(
 		diam.CommandIndex{AppID: appIDS6a, Code: diam.PurgeUE, Request: false},
 		diam.HandlerFunc(h.handlePUA))
+	mux.HandleIdx(
+		diam.CommandIndex{AppID: appIDS6a, Code: diam.Notify, Request: false},
+		diam.HandlerFunc(h.handleNOA))
 	if h.sgdCfg.Enabled {
 		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandMOForwardShortMessage, Request: false}, diam.HandlerFunc(h.handleOFA))
 		mux.HandleIdx(diam.CommandIndex{AppID: sgd.ApplicationID, Code: sgd.CommandMTForwardShortMessage, Request: true}, diam.HandlerFunc(h.handleTFR))
@@ -305,21 +317,20 @@ func (h *Handlers) handleTFR(c diam.Conn, m *diam.Message) {
 		return
 	}
 	h.log.Info("sgd: MT-FSM request received", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID))
-	cacheKey := mtTFRCacheKey(m, req)
-	result, rpui, duplicate := h.lookupMTResult(cacheKey)
-	if duplicate {
-		h.log.Info("sgd: duplicate MT-FSM request detected",
-			zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID),
-			zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID))
-	} else {
-		result = uint32(diam.UnableToComply)
-		if receiver, ok := h.nas.(interface {
-			HandleSGdMT(*sgd.MTRequest) (uint32, []byte)
-		}); ok {
-			result, rpui = receiver.HandleSGdMT(req)
-		}
-	}
-	ans, err := sgd.BuildTFA(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, result, rpui)
+	// MT delivery can take up to sgd.transaction_timeout (paging, Service
+	// Request, RP-ACK). go-diameter dispatches each connection's messages
+	// sequentially in its read loop, so blocking here would stall DWR/DWA
+	// and every other request on this SGd connection, letting either side's
+	// watchdog close it mid-transaction (see the same reasoning in
+	// handlePLR). Answer from a goroutine; connection writes are serialised
+	// by go-diameter.
+	go h.serveTFR(c, m, req, mtTFRCacheKey(m, req))
+}
+
+func (h *Handlers) serveTFR(c diam.Conn, m *diam.Message, req *sgd.MTRequest, cacheKey string) {
+	outcome, duplicate := h.resolveMTResult(m, req, cacheKey)
+	result := outcome.Code()
+	ans, err := sgd.BuildTFA(m, h.diameterCfg.OriginHost, h.diameterCfg.OriginRealm, outcome)
 	if err != nil {
 		h.log.Warn("sgd: build TFA", zap.Error(err))
 		return
@@ -329,10 +340,53 @@ func (h *Handlers) handleTFR(c diam.Conn, m *diam.Message) {
 		h.log.Warn("sgd: TFA write failed", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID), zap.Error(err))
 		return
 	}
-	if !duplicate {
-		h.storeMTResult(cacheKey, result, rpui)
-	}
 	h.log.Info("sgd: MT-FSM answer transmitted", zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID), zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID), zap.Uint32("result_code", result), zap.Bool("duplicate", duplicate))
+}
+
+// resolveMTResult returns the TFA outcome for one TFR. Exactly one caller per
+// cache key runs the NAS delivery; a retransmission arriving meanwhile waits
+// for it, and one arriving later is answered from the result cache. The
+// result is cached as soon as delivery finishes, before the TFA is written,
+// so a retransmission after a failed TFA write never re-delivers to the UE.
+func (h *Handlers) resolveMTResult(m *diam.Message, req *sgd.MTRequest, cacheKey string) (outcome sgd.MTOutcome, duplicate bool) {
+	logDuplicate := func(msg string) {
+		h.log.Info(msg,
+			zap.String("imsi", req.IMSI), zap.String("session_id", req.SessionID),
+			zap.Uint32("hop_by_hop", m.Header.HopByHopID), zap.Uint32("end_to_end", m.Header.EndToEndID))
+	}
+	if cached, ok := h.lookupMTResult(cacheKey); ok {
+		logDuplicate("sgd: duplicate MT-FSM request detected")
+		return cached, true
+	}
+	call := &mtInFlightCall{done: make(chan struct{})}
+	if v, loaded := h.mtInFlight.LoadOrStore(cacheKey, call); loaded {
+		existing := v.(*mtInFlightCall)
+		logDuplicate("sgd: duplicate MT-FSM request while original is in progress")
+		<-existing.done
+		return existing.outcome.Clone(), true
+	}
+	// The original may have finished between the cache miss and LoadOrStore;
+	// it caches before leaving mtInFlight, so re-check before delivering.
+	if cached, ok := h.lookupMTResult(cacheKey); ok {
+		call.outcome = cached.Clone()
+		h.mtInFlight.Delete(cacheKey)
+		close(call.done)
+		logDuplicate("sgd: duplicate MT-FSM request detected")
+		return cached, true
+	}
+	outcome = sgd.MTBaseResult(diam.UnableToComply)
+	defer func() {
+		h.storeMTResult(cacheKey, outcome)
+		call.outcome = outcome.Clone()
+		h.mtInFlight.Delete(cacheKey)
+		close(call.done)
+	}()
+	if receiver, ok := h.nas.(interface {
+		HandleSGdMT(*sgd.MTRequest) sgd.MTOutcome
+	}); ok {
+		outcome = receiver.HandleSGdMT(req)
+	}
+	return outcome, false
 }
 
 // mtTFRCacheKey intentionally includes Diameter transaction identity. A new
@@ -343,21 +397,21 @@ func mtTFRCacheKey(m *diam.Message, req *sgd.MTRequest) string {
 	return fmt.Sprintf("%s:%08x:%08x:%s:%x", req.SessionID, m.Header.HopByHopID, m.Header.EndToEndID, req.IMSI, payload[:])
 }
 
-func (h *Handlers) lookupMTResult(key string) (uint32, []byte, bool) {
+func (h *Handlers) lookupMTResult(key string) (sgd.MTOutcome, bool) {
 	v, ok := h.mtResults.Load(key)
 	if !ok {
-		return 0, nil, false
+		return sgd.MTOutcome{}, false
 	}
 	cached := v.(cachedMTResult)
 	if !cached.expiresAt.After(time.Now()) {
 		h.mtResults.Delete(key)
-		return 0, nil, false
+		return sgd.MTOutcome{}, false
 	}
-	return cached.result, append([]byte(nil), cached.rpui...), true
+	return cached.outcome.Clone(), true
 }
 
-func (h *Handlers) storeMTResult(key string, result uint32, rpui []byte) {
-	h.mtResults.Store(key, cachedMTResult{result: result, rpui: append([]byte(nil), rpui...), expiresAt: time.Now().Add(mtResultCacheTTL)})
+func (h *Handlers) storeMTResult(key string, outcome sgd.MTOutcome) {
+	h.mtResults.Store(key, cachedMTResult{outcome: outcome.Clone(), expiresAt: time.Now().Add(mtResultCacheTTL)})
 }
 
 // SendMobileOriginatedSMS implements the transport-neutral SMS service's SGd

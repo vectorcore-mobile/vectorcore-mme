@@ -62,6 +62,13 @@ const sgdDictionaryXML = `<?xml version="1.0" encoding="UTF-8"?>
     <avp name="User-Identifier" code="3102" vendor-id="10415" must="M,V" may-encrypt="N"><data type="Grouped"><rule avp="AVP" required="false"/></data></avp>
     <avp name="SC-Address" code="3300" vendor-id="10415" must="M,V" may-encrypt="N"><data type="OctetString"/></avp>
     <avp name="SM-RP-UI" code="3301" vendor-id="10415" must="M,V" may-encrypt="N"><data type="OctetString"/></avp>
+    <avp name="Vendor-Id" code="266" vendor-id="0" must="M" may-encrypt="N"><data type="Unsigned32"/></avp>
+    <avp name="Experimental-Result" code="297" vendor-id="0" must="M" may-encrypt="N"><data type="Grouped"><rule avp="Vendor-Id" required="true" max="1"/><rule avp="Experimental-Result-Code" required="true" max="1"/></data></avp>
+    <avp name="Experimental-Result-Code" code="298" vendor-id="0" must="M" may-encrypt="N"><data type="Unsigned32"/></avp>
+    <avp name="SM-Delivery-Failure-Cause" code="3303" vendor-id="10415" must="M,V" may-encrypt="N"><data type="Grouped"><rule avp="SM-Enumerated-Delivery-Failure-Cause" required="true" max="1"/><rule avp="SM-Diagnostic-Info" required="false" max="1"/></data></avp>
+    <avp name="SM-Enumerated-Delivery-Failure-Cause" code="3304" vendor-id="10415" must="M,V" may-encrypt="N"><data type="Enumerated"/></avp>
+    <avp name="SM-Diagnostic-Info" code="3305" vendor-id="10415" must="M,V" may-encrypt="N"><data type="OctetString"/></avp>
+    <avp name="Absent-User-Diagnostic-SM" code="3322" vendor-id="10415" must="M,V" may-encrypt="N"><data type="Unsigned32"/></avp>
     <avp name="SMSMI-Correlation-ID" code="3324" vendor-id="10415" must="M,V" may-encrypt="N"><data type="OctetString"/></avp>
   </application>
 </diameter>`
