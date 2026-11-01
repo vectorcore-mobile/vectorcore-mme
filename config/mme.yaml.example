@@ -168,7 +168,7 @@ sgd:
   smsc_address: "+15551230000"
   # tbcd is TS 29.338 compliant; ascii_digits supports legacy Cisco SMSCs.
   sgd_sc_address_encoding: "tbcd"
-  transaction_timeout: "40s"
+  transaction_timeout: "30s"
   mme_number_for_mt_sms: "+15551230001"
 
 # MME-to-VLR SGs-AP association (TS 29.118), used for CS Fallback and/or
